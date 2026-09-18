@@ -52,6 +52,7 @@
 #include <wx/filename.h>
 #include <wx/init.h>
 #include <wx/log.h>
+#include <wx/utils.h>
 #include <wx/string.h>
 
 #include <eeschema_settings.h>
@@ -544,6 +545,23 @@ int main( int argc, char** argv )
         printUsage();
         return 2;
     }
+
+    // Recorded output must not depend on whoever is running the tool, and a run
+    // over the repository's own fixtures must not write anything back into them.
+    // Both are settled before the settings manager exists: point the config home
+    // at a scratch directory and inhibit writeback, unless the caller has already
+    // chosen otherwise.
+    if( !wxGetEnv( wxT( "KICAD_CONFIG_HOME" ), nullptr ) )
+    {
+        wxFileName configDir( wxFileName::GetTempDir(), wxEmptyString );
+        configDir.AppendDir( wxT( "kicad-sch-dump-config" ) );
+        configDir.Mkdir( wxS_DIR_DEFAULT, wxPATH_MKDIR_FULL );
+
+        wxSetEnv( wxT( "KICAD_CONFIG_HOME" ), configDir.GetPath() );
+    }
+
+    if( !wxGetEnv( wxT( "KICAD_INHIBIT_SETTINGS_WRITES" ), nullptr ) )
+        wxSetEnv( wxT( "KICAD_INHIBIT_SETTINGS_WRITES" ), wxT( "1" ) );
 
     // Standalone tools have to stand the program singletons up themselves. Order
     // matters: SetPgm before InitPgm, and the settings have to be registered

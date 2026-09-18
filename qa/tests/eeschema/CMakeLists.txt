@@ -226,6 +226,10 @@ set( QA_EESCHEMA_SRCS
     test_sch_commit.cpp
     test_shape_corner_radius.cpp
     test_sch_group.cpp
+
+    # The non-wx host seam and its C ABI (eeschema/host/).
+    test_sch_host.cpp
+
     test_pin_numbers.cpp
     test_pin_map.cpp
     test_pin_map_roundtrip.cpp

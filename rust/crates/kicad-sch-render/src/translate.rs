@@ -145,6 +145,9 @@ struct Emitter {
     bounds: WorldRect,
     stats: Stats,
     scratch: Vec<[f64; 2]>,
+    /// The nearest depth anything was drawn at, which is what decides where a
+    /// whole group sits relative to its neighbours.
+    min_depth: f64,
 }
 
 impl Emitter {
@@ -155,6 +158,7 @@ impl Emitter {
             bounds: WorldRect::EMPTY,
             stats: Stats::default(),
             scratch: Vec::new(),
+            min_depth: f64::INFINITY,
         }
     }
 
@@ -172,6 +176,9 @@ impl Emitter {
 
     fn push(&mut self, depth: f64, prim: Prim) {
         self.stats.primitives += 1;
+        if depth < self.min_depth {
+            self.min_depth = depth;
+        }
         self.pending.push(Pending { depth, prim });
     }
 
@@ -183,7 +190,7 @@ impl Emitter {
     /// fills and strokes collapse into two batches instead of alternating. It
     /// is *not* safe across the frame body, where `KIGFX::VIEW` has already
     /// chosen the order.
-    fn finish(mut self, sort_by_depth: bool) -> (Geometry, WorldRect, Stats) {
+    fn finish(mut self, sort_by_depth: bool) -> (Geometry, WorldRect, Stats, f64) {
         if sort_by_depth {
             // Larger depth is farther away and must be painted first. A stable
             // sort keeps stream order within one depth.
@@ -206,7 +213,7 @@ impl Emitter {
         let geometry = builder.finish();
         self.stats.batches = geometry.batches.len();
         self.stats.points = geometry.point_count();
-        (geometry, self.bounds, self.stats)
+        (geometry, self.bounds, self.stats, self.min_depth)
     }
 }
 
@@ -293,11 +300,25 @@ fn apply<'a>(
         }
 
         // -- structural ----------------------------------------------------
-        Command::DrawGroup { id } => {
+        Command::DrawGroup {
+            id,
+            color_override,
+            depth_override,
+        } => {
             if let Some(body) = view.group_body(id) {
                 // A nested group inherits the state at the reference point,
-                // which is what `GAL::DrawGroup` does.
+                // which is what `GAL::DrawGroup` does, plus whatever the
+                // replay overrides.
+                let saved = state.clone();
+                if let Some(c) = color_override {
+                    state.stroke_color = c;
+                    state.fill_color = c;
+                }
+                if let Some(d) = depth_override {
+                    state.layer_depth = d;
+                }
                 replay(view, body, state, stack, em, visible);
+                *state = saved;
             }
         }
         Command::ClearScreen { color } => {
@@ -877,6 +898,10 @@ pub struct GroupGeometry {
     pub anchor: [f64; 2],
     /// Pixels per world unit this geometry was flattened at.
     pub scale: f64,
+    /// The nearest layer depth anything in the group was drawn at, which is
+    /// where the group as a whole sits among its neighbours. Infinite when the
+    /// group drew nothing.
+    pub min_depth: f64,
     /// What the pass cost.
     pub stats: Stats,
 }
@@ -912,12 +937,13 @@ pub fn translate_group(view: &StreamView<'_>, id: u32, scale: f64) -> Option<Gro
         &visible,
     );
 
-    let (geometry, bounds, stats) = em.finish(true);
+    let (geometry, bounds, stats, min_depth) = em.finish(true);
     Some(GroupGeometry {
         geometry,
         bounds,
         anchor,
         scale,
+        min_depth,
         stats,
     })
 }
@@ -965,9 +991,17 @@ pub enum FrameItem {
     /// Geometry recorded directly in the frame body, already in screen pixels.
     Geometry(Geometry),
     /// A reference to a cached group.
+    ///
+    /// The overrides are carried rather than applied: substituting a colour at
+    /// paint time costs nothing, whereas baking it into the geometry would
+    /// throw away the cached tessellation every time the selection changed.
     Group {
         /// The group's id.
         id: u32,
+        /// Replaces every colour in the group for this replay.
+        color_override: Option<Color>,
+        /// Replaces the group's layer depth for this replay.
+        depth_override: Option<f64>,
     },
 }
 
@@ -985,7 +1019,7 @@ impl Frame {
     /// duplicates kept.
     pub fn referenced_groups(&self) -> impl Iterator<Item = u32> + '_ {
         self.items.iter().filter_map(|i| match i {
-            FrameItem::Group { id } => Some(*id),
+            FrameItem::Group { id, .. } => Some(*id),
             FrameItem::Geometry(_) => None,
         })
     }
@@ -1009,22 +1043,32 @@ pub fn translate_frame(
 
     for inst in view.frame() {
         frame.stats.commands += 1;
-        if let Command::DrawGroup { id } = inst.command {
+        if let Command::DrawGroup {
+            id,
+            color_override,
+            depth_override,
+        } = inst.command
+        {
             // Close the run of direct geometry so that the group lands between
             // the commands that surround it, not after all of them.
-            let (geometry, _, stats) = std::mem::replace(&mut em, Emitter::new(proj)).finish(false);
+            let (geometry, _, stats, _) =
+                std::mem::replace(&mut em, Emitter::new(proj)).finish(false);
             frame.stats.add(&stats);
             frame.stats.commands -= stats.commands;
             if !geometry.is_empty() {
                 frame.items.push(FrameItem::Geometry(geometry));
             }
-            frame.items.push(FrameItem::Group { id });
+            frame.items.push(FrameItem::Group {
+                id,
+                color_override,
+                depth_override,
+            });
             continue;
         }
         apply(view, inst, &mut state, &mut stack, &mut em, visible);
     }
 
-    let (geometry, _, stats) = em.finish(false);
+    let (geometry, _, stats, _) = em.finish(false);
     frame.stats.add(&stats);
     frame.stats.commands -= stats.commands;
     if !geometry.is_empty() {
@@ -1076,7 +1120,7 @@ pub fn measure_group(view: &StreamView<'_>, id: u32) -> WorldRect {
         }
         apply(view, inst, &mut state, &mut stack, &mut em, &WorldRect::EMPTY);
     }
-    let (_, bounds, _) = em.finish(false);
+    let (_, bounds, _, _) = em.finish(false);
     // Half a stroke width spills outside the centreline on every side.
     bounds.inflated(widest * 0.5)
 }
