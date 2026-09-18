@@ -436,6 +436,16 @@ What was actually run, in that shell, with no extra `-D` flags:
 This is a later state of the branch than §4's baseline; the two failures recorded
 there do not reproduce here.
 
+One flaky failure did, and is fixed rather than recorded:
+`HttpLibPlugin/EnumerateSymbolLibMaterializesFields` hung about one run in three,
+in `SCH_IO_HTTP_LIB::~SCH_IO_HTTP_LIB` → `std::thread::join()`.
+`stopBackgroundRefresh()` cleared its `m_refreshRunning` flag without holding
+`m_refreshMutex`, so a `notify_all()` landing between the worker's predicate check
+and its wait was lost and the worker then slept out its whole refresh interval.
+Setting the flag under the lock is the fix; six consecutive runs pass. Unrelated to
+this work beyond having blocked a clean suite — and it is a hang a user with an
+HTTP library could hit on closing a project, not only a test.
+
 Getting a macOS build to configure and compile needed four fixes in the tree. All of
 them are platform bugs that were simply never exercised, not nix workarounds:
 
