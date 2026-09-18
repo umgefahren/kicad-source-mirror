@@ -178,13 +178,13 @@ pub fn demo_stream() -> Stream {
     b.group(c1, 1, |g| {
         g.set_stroke_color(OUTLINE);
         g.set_line_width(0.45 * MM);
-        g.segment([44.0 * MM, 86.0 * MM], [56.0 * MM, 86.0 * MM], 0.45 * MM);
-        g.segment([44.0 * MM, 90.0 * MM], [56.0 * MM, 90.0 * MM], 0.45 * MM);
+        g.segment([26.0 * MM, 60.0 * MM], [38.0 * MM, 60.0 * MM], 0.45 * MM);
+        g.segment([26.0 * MM, 64.0 * MM], [38.0 * MM, 64.0 * MM], 0.45 * MM);
         g.set_stroke_color(PIN);
-        g.segment([50.0 * MM, 78.0 * MM], [50.0 * MM, 86.0 * MM], 0.25 * MM);
-        g.segment([50.0 * MM, 90.0 * MM], [50.0 * MM, 100.0 * MM], 0.25 * MM);
-        stroke_text(g, [58.0 * MM, 84.0 * MM], 3.0 * MM, "C1", FIELD);
-        stroke_text(g, [58.0 * MM, 89.0 * MM], 3.0 * MM, "100N", FIELD);
+        g.segment([32.0 * MM, 52.0 * MM], [32.0 * MM, 60.0 * MM], 0.25 * MM);
+        g.segment([32.0 * MM, 64.0 * MM], [32.0 * MM, 72.0 * MM], 0.25 * MM);
+        stroke_text(g, [40.0 * MM, 58.0 * MM], 3.0 * MM, "C1", FIELD);
+        stroke_text(g, [40.0 * MM, 63.0 * MM], 3.0 * MM, "100N", FIELD);
     });
     drawn.push(c1);
 
@@ -201,10 +201,10 @@ pub fn demo_stream() -> Stream {
             ],
             0.3 * MM,
         );
-        g.segment([50.0 * MM, 48.0 * MM], [50.0 * MM, 78.0 * MM], 0.3 * MM);
+        g.segment([32.0 * MM, 48.0 * MM], [32.0 * MM, 52.0 * MM], 0.3 * MM);
         g.set_is_fill(true);
         g.set_fill_color(WIRE);
-        for x in [50.0_f64, 78.0, 90.0] {
+        for x in [32.0_f64, 78.0, 90.0] {
             g.circle([x * MM, 48.0 * MM], 0.65 * MM);
         }
         g.set_is_fill(false);
@@ -224,7 +224,7 @@ pub fn demo_stream() -> Stream {
     drawn.push(rail);
 
     // --- ground symbols ------------------------------------------------------
-    for (x, y) in [(50.0_f64, 100.0_f64), (165.5, 96.0), (78.0, 76.0), (90.0, 76.0)] {
+    for (x, y) in [(32.0_f64, 72.0_f64), (165.5, 96.0), (78.0, 76.0), (90.0, 76.0)] {
         let gnd = id();
         b.group(gnd, 1, |g| {
             g.set_stroke_color(WIRE);

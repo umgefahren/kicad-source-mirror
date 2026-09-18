@@ -734,7 +734,7 @@ impl SchematicShell {
             .child(
                 Button::new("tb-grid")
                     .ghost()
-                    .small()
+                    .with_size(px(30.))
                     .icon(IconName::Grid2x2)
                     .label(grid_label)
                     .tooltip("Next grid size")
@@ -743,7 +743,7 @@ impl SchematicShell {
             .child(
                 Button::new("tb-units")
                     .ghost()
-                    .small()
+                    .with_size(px(30.))
                     .icon(IconName::Ruler)
                     .label(self.units.suffix())
                     .tooltip("Switch units")
@@ -752,7 +752,7 @@ impl SchematicShell {
             .child(
                 Button::new("tb-zoom-level")
                     .ghost()
-                    .small()
+                    .with_size(px(30.))
                     .label(format!("{:.0}%", zoom * 100.))
                     .tooltip("Actual size")
                     .on_click(dispatch(Box::new(ZoomActualSize))),
@@ -761,7 +761,7 @@ impl SchematicShell {
             .child(
                 Button::new("tb-stats")
                     .ghost()
-                    .small()
+                    .with_size(px(30.))
                     .icon(IconName::Activity)
                     .selected(stats_on)
                     .tooltip("Frame time readout")
@@ -770,7 +770,7 @@ impl SchematicShell {
             .child(
                 Button::new("tb-theme")
                     .ghost()
-                    .small()
+                    .with_size(px(30.))
                     .icon(if dark { IconName::Sun } else { IconName::Moon })
                     .tooltip("Dark / light theme")
                     .on_click(dispatch(Box::new(ToggleTheme))),
@@ -778,7 +778,7 @@ impl SchematicShell {
             .child(
                 Button::new("tb-palette")
                     .ghost()
-                    .small()
+                    .with_size(px(30.))
                     .icon(IconName::Search)
                     .tooltip("Command palette")
                     .on_click(dispatch(Box::new(OpenCommandPalette))),
@@ -792,7 +792,7 @@ impl SchematicShell {
             .id("tool-palette")
             .test_support()
             .v_flex()
-            .w(px(44.))
+            .w(px(46.))
             .flex_shrink_0()
             .items_center()
             .gap_0p5()
@@ -821,6 +821,7 @@ impl SchematicShell {
                     .child(
                         Button::new(spec.button_id)
                             .ghost()
+                            .with_size(px(32.))
                             .icon(spec.icon)
                             // `selected` styles it; `toggled` is what reaches
                             // the accessibility tree as aria-pressed, which is
@@ -1018,6 +1019,21 @@ impl Focusable for SchematicShell {
 impl Render for SchematicShell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.stats.tick();
+
+        // The theme is a gpui global and anything can change it — a host, a
+        // settings dialog, the system appearance. The canvas palette is not
+        // part of that global, so the shell reconciles the two here rather than
+        // only when its own toggle is used.
+        let mode = Theme::global(cx).mode;
+        if mode != self.theme_mode {
+            self.theme_mode = mode;
+            let palette = CanvasPalette::for_mode(mode);
+            self.canvas.update(cx, |canvas, cx| {
+                canvas.set_palette(palette);
+                cx.notify();
+            });
+        }
+
         if self.free_run {
             // Free-runs at the display rate: Wayland drives this from real
             // frame callbacks, X11 from the RandR refresh timer.
@@ -1080,7 +1096,10 @@ fn action_button(
     let for_tooltip = action.boxed_clone();
     Button::new(id)
         .ghost()
-        .small()
+        // An explicit size rather than `small()`: the icon is three quarters of
+        // it, and the library's small preset leaves a 12 px glyph that is all
+        // but invisible on a light background.
+        .with_size(px(30.))
         .icon(icon)
         .accessibility_label(tooltip)
         .tooltip_with_action(tooltip, for_tooltip.as_ref(), None)

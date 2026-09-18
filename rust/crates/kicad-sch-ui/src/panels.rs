@@ -235,7 +235,7 @@ impl Render for HierarchyPanel {
                         let label = item.label.clone();
                         let design = design.clone();
                         let icon = if item.is_folder() {
-                            IconName::Frame
+                            IconName::Folder
                         } else {
                             IconName::Component
                         };
