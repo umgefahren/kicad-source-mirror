@@ -159,6 +159,61 @@ fn a_polygon_hole_is_wound_against_its_outline() {
 }
 
 #[test]
+fn a_hole_is_stroked_as_well_as_subtracted_when_stroking_is_on() {
+    // `GAL::DrawPolygon` strokes every contour of a SHAPE_POLY_SET, holes
+    // included: the hole's edge is as visible as the outline's. Subtracting it
+    // from the fill and then not drawing its edge would lose a line.
+    let c = camera();
+    let o = c.center();
+    let outline = [
+        [o[0], o[1]],
+        [o[0] + 4.0 * MM, o[1]],
+        [o[0] + 4.0 * MM, o[1] + 4.0 * MM],
+        [o[0], o[1] + 4.0 * MM],
+    ];
+    let hole = [
+        [o[0] + MM, o[1] + MM],
+        [o[0] + 3.0 * MM, o[1] + MM],
+        [o[0] + 3.0 * MM, o[1] + 3.0 * MM],
+        [o[0] + MM, o[1] + 3.0 * MM],
+    ];
+
+    let mut b = StreamBuilder::new();
+    b.set_is_fill(true);
+    b.set_is_stroke(true);
+    b.set_line_width(0.1 * MM);
+    b.polygon(&outline);
+    b.polygon_hole(&hole);
+    let s = b.finish().expect("valid");
+
+    let frame = frame_of(&s, &c);
+    let g = only_geometry(&frame);
+
+    // One fill carrying both contours, and one stroke batch carrying both
+    // edges: the hole reached the fill it belongs to even though a stroke was
+    // emitted in between.
+    let fills: Vec<_> = g
+        .batches
+        .iter()
+        .filter_map(|b| match b {
+            Batch::Fill { contours, .. } => Some(contours.len()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(fills, vec![2], "the hole did not reach its outline's fill");
+
+    let stroked: usize = g
+        .batches
+        .iter()
+        .filter_map(|b| match b {
+            Batch::Stroke { polylines, .. } => Some(polylines.len()),
+            _ => None,
+        })
+        .sum();
+    assert_eq!(stroked, 2, "the hole's own edge was not stroked");
+}
+
+#[test]
 fn a_hole_with_no_outline_before_it_is_dropped_not_filled() {
     let c = camera();
     let o = c.center();
