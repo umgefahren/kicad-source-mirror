@@ -148,6 +148,14 @@ struct Emitter {
     /// The nearest depth anything was drawn at, which is what decides where a
     /// whole group sits relative to its neighbours.
     min_depth: f64,
+    /// Index in `pending` of the filled outline that subsequent `HOLE`
+    /// contours belong to.
+    ///
+    /// Tracked explicitly rather than looked for at the back of the list,
+    /// because with stroking on an outline emits a fill *and* a stroke, and
+    /// each hole emits a stroke of its own, so the fill is soon several
+    /// entries back.
+    open_fill: Option<usize>,
 }
 
 impl Emitter {
@@ -159,6 +167,7 @@ impl Emitter {
             stats: Stats::default(),
             scratch: Vec::new(),
             min_depth: f64::INFINITY,
+            open_fill: None,
         }
     }
 
@@ -706,40 +715,7 @@ fn emit_contour(
     points: Vec<[f32; 2]>,
     hole: bool,
 ) {
-    if hole {
-        if let Some(Pending {
-            prim: Prim::Fill { contours, .. },
-            ..
-        }) = em.pending.last_mut()
-        {
-            let outline_sign = contours
-                .first()
-                .map(|c| signed_area2(&c.points))
-                .unwrap_or(0.0);
-            let mut points = points;
-            if signed_area2(&points) * outline_sign > 0.0 {
-                points.reverse();
-            }
-            contours.push(Contour { points });
-            return;
-        }
-        // A hole with no outline before it is a malformed contour run. Drop it
-        // rather than painting a solid shape where a hole was meant.
-        return;
-    }
-
-    if state.is_fill {
-        em.push(
-            depth,
-            Prim::Fill {
-                color: state.fill_color.to_packed(),
-                contours: vec![Contour {
-                    points: points.clone(),
-                }],
-            },
-        );
-    }
-    if state.is_stroke {
+    let stroke = |em: &mut Emitter, points: Vec<[f32; 2]>| {
         let w = stroke_width_px(state.line_width, state, &em.proj);
         em.push(
             depth,
@@ -752,6 +728,58 @@ fn emit_contour(
                 },
             },
         );
+    };
+
+    if hole {
+        let mut points = points;
+        if state.is_fill {
+            let slot = match em.open_fill {
+                Some(i) => em.pending.get_mut(i),
+                None => None,
+            };
+            if let Some(Pending {
+                prim: Prim::Fill { contours, .. },
+                ..
+            }) = slot
+            {
+                let outline_sign = contours
+                    .first()
+                    .map(|c| signed_area2(&c.points))
+                    .unwrap_or(0.0);
+                if signed_area2(&points) * outline_sign > 0.0 {
+                    points.reverse();
+                }
+                contours.push(Contour {
+                    points: points.clone(),
+                });
+            }
+            // A hole with no outline before it is a malformed contour run.
+            // Nothing is added to the fill, so no solid shape appears where a
+            // hole was meant; its edge is still stroked below if stroking is on,
+            // because that edge is visible either way.
+        }
+        if state.is_stroke {
+            stroke(em, points);
+        }
+        return;
+    }
+
+    if state.is_fill {
+        em.open_fill = Some(em.pending.len());
+        em.push(
+            depth,
+            Prim::Fill {
+                color: state.fill_color.to_packed(),
+                contours: vec![Contour {
+                    points: points.clone(),
+                }],
+            },
+        );
+    } else {
+        em.open_fill = None;
+    }
+    if state.is_stroke {
+        stroke(em, points);
     }
 }
 
