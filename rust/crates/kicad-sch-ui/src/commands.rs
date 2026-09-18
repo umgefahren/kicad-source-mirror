@@ -668,7 +668,11 @@ fn collect(path: &str, items: &'static [MenuEntry], out: &mut Vec<(String, Comma
 pub fn key_bindings() -> (Vec<KeyBinding>, Vec<&'static str>) {
     let mut bindings = Vec::new();
     let mut rejected = Vec::new();
-    let mut bound: Vec<&'static str> = Vec::new();
+    // Escape is reserved before the loop starts. It is the one keystroke with
+    // two claimants — cancelling the tool, and the Inspect menu's "Clear Net
+    // Highlighting" — and cancelling has to win, or Escape stops being an
+    // escape. Seeding the set is how the loop is told not to hand it out.
+    let mut bound: Vec<&'static str> = vec!["escape"];
 
     for (_, spec) in all_commands() {
         let Some(keys) = key_of(&spec) else { continue };
@@ -695,20 +699,16 @@ pub fn key_bindings() -> (Vec<KeyBinding>, Vec<&'static str>) {
         }
     }
 
-    // Escape is the one key with two meanings: it cancels the tool, and the
-    // Inspect menu also lists it for clearing net highlighting. Cancelling
-    // wins, so bind it here rather than letting menu order decide.
-    if !bound.contains(&"escape") {
-        if let Ok(binding) = KeyBinding::load(
-            "escape",
-            ShellCommand::CancelTool.action(),
-            None,
-            false,
-            None,
-            &gpui_kit::DummyKeyboardMapper,
-        ) {
-            bindings.push(binding);
-        }
+    match KeyBinding::load(
+        "escape",
+        ShellCommand::CancelTool.action(),
+        None,
+        false,
+        None,
+        &gpui_kit::DummyKeyboardMapper,
+    ) {
+        Ok(binding) => bindings.push(binding),
+        Err(_) => rejected.push("escape"),
     }
 
     (bindings, rejected)
@@ -747,6 +747,11 @@ mod tests {
             })
             .collect();
         assert_eq!(escape.len(), 1, "escape bound {} times", escape.len());
+        assert_eq!(
+            escape[0].action().name(),
+            ShellCommand::CancelTool.action().name(),
+            "escape has to cancel the tool, not clear net highlighting"
+        );
     }
 
     #[test]

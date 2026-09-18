@@ -189,17 +189,27 @@ fn every_tool_button_activates_its_tool(cx: &mut TestAppContext) {
     }
 }
 
+/// The palette buttons have to announce which tool is active, not merely look
+/// different: that is what a screen reader reads, and it is the only handle a
+/// test has on the palette's appearance.
 #[gpui_kit::test]
-fn the_active_tool_button_reads_as_selected(cx: &mut TestAppContext) {
+fn the_active_tool_button_announces_itself(cx: &mut TestAppContext) {
     let harness = open(cx);
     click(cx, &harness, "tool-wire");
     cx.update_window(harness.window, |_, window, cx| {
         window.render_frame(cx);
-        assert_eq!(window.find("tool-wire").selected(), Some(true));
-        assert_eq!(window.find("tool-bus").selected(), Some(false));
-        // The accessibility label is what a screen reader announces, so it has
-        // to be the tool's name and not its element id.
+        assert_eq!(window.find("tool-wire").checked(), Some(true));
+        assert_eq!(window.find("tool-bus").checked(), Some(false));
+        // The accessibility label is the tool's name, not its element id.
         assert_eq!(window.find("tool-wire").label(), Some("Draw Wire"));
+    })
+    .expect("window is live");
+
+    click(cx, &harness, "tool-bus");
+    cx.update_window(harness.window, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find("tool-wire").checked(), Some(false));
+        assert_eq!(window.find("tool-bus").checked(), Some(true));
     })
     .expect("window is live");
 }
@@ -496,11 +506,14 @@ fn the_left_dock_collapses_and_comes_back(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn dragging_the_dock_handle_resizes_the_panel(cx: &mut TestAppContext) {
     let harness = open(cx);
-    let (handle_bounds, before) = cx
+    // The dock's resize handle is drawn by gpui-base and is not registered in
+    // the accessibility tree, so its position is derived: it is the last few
+    // pixels of the dock, and the dock starts where the tool palette ends.
+    let (palette, before) = cx
         .update_window(harness.window, |_, window, cx| {
             window.render_frame(cx);
             (
-                window.find("resize-handle-left").bounds(),
+                window.find("tool-palette").bounds(),
                 harness
                     .shell
                     .read(cx)
@@ -512,7 +525,10 @@ fn dragging_the_dock_handle_resizes_the_panel(cx: &mut TestAppContext) {
         .expect("window is live");
     let before = before.expect("the left dock has a size");
 
-    let from = handle_bounds.center();
+    let from = Point {
+        x: palette.origin.x + palette.size.width + before - px(1.5),
+        y: palette.center().y,
+    };
     let to = Point {
         x: from.x + px(90.),
         y: from.y,
@@ -591,16 +607,26 @@ fn opening_a_menu_marks_it_and_draws_a_popup(cx: &mut TestAppContext) {
 
     cx.update_window(harness.window, |_, window, cx| {
         window.render_frame(cx);
-        let mut bar = window.within("menu-bar");
-        let file = bar.within(0_usize);
-        assert_eq!(
-            file.find("menu").selected(),
-            Some(true),
-            "the File menu should report itself open"
-        );
+        // The popup is drawn by gpui-component and is not in the
+        // accessibility tree, so the evidence that it opened is the scene: a
+        // popover panel, its rows and its keybinding chips are all new quads.
         assert!(
-            window.painted_quads().len() > quads_before,
-            "an open menu has to add to the scene"
+            window.painted_quads().len() > quads_before + 5,
+            "an open menu has to add to the scene: {} -> {}",
+            quads_before,
+            window.painted_quads().len()
+        );
+    })
+    .expect("window is live");
+
+    // Leave the menu closed. gpui's test harness fails a test that exits with
+    // a live entity handle, and an open PopupMenu is one.
+    press(cx, &harness, "escape");
+    cx.update_window(harness.window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window.painted_quads().len() <= quads_before + 5,
+            "the menu should have closed again"
         );
     })
     .expect("window is live");
@@ -673,6 +699,18 @@ fn the_canvas_context_menu_opens_on_a_right_click(cx: &mut TestAppContext) {
         "the host hears the right click as well: {:?}",
         harness.sink.events()
     );
+
+    // Dismiss it: an open PopupMenu is a live entity handle, and the harness
+    // fails any test that exits holding one.
+    press(cx, &harness, "escape");
+    cx.update_window(harness.window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window.painted_quads().len() <= quads_before,
+            "the context menu should have closed again"
+        );
+    })
+    .expect("window is live");
 }
 
 #[gpui_kit::test]

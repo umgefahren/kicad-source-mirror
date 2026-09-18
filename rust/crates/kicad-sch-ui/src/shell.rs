@@ -809,7 +809,12 @@ impl SchematicShell {
                         Button::new(spec.button_id)
                             .ghost()
                             .icon(spec.icon)
+                            // `selected` styles it; `toggled` is what reaches
+                            // the accessibility tree as aria-pressed, which is
+                            // both correct for a tool button and the only way
+                            // a test can see which tool is active from outside.
                             .selected(active == spec.tool)
+                            .toggled(active == spec.tool)
                             .accessibility_label(spec.label)
                             .tooltip(tooltip)
                             .on_click(dispatch(action)),
@@ -917,13 +922,21 @@ impl SchematicShell {
 
     fn render_palette(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
+        // The palette's callbacks outlive this render, so they reach the shell
+        // through its own entity rather than borrowing `self`.
+        let on_confirm = cx.entity();
+        let on_cancel = cx.entity();
         let mut command = Command::new(&self.command_state)
             .placeholder("Type a command...")
             .searchable(true)
             .filterable(true)
             .max_h(px(420.))
-            .on_confirm(|_, _, _| {})
-            .on_cancel(|_, _| {});
+            .on_confirm(move |_, _, cx| {
+                on_confirm.update(cx, |shell, cx| shell.close_palette(cx));
+            })
+            .on_cancel(move |_, cx| {
+                on_cancel.update(cx, |shell, cx| shell.close_palette(cx));
+            });
 
         let mut grouped: Vec<(String, Vec<CommandItem>)> = Vec::new();
         for (path, spec) in commands::all_commands() {
