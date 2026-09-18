@@ -474,9 +474,17 @@ fn eval_count(expr: &str, cmd: &kgds_cmd) -> u64 {
     if let Some((lhs, rhs)) = expr.split_once('*') {
         let l = eval_count(lhs, cmd);
         let r = eval_count(rhs, cmd);
-        // Deliberately computed in u64, where the C function uses uint32_t; see
-        // the note on `CoordRef`.
         return l * r;
+    }
+    // The header factors point runs through a helper so the doubling can be
+    // done wide and saturated; evaluate it the same way.
+    if let Some(rest) = expr.strip_prefix("kgds_point_run_scalars") {
+        let inner = rest
+            .trim()
+            .strip_prefix('(')
+            .and_then(|r| r.strip_suffix(')'))
+            .unwrap_or_else(|| panic!("malformed kgds_point_run_scalars call {expr:?}"));
+        return (2 * eval_count(inner, cmd)).min(u32::MAX as u64);
     }
     if let Some(slot) = expr.trim().strip_prefix("aCmd->arg") {
         return match slot.trim() {

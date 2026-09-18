@@ -437,7 +437,12 @@ pub fn coord_refs(cmd: &kgds_cmd) -> CoordRefs {
 
     // A point run holds two scalars per point; computed in u64 so that a
     // hostile count fails a range check rather than wrapping into a small one.
-    let run = |n: u32| -> u64 { 2 * (n as u64) };
+    // Mirrors kgds_point_run_scalars() in the C header: two scalars per point,
+    // computed wide and saturated at u32::MAX. The saturation is not a detail
+    // to "improve" on — both sides must agree on the number for the same
+    // command, and a count that large is rejected by every bounds check anyway,
+    // which is the point of it.
+    let run = |n: u32| -> u64 { (2u64 * n as u64).min(u32::MAX as u64) };
 
     match op {
         Op::SetLineWidth | Op::SetMinLineWidth | Op::SetLayerDepth | Op::Rotate => {
