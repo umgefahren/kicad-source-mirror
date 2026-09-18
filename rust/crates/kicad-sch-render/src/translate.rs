@@ -675,6 +675,9 @@ fn emit_closed_shape(
     depth: f64,
     points: Vec<[f32; 2]>,
 ) {
+    // A circle or rectangle is not part of a contour run, so a `HOLE` that
+    // followed one would not belong to it.
+    em.open_fill = None;
     if state.is_fill {
         em.push(
             depth,

@@ -126,10 +126,13 @@ fn the_grid_and_background_reach_the_scene_as_quads(cx: &mut TestAppContext) {
         .count();
     assert!(grid_quads > 5, "only {grid_quads} grid marks were painted");
 
-    // Every grid mark is about one pixel across, as the stream asked for.
+    // Quad bounds reach the scene in `ScaledPixels`, already multiplied by the
+    // window's scale factor. Nothing should have gone non-finite on the way.
     for q in quads.iter() {
-        let w = q.bounds.size.width.to_f64();
+        let w = q.bounds.size.width.as_f32();
+        let h = q.bounds.size.height.as_f32();
         assert!(w.is_finite() && w >= 0.0, "a quad had a bad width: {w}");
+        assert!(h.is_finite() && h >= 0.0, "a quad had a bad height: {h}");
     }
 }
 
