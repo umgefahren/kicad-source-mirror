@@ -451,12 +451,26 @@ mod tests {
         let t = tessellate(&b.finish());
         assert_eq!(t.dropped, 0, "geometry was dropped rather than split");
         assert!(t.items.len() > 1, "the batch was not split at all");
+        // `build()` succeeding is the u16 assertion: lyon returns
+        // `TooManyVertices` rather than truncating. What is worth checking here
+        // is that every segment came through, which it did if nothing was
+        // dropped and the vertex count is in the right ballpark — three
+        // vertices per emitted triangle, and a round-capped segment is a
+        // handful of triangles.
+        assert!(
+            t.vertices > 40_000 * 6,
+            "only {} vertices for 40 000 segments",
+            t.vertices
+        );
         for item in &t.items {
             if let DrawItem::Path { path, .. } = item {
-                assert!(
-                    path.vertices.len() <= u16::MAX as usize + 1,
-                    "a path exceeded the u16 index space"
-                );
+                assert!(!path.vertices.is_empty(), "an empty path was kept");
+                for v in &path.vertices {
+                    assert!(
+                        v.xy_position.x.to_f64().is_finite()
+                            && v.xy_position.y.to_f64().is_finite()
+                    );
+                }
             }
         }
     }

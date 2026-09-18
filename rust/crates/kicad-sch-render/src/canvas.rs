@@ -279,6 +279,15 @@ impl SchematicRenderer {
             if groups.is_empty() {
                 return;
             }
+            // `KIGFX::VIEW` already emits replays far-side first, so the run is
+            // normally sorted already and the whole reorder can be skipped. It
+            // is only when a selection carries a depth override that anything
+            // actually moves.
+            if depths.windows(2).all(|w| w[0] >= w[1]) {
+                items.append(groups);
+                depths.clear();
+                return;
+            }
             let mut order: Vec<usize> = (0..groups.len()).collect();
             order.sort_by(|a, b| {
                 depths[*b]

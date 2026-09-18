@@ -76,11 +76,18 @@ struct Entry {
 
 /// Default ceiling on cached vertices.
 ///
-/// A `PathVertex<Pixels>` is 32 bytes, so two million of them is about 64 MB —
-/// enough for a large sheet several times over, and bounded so that zooming
-/// through a document cannot grow the cache without limit as old levels of
-/// detail fall out of use.
-pub const DEFAULT_VERTEX_BUDGET: usize = 2_000_000;
+/// A `PathVertex<Pixels>` is 32 bytes and lyon emits three per triangle, so
+/// four million of them is about 128 MB. A round-capped segment is roughly
+/// thirty-odd such vertices, which puts the budget at something over a hundred
+/// thousand strokes — more than a screenful at any zoom.
+///
+/// The product stays bounded for a reason worth stating: flattening tolerance
+/// is measured in pixels, so zoomed out a symbol's curves collapse to a few
+/// chords while zoomed in there are only a few symbols on screen to tessellate.
+/// The budget is the backstop for the middle, not the normal case, and
+/// exceeding it costs a re-tessellation of the least recently used group rather
+/// than anything worse.
+pub const DEFAULT_VERTEX_BUDGET: usize = 4_000_000;
 
 /// Tessellated group geometry, keyed by `(id, serial, lod)`.
 pub struct TessellationCache {
