@@ -141,6 +141,94 @@ BOOST_AUTO_TEST_CASE( StateChangesAreRecordedAndAlsoAppliedToTheBaseClass )
 }
 
 
+BOOST_AUTO_TEST_CASE( EveryRenderStateSetterIsRecorded )
+{
+    // GAL is a concrete class whose virtuals mostly have empty bodies, so a
+    // backend that forgets to override one fails silently: the state changes on
+    // the base class, nothing reaches the stream, and the renderer quietly draws
+    // with stale state. This drives every setter a painter uses and asserts that
+    // each produced its opcode, so a future omission is a test failure rather
+    // than a subtle rendering bug.
+    //
+    // SetMinLineWidth and SetHoverColor were both missed on the first pass and
+    // found only when auditing which GAL methods pcbnew calls. Hence this test.
+    gal.BeginDrawing();
+    gal.SetIsFill( true );
+    gal.SetIsStroke( true );
+    gal.SetFillColor( COLOR4D( 0.0, 0.0, 1.0, 1.0 ) );
+    gal.SetStrokeColor( COLOR4D( 1.0, 0.0, 0.0, 1.0 ) );
+    gal.SetHoverColor( COLOR4D( 0.0, 1.0, 0.0, 1.0 ) );
+    gal.SetLineWidth( 3.0f );
+    gal.SetMinLineWidth( 0.5f );
+    gal.SetLayerDepth( 7.0 );
+    gal.EnableDepthTest( true );
+    gal.SetNegativeDrawMode( true );
+    gal.EndDrawing();
+
+    const kgds_op required[] = { KGDS_OP_SET_IS_FILL,
+                                 KGDS_OP_SET_IS_STROKE,
+                                 KGDS_OP_SET_FILL_COLOR,
+                                 KGDS_OP_SET_STROKE_COLOR,
+                                 KGDS_OP_SET_HOVER_COLOR,
+                                 KGDS_OP_SET_LINE_WIDTH,
+                                 KGDS_OP_SET_MIN_LINE_WIDTH,
+                                 KGDS_OP_SET_LAYER_DEPTH,
+                                 KGDS_OP_ENABLE_DEPTH_TEST,
+                                 KGDS_OP_SET_NEGATIVE_DRAW_MODE };
+
+    for( kgds_op op : required )
+        BOOST_CHECK_MESSAGE( frameCommands( op ).size() == 1, "opcode " << op << " not recorded" );
+
+    const kgds_stream_view view = gal.Publish();
+    const kgds_cmd minWidth = frameCommands( KGDS_OP_SET_MIN_LINE_WIDTH ).front();
+    BOOST_CHECK_EQUAL( view.frame_coords[minWidth.arg0], 0.5 );
+}
+
+
+BOOST_AUTO_TEST_CASE( LayerTargetsAndBlendModesAreRecorded )
+{
+    // pcbnew leans on these far harder than eeschema does: render targets are
+    // switched on almost every layer, and the difference and negative blend
+    // modes drive its layer overlays. Recording them is what will let the same
+    // backend serve pcbnew unchanged.
+    gal.BeginDrawing();
+    gal.SetTarget( TARGET_CACHED );
+    gal.SetTarget( TARGET_OVERLAY );
+    gal.ClearTarget( TARGET_OVERLAY );
+    gal.StartDiffLayer();
+    gal.EndDiffLayer();
+    gal.StartNegativesLayer();
+    gal.EndNegativesLayer();
+    gal.EndDrawing();
+
+    BOOST_CHECK_EQUAL( frameCommands( KGDS_OP_SET_TARGET ).size(), 2 );
+    BOOST_CHECK_EQUAL( frameCommands( KGDS_OP_CLEAR_TARGET ).size(), 1 );
+    BOOST_CHECK_EQUAL( frameCommands( KGDS_OP_START_DIFF_LAYER ).size(), 1 );
+    BOOST_CHECK_EQUAL( frameCommands( KGDS_OP_END_DIFF_LAYER ).size(), 1 );
+    BOOST_CHECK_EQUAL( frameCommands( KGDS_OP_START_NEGATIVES_LAYER ).size(), 1 );
+    BOOST_CHECK_EQUAL( frameCommands( KGDS_OP_END_NEGATIVES_LAYER ).size(), 1 );
+    BOOST_CHECK_EQUAL( gal.GetTarget(), TARGET_OVERLAY );
+}
+
+
+BOOST_AUTO_TEST_CASE( BitmapTextLowersToGeometryThroughTheBaseClass )
+{
+    // pcbnew calls BitmapText; OPENGL_GAL overrides it with a bitmap-font
+    // atlas, but the base implementation resolves it through KIFONT and calls
+    // back into DrawGlyph. Since this backend records glyphs as geometry, it
+    // gets correct text without overriding BitmapText at all.
+    gal.BeginDrawing();
+    gal.SetGlyphSize( VECTOR2I( 100000, 100000 ) );
+    gal.BitmapText( wxT( "R1" ), VECTOR2I( 0, 0 ), ANGLE_0 );
+    gal.EndDrawing();
+
+    const std::size_t glyphRuns =
+            frameCommands( KGDS_OP_POLYLINE ).size() + frameCommands( KGDS_OP_POLYGON ).size();
+
+    BOOST_CHECK_MESSAGE( glyphRuns > 0, "BitmapText produced no geometry" );
+}
+
+
 BOOST_AUTO_TEST_CASE( TransformsAreRecordedInOrder )
 {
     gal.BeginDrawing();

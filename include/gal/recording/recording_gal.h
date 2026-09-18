@@ -146,7 +146,9 @@ public:
     void SetIsStroke( bool aIsStrokeEnabled ) override;
     void SetFillColor( const COLOR4D& aColor ) override;
     void SetStrokeColor( const COLOR4D& aColor ) override;
+    void SetHoverColor( const COLOR4D& aColor ) override;
     void SetLineWidth( float aLineWidth ) override;
+    void SetMinLineWidth( float aLineWidth ) override;
     void SetLayerDepth( double aLayerDepth ) override;
     void EnableDepthTest( bool aEnabled ) override;
 

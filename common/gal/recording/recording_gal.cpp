@@ -488,10 +488,27 @@ void RECORDING_GAL::SetStrokeColor( const COLOR4D& aColor )
 }
 
 
+void RECORDING_GAL::SetHoverColor( const COLOR4D& aColor )
+{
+    GAL::SetHoverColor( aColor );
+    m_stream.Emit( KGDS_OP_SET_HOVER_COLOR, 0, DRAW_STREAM::PackColor( aColor ) );
+}
+
+
 void RECORDING_GAL::SetLineWidth( float aLineWidth )
 {
     GAL::SetLineWidth( aLineWidth );
     m_stream.Emit( KGDS_OP_SET_LINE_WIDTH, 0, m_stream.PushCoord( aLineWidth ) );
+}
+
+
+void RECORDING_GAL::SetMinLineWidth( float aLineWidth )
+{
+    // The floor a stroke width is clamped to after scaling. Without it a
+    // renderer would let hairlines vanish when zoomed out, which is exactly
+    // what this setting exists to prevent.
+    GAL::SetMinLineWidth( aLineWidth );
+    m_stream.Emit( KGDS_OP_SET_MIN_LINE_WIDTH, 0, m_stream.PushCoord( aLineWidth ) );
 }
 
 

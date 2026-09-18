@@ -14,6 +14,7 @@ Start with **`01-plan.md`**. Everything else is supporting detail.
 | `02-gpui-kit-cookbook.md` | How to build against gpui-kit 0.6.1, written from its sources with every non-trivial claim compiled: the real trait signatures, what is and is not possible for custom GPU rendering, the widget inventory, input, text, frame pacing, testing, Linux specifics | Anyone writing gpui code |
 | `03-build-notes.md` | Configuring and building the C++ tree, with the exact dependency list and timings | Anyone building |
 | `04-host-seam.md` | The C++ host that owns a schematic session without a `wxFrame`, the C ABI, and what feeding `TOOL_MANAGER` from Rust would still take | Anyone continuing the migration |
+| `05-porting-guide.md` | **How to do this again for pcbnew.** What is reusable unchanged, what is genuinely different about a board editor, and the traps — including the two designs we got wrong and had to redo | Read before starting the next editor |
 
 Two more places hold the parts that are code rather than prose:
 
