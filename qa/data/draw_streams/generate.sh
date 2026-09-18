@@ -26,17 +26,30 @@ gen() # <source .kicad_sch, relative to the repo root> <output basename>
     "$DUMP" $VIEWPORT --sheet 0 -o "$HERE/$2.kgds" "$ROOT/$1" > "$HERE/$2.txt"
 }
 
-# Each fixture source must be a project ROOT sheet sitting beside its
-# .kicad_pro. Two constraints, both currently real:
-#   - the loader reaches through the project while constructing the SCHEMATIC,
-#     so a schematic with no .kicad_pro beside it is not loadable;
-#   - a child sheet has to be reached through its root's hierarchy rather than
-#     opened directly, so pass the root here and select sheets with --sheet.
+# Pass a project ROOT sheet here. A child sheet has to be reached through its
+# root's hierarchy rather than opened directly, so select sheets with --sheet
+# rather than naming the child file.
+#
+# A sibling .kicad_pro is NOT required: SCH_HOST stands up the empty project
+# when the settings manager has none, which is what a project-less schematic
+# falls back to. api_kitchen_sink below is exactly that case.
+
+# Tier 0 — smoke. Small, one sheet, covers wires, junctions, labels, symbols.
 gen "demos/ecc83/ecc83-pp_v2.kicad_sch"                      ecc83_pp_v2
+
+# Tier 1 — opcode coverage. The only file in the tree that exercises bitmaps,
+# beziers, tables, transforms and text boxes at once, so it is the one that
+# tells a renderer which opcode it is missing.
+gen "qa/data/eeschema/api_kitchen_sink.kicad_sch"            api_kitchen_sink
+
+# Tier 2 — hierarchy: the same screen reached at more than one path.
 gen "demos/complex_hierarchy/complex_hierarchy.kicad_sch"    complex_hierarchy
+
+# Tier 2 — a small, dense analog sheet with simulation fields.
+gen "demos/simulation/sallen_key/sallen_key.kicad_sch"       sallen_key
+
 # Not checked in: at ~1.1 MB its stream is too large to carry in the tree.
 # Generate it locally when a bigger, denser sheet is wanted:
 #   gen "demos/pic_programmer/pic_programmer.kicad_sch"      pic_programmer
-gen "demos/simulation/sallen_key/sallen_key.kicad_sch"       sallen_key
 
 echo "done"

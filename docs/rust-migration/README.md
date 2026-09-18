@@ -66,11 +66,9 @@ What *is* verified, on this branch, in this container:
 * The recording backend's 30 tests pass inside KiCad's own `qa_common`.
 * `kicad-gal` is 56 tests green, `kicad-sch-render` 89, and the Rust shell
   renders those streams in a real gpui window.
-* The wider QA suite is **1351/1353**. Of the two failures, one
-  (`ConnectivityExport/AllegroUsesPublishedNetsAndPreservesDeviceFiles`) is
-  pre-existing on this branch and untouched by this work — nothing here modifies
-  `eeschema/netlist_exporters/` or `eeschema/connectivity/`. The other
-  (`SchHost/LoadAndRenderProducesGeometry`) is ours: the test harness's mock
-  `PGM_BASE` does not initialise the font system, so `SCH_PAINTER` faults
-  drawing text. The same code path works in `kicad-sch-dump`, which sets up a
-  real program object.
+* The eeschema QA suite has **one** failure,
+  `ConnectivityExport/AllegroUsesPublishedNetsAndPreservesDeviceFiles`, which is
+  pre-existing: neither the test nor the exporter it covers differs from
+  `master`, and nothing here modifies `eeschema/netlist_exporters/` or
+  `eeschema/connectivity/`. Everything else passes, including the 16 `SCH_HOST`
+  tests.

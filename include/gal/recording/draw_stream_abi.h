@@ -50,10 +50,14 @@
  * whole thing is therefore relocatable, serialisable to disk unchanged, and
  * readable from Rust with no parsing and no allocation.
  *
- * Coordinates are stored as `double` in KiCad internal units. This matters:
- * internal units are nanometres, and an A0 sheet spans over 1.2e9 of them,
- * which exceeds the 24-bit mantissa of a float. The renderer narrows to f32
- * only after subtracting the camera origin, where the range is small.
+ * Coordinates are stored as `double` in KiCad internal units, and the width
+ * matters. The unit differs per application — a schematic IU is 100 nm
+ * (`SCH_IU_PER_MM`), a board IU is 1 nm (`PCB_IU_PER_MM`) — so a board spans
+ * three orders of magnitude more of them than a sheet does. A 500 mm board is
+ * 5e8 IU against a float's 24-bit mantissa of about 1.7e7, and even an A0 sheet
+ * at 1.19e7 IU sits close enough to that limit for the low bits to matter.
+ * The renderer narrows to f32 only after subtracting the camera origin, where
+ * the remaining range is small.
  *
  * ## Retained groups
  *

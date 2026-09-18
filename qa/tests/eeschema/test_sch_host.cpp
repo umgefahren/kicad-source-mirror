@@ -43,6 +43,7 @@
 
 #include <qa_utils/wx_utils/unit_test_utils.h>
 
+#include <base_units.h>
 #include <gal/recording/draw_stream.h>
 #include <sch_host/sch_host_abi.h>
 #include <sch_screen.h>
@@ -325,12 +326,14 @@ BOOST_AUTO_TEST_CASE( DocumentBoundingBoxIsSane )
     BOOST_CHECK_GT( page.GetWidth(), 0 );
     BOOST_CHECK_GT( page.GetHeight(), 0 );
 
-    // Internal units are 100 nm. The smallest sheet KiCad offers (A5, 210 x 148 mm)
-    // is 2.1e9 IU wide; the largest (A0 / E) is under 1.3e10. Anything outside that
-    // is not a page.
-    BOOST_CHECK_GT( page.GetWidth(), 1000000000 );
-    BOOST_CHECK_LT( page.GetWidth(), 13000000000LL );
-    BOOST_CHECK_GT( page.GetHeight(), 700000000 );
+    // Eeschema's internal unit is 100 nm, so a page is a few million IU, not a few
+    // billion. Bound it by real paper sizes rather than by magic numbers: the
+    // smallest sheet KiCad offers is A5 (210 x 148 mm) and the largest is A0
+    // (1189 x 841 mm). Anything outside that is not a page.
+    BOOST_CHECK_GT( page.GetWidth(), schIUScale.mmToIU( 100.0 ) );
+    BOOST_CHECK_LT( page.GetWidth(), schIUScale.mmToIU( 1300.0 ) );
+    BOOST_CHECK_GT( page.GetHeight(), schIUScale.mmToIU( 100.0 ) );
+    BOOST_CHECK_LT( page.GetHeight(), schIUScale.mmToIU( 1300.0 ) );
 
     // Sheets are landscape by default, and every KiCad paper size is wider than tall
     // in that orientation.

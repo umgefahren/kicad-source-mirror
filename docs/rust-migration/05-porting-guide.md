@@ -199,16 +199,24 @@ The colour and depth overrides therefore ride on the `DRAW_GROUP` command
 (`KGDS_FLAG_GROUP_COLOR`, `KGDS_FLAG_GROUP_DEPTH`). Selection costs no
 re-tessellation and no re-upload. Keep it that way.
 
-### 4.4 Coordinates are nanometres and will not fit in an `f32`
+### 4.4 The internal unit is not the same in both editors
 
-KiCad internal units are nanometres. A large board spans well over 1e9 of them;
-an `f32` has a 24-bit mantissa, about 1.7e7. Narrowing world coordinates to
-`f32` anywhere before subtracting a camera origin produces visible jitter that
-looks like a renderer bug and is not.
+**A schematic IU is 100 nm. A board IU is 1 nm.** `SCH_IU_PER_MM` is 1e4 and
+`PCB_IU_PER_MM` is 1e6 (`include/base_units.h:68-70`). Everything that converts
+between internal units and millimetres — status-bar readouts, grid sizes,
+property panels — is wrong by a factor of 100 if you carry the schematic
+constant into pcbnew. We got this wrong once already, in the opposite
+direction, and it is invisible until someone reads a coordinate.
 
-The stream stores `f64` for exactly this reason. Subtract the origin in `f64`,
-then narrow. This matters *more* for pcbnew than for schematics, because boards
-are physically larger in internal units.
+The consequence for precision is that pcbnew is *harder*, not easier: a 500 mm
+board is 5e8 IU against an `f32`'s 24-bit mantissa of about 1.7e7. Narrowing a
+world coordinate to `f32` anywhere before subtracting a camera origin produces
+visible jitter that looks like a renderer bug and is not. The stream stores
+`f64` for exactly this reason: subtract the origin in `f64`, then narrow.
+
+For reference, an A0 sheet is 1.19e7 schematic IU — already close enough to the
+`f32` limit for the low bits to matter, which is why the rule holds in both
+editors even though the margin differs.
 
 ### 4.5 gpui has no GPU escape hatch — do not go looking
 
