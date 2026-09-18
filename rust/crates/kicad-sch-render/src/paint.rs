@@ -22,9 +22,10 @@
 //!   no tessellation at all.
 
 use gpui::{
-    px, Background, Bounds, PathBuilder, Pixels, Point, Rgba, Size, StrokeOptions, Window,
+    px, Background, Bounds, FillOptions, FillRule, Path, PathBuilder, PathStyle, Pixels, Point,
+    Rgba, Size, StrokeOptions, Window,
 };
-use gpui::{FillOptions, FillRule, Path, PathStyle};
+use lyon_tessellation::{LineCap, LineJoin};
 
 use crate::scene::{Batch, Geometry, PackedColor, PixelRect, Polyline};
 
@@ -171,8 +172,8 @@ fn build_stroke_chunk(
     // schematic's wires and pin lines look like.
     let options = StrokeOptions::default()
         .with_line_width(width_px.max(f32::MIN_POSITIVE))
-        .with_line_cap(gpui::LineCap::Round)
-        .with_line_join(gpui::LineJoin::Round);
+        .with_line_cap(LineCap::Round)
+        .with_line_join(LineJoin::Round);
     let mut builder = PathBuilder::default().with_style(PathStyle::Stroke(options));
     for s in shapes {
         add_polyline(&mut builder, s);

@@ -216,6 +216,108 @@ BOOST_AUTO_TEST_CASE( CompactionRelocatesSurvivingGeometry )
 }
 
 
+/**
+ * Compaction must relocate commands whose coordinate indices do not start at
+ * arg0.
+ *
+ * Most opcodes keep their first coordinate run's index in arg0, but
+ * KGDS_OP_BITMAP keeps an image-table index there and starts its runs at arg1,
+ * and KGDS_OP_SEGMENT_CHAIN keeps a point count in arg1 with its width index in
+ * arg2. A compaction that assumed "run n lives in arg n" destroyed the image
+ * index and left the geometry indices pointing past the end of the arena, which
+ * the consumer would have read straight off the end.
+ */
+BOOST_AUTO_TEST_CASE( CompactionRelocatesNonArg0Indices )
+{
+    DRAW_STREAM stream;
+
+    const int doomed = recordCircle( stream, 1, 2, 3 );
+
+    const std::uint8_t pixel[4] = { 255, 0, 0, 255 };
+
+    // Two images, so that a clobbered index is distinguishable from a correct one.
+    stream.PushImage( 1, 1, pixel, 4 );
+    const std::uint32_t image = stream.PushImage( 1, 1, pixel, 4 );
+
+    const int bitmapGroup = stream.BeginGroup();
+    const double transform[6] = { 10, 11, 12, 13, 14, 15 };
+    const std::uint32_t transformAt = stream.PushCoords( transform, 6 );
+    const std::uint32_t alphaAt = stream.PushCoord( 0.5 );
+    stream.Emit( KGDS_OP_BITMAP, 0, image, transformAt, alphaAt );
+    stream.EndGroup();
+
+    const int chainGroup = stream.BeginGroup();
+    const double points[6] = { 0, 0, 1, 1, 2, 2 };
+    const std::uint32_t pointsAt = stream.PushCoords( points, 6 );
+    const std::uint32_t widthAt = stream.PushCoord( 7.5 );
+    stream.Emit( KGDS_OP_SEGMENT_CHAIN, 0, pointsAt, 3, widthAt );
+    stream.EndGroup();
+
+    // Delete the circle to leave a hole, then reclaim it.
+    stream.DeleteGroup( doomed );
+    stream.Compact();
+
+    const kgds_stream_view view = stream.Publish();
+
+    BOOST_REQUIRE_EQUAL( view.group_count, 2 );
+
+    const kgds_group* bitmap = nullptr;
+    const kgds_group* chain = nullptr;
+
+    for( std::size_t ii = 0; ii < view.group_count; ++ii )
+    {
+        if( view.groups[ii].id == static_cast<std::uint32_t>( bitmapGroup ) )
+            bitmap = &view.groups[ii];
+        else if( view.groups[ii].id == static_cast<std::uint32_t>( chainGroup ) )
+            chain = &view.groups[ii];
+    }
+
+    BOOST_REQUIRE( bitmap && chain );
+
+    const kgds_cmd& bitmapCmd = view.group_cmds[bitmap->first_cmd];
+    BOOST_REQUIRE_EQUAL( bitmapCmd.op, KGDS_OP_BITMAP );
+
+    // arg0 is an image-table index and must survive untouched.
+    BOOST_CHECK_EQUAL( bitmapCmd.arg0, image );
+
+    BOOST_REQUIRE_LE( bitmapCmd.arg1 + 6u, view.group_coord_count );
+    BOOST_REQUIRE_LE( bitmapCmd.arg2 + 1u, view.group_coord_count );
+
+    for( int ii = 0; ii < 6; ++ii )
+        BOOST_CHECK_EQUAL( view.group_coords[bitmapCmd.arg1 + ii], 10.0 + ii );
+
+    BOOST_CHECK_EQUAL( view.group_coords[bitmapCmd.arg2], 0.5 );
+
+    const kgds_cmd& chainCmd = view.group_cmds[chain->first_cmd];
+    BOOST_REQUIRE_EQUAL( chainCmd.op, KGDS_OP_SEGMENT_CHAIN );
+
+    // arg1 is a point count, not an index.
+    BOOST_CHECK_EQUAL( chainCmd.arg1, 3u );
+
+    BOOST_REQUIRE_LE( chainCmd.arg0 + 6u, view.group_coord_count );
+    BOOST_REQUIRE_LE( chainCmd.arg2 + 1u, view.group_coord_count );
+
+    for( int ii = 0; ii < 6; ++ii )
+        BOOST_CHECK_EQUAL( view.group_coords[chainCmd.arg0 + ii], points[ii] );
+
+    BOOST_CHECK_EQUAL( view.group_coords[chainCmd.arg2], 7.5 );
+
+    // And every index in the compacted stream is in range, which is the invariant
+    // the consumer's bounds check relies on.
+    for( std::size_t ii = 0; ii < view.group_cmd_count; ++ii )
+    {
+        kgds_coord_ref refs[KGDS_MAX_COORD_REFS];
+        const int      n = kgds_coord_refs( &view.group_cmds[ii], refs );
+
+        for( int r = 0; r < n; ++r )
+        {
+            BOOST_CHECK_LE( static_cast<std::size_t>( refs[r].start ) + refs[r].count,
+                            view.group_coord_count );
+        }
+    }
+}
+
+
 BOOST_AUTO_TEST_CASE( ClearCacheDropsEverythingRetained )
 {
     DRAW_STREAM stream;

@@ -3692,8 +3692,9 @@ name = "kicad-sch-render"
 version = "0.1.0"
 dependencies = [
  "criterion",
- "gpui-kit",
+ "gpui-pre",
  "kicad-gal",
+ "lyon_tessellation",
 ]
 
 [[package]]

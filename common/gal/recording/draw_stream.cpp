@@ -66,6 +66,81 @@ bool skipPadding( std::istream& aIn, std::size_t aRead )
 
     return static_cast<bool>( aIn );
 }
+
+
+/// The argument slots that can hold a coordinate-arena index.
+constexpr int COORD_ARG_SLOTS = 3;
+
+
+/**
+ * Work out which argument slot each of a command's coordinate runs was read from.
+ *
+ * kgds_coord_refs() says *where* a command's geometry lives, but not *which*
+ * argument slot the index came out of, and those are not the same thing. Most
+ * opcodes keep their first run's index in arg0, their second in arg1 and so on —
+ * but ::KGDS_OP_BITMAP keeps an image-table index in arg0 and starts its runs at
+ * arg1, ::KGDS_OP_SEGMENT_CHAIN keeps a point count in arg1 and its width index
+ * in arg2, and ::KGDS_OP_DRAW_GROUP keeps a group id in arg0 and its optional
+ * depth override in arg2. Compaction has to write each relocated index back into
+ * the slot it came from, so it has to know which one that is.
+ *
+ * Duplicating the ABI's table here is exactly what the shared header exists to
+ * prevent — the two copies would drift, and the symptom would be corrupt
+ * geometry long after the change that caused it. So the mapping is recovered
+ * from the ABI function itself: poke a value that appears nowhere else in the
+ * command into one slot at a time and see which run's start follows it.
+ *
+ * @param aCmd      the command to describe.
+ * @param aRefCount the number of runs kgds_coord_refs() reported for it.
+ * @param aSlots    receives the slot index for each run, or -1 if a run's index
+ *                  came from somewhere this cannot see.
+ */
+void coordRefSlots( const kgds_cmd& aCmd, int aRefCount, int aSlots[KGDS_MAX_COORD_REFS] )
+{
+    for( int r = 0; r < KGDS_MAX_COORD_REFS; ++r )
+        aSlots[r] = -1;
+
+    if( aRefCount <= 0 )
+        return;
+
+    // The probe only works if the value is distinguishable from what the command
+    // already holds. Two candidates are plenty: a command has three slots, so at
+    // least one of any three distinct values is unused.
+    static const std::uint32_t candidates[] = { 0xFEEDFACEu, 0xDEADBEEFu, 0xCAFEBABEu };
+
+    std::uint32_t sentinel = candidates[0];
+
+    for( std::uint32_t candidate : candidates )
+    {
+        if( aCmd.arg0 != candidate && aCmd.arg1 != candidate && aCmd.arg2 != candidate )
+        {
+            sentinel = candidate;
+            break;
+        }
+    }
+
+    for( int slot = 0; slot < COORD_ARG_SLOTS; ++slot )
+    {
+        kgds_cmd probe = aCmd;
+
+        std::uint32_t* const args[COORD_ARG_SLOTS] = { &probe.arg0, &probe.arg1, &probe.arg2 };
+        *args[slot] = sentinel;
+
+        kgds_coord_ref probed[KGDS_MAX_COORD_REFS];
+        const int      n = kgds_coord_refs( &probe, probed );
+
+        // Poking a slot must not change which runs exist; if it did, the slot held
+        // something other than an index and the probe tells us nothing.
+        if( n != aRefCount )
+            continue;
+
+        for( int r = 0; r < n; ++r )
+        {
+            if( probed[r].start == sentinel && aSlots[r] < 0 )
+                aSlots[r] = slot;
+        }
+    }
+}
 } // namespace
 
 
@@ -276,6 +351,11 @@ void DRAW_STREAM::Compact()
             kgds_coord_ref refs[KGDS_MAX_COORD_REFS];
             const int      n = kgds_coord_refs( &cmd, refs );
 
+            int slots[KGDS_MAX_COORD_REFS];
+            coordRefSlots( cmd, n, slots );
+
+            std::uint32_t* const args[COORD_ARG_SLOTS] = { &cmd.arg0, &cmd.arg1, &cmd.arg2 };
+
             for( int r = 0; r < n; ++r )
             {
                 const std::uint32_t moved = static_cast<std::uint32_t>( coords.size() );
@@ -287,23 +367,21 @@ void DRAW_STREAM::Compact()
                     coords.insert( coords.end(), m_groupCoords.begin() + refs[r].start,
                                    m_groupCoords.begin() + refs[r].start + refs[r].count );
                 }
-
-                // The run's index always lives in the same argument slot the
-                // ABI table read it from.
-                switch( r )
+                else
                 {
-                case 0: cmd.arg0 = moved; break;
-                case 1:
-                    // SEGMENT_CHAIN keeps its point count in arg1 and its width
-                    // index in arg2; every other two-run command uses arg1.
-                    if( cmd.op == KGDS_OP_SEGMENT_CHAIN )
-                        cmd.arg2 = moved;
-                    else
-                        cmd.arg1 = moved;
-                    break;
-                case 2: cmd.arg2 = moved; break;
-                default: break;
+                    // A run that does not fit the arena means the stream was already
+                    // damaged. Reserve the space anyway so that the compacted result
+                    // still satisfies "every index is in range", which is the
+                    // invariant the consumer's bounds check relies on. Dropping the
+                    // run instead would leave an index pointing past the end.
+                    coords.resize( coords.size() + refs[r].count );
                 }
+
+                // Write the new index back into the slot the ABI read it from. That
+                // is usually arg0, arg1, arg2 in order -- but not always, and
+                // assuming so silently corrupts the commands where it does not hold.
+                if( slots[r] >= 0 )
+                    *args[slots[r]] = moved;
             }
 
             cmds.push_back( cmd );
