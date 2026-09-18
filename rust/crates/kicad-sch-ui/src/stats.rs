@@ -197,9 +197,13 @@ mod tests {
         assert!((fps - 125.0).abs() < 1.0, "{fps}");
     }
 
+    /// Two stalls in a hundred frames, not one: the 99th percentile of a
+    /// hundred samples is the second-worst by construction, so a single
+    /// outlier is exactly the tail p99 is meant to ignore.
     #[test]
     fn a_long_tail_fails_the_target_even_with_a_good_mean() {
-        let mut intervals = vec![4u64; 99];
+        let mut intervals = vec![4u64; 98];
+        intervals.push(60);
         intervals.push(60);
         let stats = stats_with(&intervals);
         assert!(stats.mean_ms().expect("measured") < TARGET_FRAME_MS);

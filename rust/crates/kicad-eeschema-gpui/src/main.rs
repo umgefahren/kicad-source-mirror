@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use gpui_kit::component::Root;
 use gpui_kit::component::theme::ThemeMode;
-use gpui_kit::{App, Bounds, WindowBounds, WindowOptions, point, px, size};
+use gpui_kit::{App, AppContext as _, Bounds, WindowBounds, WindowOptions, point, px, size};
 use kicad_sch_ui::shell::{self, SchematicShell};
 
 /// Command-line options. Hand-parsed: three flags do not justify a dependency

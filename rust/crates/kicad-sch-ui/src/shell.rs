@@ -268,7 +268,7 @@ impl SchematicShell {
         // status bar shows last frame's cursor position.
         cx.observe(&canvas, |_, _, cx| cx.notify()).detach();
 
-        let mut shell = Self {
+        let shell = Self {
             focus_handle: cx.focus_handle(),
             menu_bar,
             dock,

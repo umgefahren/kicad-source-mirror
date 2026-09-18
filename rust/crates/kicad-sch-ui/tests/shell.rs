@@ -592,7 +592,7 @@ fn opening_a_menu_marks_it_and_draws_a_popup(cx: &mut TestAppContext) {
     cx.update_window(harness.window, |_, window, cx| {
         window.render_frame(cx);
         let mut bar = window.within("menu-bar");
-        let mut file = bar.within(0_usize);
+        let file = bar.within(0_usize);
         assert_eq!(
             file.find("menu").selected(),
             Some(true),

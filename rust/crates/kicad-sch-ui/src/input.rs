@@ -130,9 +130,19 @@ pub enum PointerButton {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ScrollDelta {
     /// A discrete wheel, in detents. Positive `y` is scroll up / zoom in.
-    Lines { x: f32, y: f32 },
+    Lines {
+        /// Horizontal detents.
+        x: f32,
+        /// Vertical detents.
+        y: f32,
+    },
     /// A continuous gesture, in device-independent pixels.
-    Pixels { x: f32, y: f32 },
+    Pixels {
+        /// Horizontal travel.
+        x: f32,
+        /// Vertical travel.
+        y: f32,
+    },
 }
 
 impl ScrollDelta {
@@ -228,24 +238,35 @@ pub struct ViewportState {
 pub enum ShellEvent {
     /// The pointer moved over the canvas with no button held.
     PointerMove {
+        /// Where, relative to the canvas origin.
         screen: ScreenPoint,
+        /// Where, in schematic world space.
         world: WorldPoint,
+        /// Modifiers held at the time.
         modifiers: Modifiers,
     },
     /// A button went down on the canvas.
     PointerDown {
+        /// Which button.
         button: PointerButton,
+        /// Where, relative to the canvas origin.
         screen: ScreenPoint,
+        /// Where, in schematic world space.
         world: WorldPoint,
+        /// Modifiers held at the time.
         modifiers: Modifiers,
         /// 1 for a single click, 2 for a double click, and so on.
         click_count: usize,
     },
     /// A button came up. Emitted whether or not a drag happened in between.
     PointerUp {
+        /// Which button.
         button: PointerButton,
+        /// Where, relative to the canvas origin.
         screen: ScreenPoint,
+        /// Where, in schematic world space.
         world: WorldPoint,
+        /// Modifiers held at the time.
         modifiers: Modifiers,
     },
     /// The pointer left the canvas. Tools use this to drop hover previews.
@@ -256,43 +277,66 @@ pub enum ShellEvent {
     /// where the threshold was crossed, because that is the anchor a rubber
     /// band or a move delta has to be measured from.
     DragBegin {
+        /// Which button is dragging.
         button: PointerButton,
+        /// Where the press started, relative to the canvas origin.
         origin_screen: ScreenPoint,
+        /// Where the press started, in schematic world space.
         origin_world: WorldPoint,
+        /// Modifiers held at the time.
         modifiers: Modifiers,
     },
     /// The pointer moved while a drag was in progress.
     DragUpdate {
+        /// Which button is dragging.
         button: PointerButton,
+        /// Where, relative to the canvas origin.
         screen: ScreenPoint,
+        /// Where, in schematic world space.
         world: WorldPoint,
         /// Movement since the previous `DragUpdate`, or since `DragBegin`.
         delta_screen: ScreenPoint,
+        /// Modifiers held at the time.
         modifiers: Modifiers,
     },
     /// The drag finished because the button came up.
     DragEnd {
+        /// Which button was dragging.
         button: PointerButton,
+        /// Where, relative to the canvas origin.
         screen: ScreenPoint,
+        /// Where, in schematic world space.
         world: WorldPoint,
+        /// Modifiers held at the time.
         modifiers: Modifiers,
     },
     /// The wheel turned or a scroll gesture happened over the canvas.
     Scroll {
+        /// Where, relative to the canvas origin.
         screen: ScreenPoint,
+        /// Where, in schematic world space.
         world: WorldPoint,
+        /// How far, and in which units.
         delta: ScrollDelta,
+        /// Modifiers held at the time.
         modifiers: Modifiers,
     },
     /// A key went down while the canvas had focus.
     KeyDown {
+        /// The key, named the way gpui names it.
         key: KeyName,
+        /// Modifiers held at the time.
         modifiers: Modifiers,
         /// Whether this is an auto-repeat rather than a fresh press.
         repeat: bool,
     },
     /// A key came up while the canvas had focus.
-    KeyUp { key: KeyName, modifiers: Modifiers },
+    KeyUp {
+        /// The key, named the way gpui names it.
+        key: KeyName,
+        /// Modifiers held at the time.
+        modifiers: Modifiers,
+    },
     /// The user picked a tool, from the palette, a menu or a hotkey.
     ToolActivated(ToolId),
     /// The user asked to abandon the current tool, typically with Escape.

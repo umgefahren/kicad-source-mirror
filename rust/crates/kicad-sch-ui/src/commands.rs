@@ -90,20 +90,35 @@ impl RunAction {
 /// The shell-owned commands, as one enum so tables can name them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ShellCommand {
+    /// Close the editor.
     Quit,
+    /// Zoom in one step.
     ZoomIn,
+    /// Zoom out one step.
     ZoomOut,
+    /// Frame the whole sheet.
     ZoomToFit,
+    /// Frame the drawn items.
     ZoomToObjects,
+    /// Return to 1:1.
     ZoomActualSize,
+    /// Show or hide the grid.
     ToggleGrid,
+    /// Step to the next grid spacing.
     CycleGrid,
+    /// Move to the next display unit.
     ToggleUnits,
+    /// Swap the dark and light themes.
     ToggleTheme,
+    /// Show or hide the hierarchy dock.
     ToggleLeftPanel,
+    /// Show or hide the properties dock.
     ToggleRightPanel,
+    /// Show or hide the frame-time readout.
     ToggleFrameStats,
+    /// Open the command palette.
     OpenCommandPalette,
+    /// Abandon the active tool.
     CancelTool,
 }
 
@@ -205,7 +220,9 @@ pub enum MenuEntry {
     Separator,
     /// A nested menu.
     Submenu {
+        /// The submenu's title.
         label: &'static str,
+        /// Its entries.
         items: &'static [MenuEntry],
     },
     /// An invocable command.
@@ -724,7 +741,10 @@ mod tests {
         let (bindings, _) = key_bindings();
         let escape: Vec<_> = bindings
             .iter()
-            .filter(|binding| format!("{:?}", binding.keystrokes()) .contains("escape"))
+            .filter(|binding| {
+                binding.keystrokes().len() == 1
+                    && binding.keystrokes()[0].inner().key == "escape"
+            })
             .collect();
         assert_eq!(escape.len(), 1, "escape bound {} times", escape.len());
     }

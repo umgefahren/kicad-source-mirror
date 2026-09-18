@@ -518,59 +518,60 @@ fn install_mouse_handlers(
                 let screen = state.local(event.position);
                 let world = state.world(event.position);
 
-                match state.press.as_mut() {
-                    None => state.emit(ShellEvent::PointerMove {
+                // The press is copied out and written back rather than held as
+                // a mutable borrow, because everything below needs the whole
+                // state to convert coordinates and to reach the sink.
+                let Some(mut press) = state.press else {
+                    state.emit(ShellEvent::PointerMove {
                         screen,
                         world,
                         modifiers,
-                    }),
-                    Some(press) => {
-                        let travelled = (f32::from(event.position.x) - f32::from(press.origin.x))
-                            .hypot(f32::from(event.position.y) - f32::from(press.origin.y));
-                        let button = press.button;
-                        let origin = press.origin;
-                        let previous = press.last;
-                        press.last = event.position;
+                    });
+                    cx.notify();
+                    return;
+                };
 
-                        if !press.dragging && travelled >= DRAG_THRESHOLD_PX {
-                            press.dragging = true;
-                            let origin_screen = state.local(origin);
-                            let origin_world = state.world(origin);
-                            state.emit(ShellEvent::DragBegin {
-                                button,
-                                origin_screen,
-                                origin_world,
-                                modifiers,
-                            });
-                        }
-                        if state
-                            .press
-                            .as_ref()
-                            .map(|press| press.dragging)
-                            .unwrap_or(false)
-                        {
-                            let delta = ScreenPoint::new(
-                                f32::from(event.position.x) - f32::from(previous.x),
-                                f32::from(event.position.y) - f32::from(previous.y),
-                            );
-                            // The middle button pans the view itself; the host
-                            // still hears the drag so a tool can override it.
-                            if button == PointerButton::Middle {
-                                state.camera.pan(point(
-                                    event.position.x - previous.x,
-                                    event.position.y - previous.y,
-                                ));
-                                state.viewport_dirty = true;
-                            }
-                            state.emit(ShellEvent::DragUpdate {
-                                button,
-                                screen,
-                                world,
-                                delta_screen: delta,
-                                modifiers,
-                            });
-                        }
+                let travelled = (f32::from(event.position.x) - f32::from(press.origin.x))
+                    .hypot(f32::from(event.position.y) - f32::from(press.origin.y));
+                let previous = press.last;
+                press.last = event.position;
+
+                if !press.dragging && travelled >= DRAG_THRESHOLD_PX {
+                    press.dragging = true;
+                    state.press = Some(press);
+                    state.emit(ShellEvent::DragBegin {
+                        button: press.button,
+                        origin_screen: state.local(press.origin),
+                        origin_world: state.world(press.origin),
+                        // The modifiers that were held when the button went
+                        // down, not the ones held now: a shift-drag that lets
+                        // go of shift halfway is still a shift-drag.
+                        modifiers: press.modifiers,
+                    });
+                }
+                state.press = Some(press);
+
+                if press.dragging {
+                    let delta = ScreenPoint::new(
+                        f32::from(event.position.x) - f32::from(previous.x),
+                        f32::from(event.position.y) - f32::from(previous.y),
+                    );
+                    // The middle button pans the view itself; the host still
+                    // hears the drag so a tool can override it.
+                    if press.button == PointerButton::Middle {
+                        state.camera.pan(point(
+                            event.position.x - previous.x,
+                            event.position.y - previous.y,
+                        ));
+                        state.viewport_dirty = true;
                     }
+                    state.emit(ShellEvent::DragUpdate {
+                        button: press.button,
+                        screen,
+                        world,
+                        delta_screen: delta,
+                        modifiers,
+                    });
                 }
                 cx.notify();
             });
