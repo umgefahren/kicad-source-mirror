@@ -32,6 +32,7 @@
 //! # Getting a window open
 //!
 //! ```no_run
+//! use gpui_kit::AppContext as _;
 //! use gpui_kit::component::Root;
 //! use kicad_sch_ui::shell::{self, SchematicShell};
 //!

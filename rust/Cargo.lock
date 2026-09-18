@@ -3680,6 +3680,7 @@ name = "kicad-eeschema-gpui"
 version = "0.1.0"
 dependencies = [
  "gpui-kit",
+ "kicad-sch-render",
  "kicad-sch-ui",
 ]
 

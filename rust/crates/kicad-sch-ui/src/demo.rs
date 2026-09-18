@@ -26,8 +26,8 @@ use std::path::Path;
 
 use kicad_gal::{Color, Stream, StreamBuilder};
 
-/// Internal units in one millimetre.
-const MM: f64 = 1.0e6;
+/// Internal units in one millimetre. One eeschema internal unit is 100 nm.
+const MM: f64 = crate::grid::IU_PER_MM;
 
 /// Read a recorded draw stream from disk.
 ///
@@ -367,7 +367,7 @@ pub fn demo_stream() -> Stream {
 fn stroke_text(b: &mut StreamBuilder, origin: [f64; 2], height: f64, text: &str, color: Color) {
     let unit = height / 6.0;
     let advance = 5.0 * unit;
-    let width = (height / 12.0).max(0.12 * 1.0e6);
+    let width = (height / 12.0).max(0.12 * MM);
     b.set_stroke_color(color);
     b.set_is_fill(false);
     b.set_is_stroke(true);

@@ -7,9 +7,13 @@
 
 //! Grid spacings and display units.
 //!
-//! Everything here is in KiCad internal units — nanometres, as `f64` — because
-//! that is what the draw stream and the renderer's camera use, and a second
-//! world unit in the shell would be a conversion waiting to be got wrong.
+//! Everything here is in KiCad internal units, as `f64`, because that is what
+//! the draw stream and the renderer's camera use, and a second world unit in
+//! the shell would be a conversion waiting to be got wrong.
+//!
+//! One internal unit is **100 nm in eeschema** — not 1 nm, which is pcbnew's.
+//! The recorded fixtures say so plainly: `ecc83_pp_v2.txt` reports an A4 page
+//! as `2970022 x 2100072 IU`, and 297 mm at 100 nm per unit is 2 970 000.
 //! Millimetres and mils exist only in [`Units`], which formats a number for the
 //! status bar and is the one place a display unit is allowed to appear.
 //!
@@ -18,14 +22,14 @@
 
 use crate::input::WorldPoint;
 
-/// Internal units in one millimetre.
-pub const IU_PER_MM: f64 = 1.0e6;
+/// Internal units in one millimetre. One unit is 100 nm.
+pub const IU_PER_MM: f64 = 1.0e4;
 
 /// Internal units in one mil (thousandth of an inch). Exact.
-pub const IU_PER_MIL: f64 = 25_400.0;
+pub const IU_PER_MIL: f64 = 254.0;
 
 /// Internal units in one inch. Exact.
-pub const IU_PER_INCH: f64 = 25_400_000.0;
+pub const IU_PER_INCH: f64 = 254_000.0;
 
 /// How coordinates are displayed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -196,26 +200,27 @@ mod tests {
 
     #[test]
     fn a_mil_is_25_4_micrometres() {
-        assert_eq!(Units::Mils.from_iu(2_540_000.0), 100.0);
-        assert_eq!(Units::Inches.from_iu(25_400_000.0), 1.0);
-        assert_eq!(Units::Millimetres.from_iu(3_500_000.0), 3.5);
+        assert_eq!(Units::Mils.from_iu(25_400.0), 100.0);
+        assert_eq!(Units::Inches.from_iu(254_000.0), 1.0);
+        assert_eq!(Units::Millimetres.from_iu(35_000.0), 3.5);
     }
 
     #[test]
     fn formatting_uses_a_sensible_number_of_digits() {
-        assert_eq!(Units::Millimetres.format(1_270_000.0), "1.270");
-        assert_eq!(Units::Mils.format(1_270_000.0), "50.0");
-        assert_eq!(Units::Inches.format(25_400_000.0), "1.0000");
+        assert_eq!(Units::Millimetres.format(12_700.0), "1.270");
+        assert_eq!(Units::Mils.format(12_700.0), "50.0");
+        assert_eq!(Units::Inches.format(254_000.0), "1.0000");
     }
 
-    /// A sheet can sit more than 1.2e9 internal units from the origin, which is
-    /// past where an `f32` can tell neighbouring units apart. The formatter has
-    /// to survive that, because the status bar is where it would show first.
+    /// A large board coordinate runs into the hundreds of millions of internal
+    /// units, past where an `f32` can tell neighbouring units apart. The
+    /// formatter has to survive that, because the status bar is where it would
+    /// show first.
     #[test]
     fn a_coordinate_far_from_the_origin_still_formats_exactly() {
         let far = 1_234_567_891.0;
-        assert_eq!(Units::Millimetres.format(far), "1234.568");
-        assert_eq!(Units::Mils.format(far), "48605.0");
+        assert_eq!(Units::Millimetres.format(far), "123456.789");
+        assert_eq!(Units::Mils.format(far), "4860503.5");
     }
 
     #[test]
@@ -231,7 +236,7 @@ mod tests {
     fn the_default_grid_is_fifty_mil() {
         let grid = GridState::default();
         assert_eq!(grid.size().label, "50 mil");
-        assert_eq!(grid.spacing_iu(), 1_270_000.0);
+        assert_eq!(grid.spacing_iu(), 12_700.0);
         assert!(grid.is_visible());
     }
 
@@ -247,9 +252,9 @@ mod tests {
     #[test]
     fn snapping_lands_on_the_grid() {
         let grid = GridState::default();
-        let snapped = grid.snap(WorldPoint::new(1_300_000.0, -2_600_000.0));
-        assert_eq!(snapped.x, 1_270_000.0);
-        assert_eq!(snapped.y, -2_540_000.0);
+        let snapped = grid.snap(WorldPoint::new(13_000.0, -26_000.0));
+        assert_eq!(snapped.x, 12_700.0);
+        assert_eq!(snapped.y, -25_400.0);
     }
 
     #[test]

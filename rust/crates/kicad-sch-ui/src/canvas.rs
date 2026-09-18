@@ -20,11 +20,11 @@
 //! in the renderer. An earlier draft of this module kept a second one in
 //! millimetres with an `f32` scale; that was wrong twice over. Two cameras have
 //! to be kept in agreement on every pan, zoom, resize and hit test, and a
-//! millimetre camera means a factor-of-1e6 conversion at a boundary crossed
-//! several times per frame. Worse, internal units are nanometres and a sheet
-//! can sit past 1.2e9 of them from the origin — beyond where an `f32` mantissa
-//! distinguishes neighbours — so an `f32` world scale produces visible pan
-//! jitter. The renderer subtracts the camera origin in `f64` and narrows only
+//! millimetre camera means a unit conversion at a boundary crossed several
+//! times per frame. Worse, a coordinate can run to hundreds of millions of
+//! internal units — beyond where an `f32` mantissa distinguishes neighbours —
+//! so an `f32` world scale produces visible pan jitter. The renderer subtracts
+//! the camera origin in `f64` and narrows only
 //! the small remainder, and that property only holds if nothing upstream has
 //! already thrown the precision away.
 //!
@@ -65,7 +65,7 @@ const FIT_PADDING_PX: f64 = 24.0;
 /// Screen pixels per internal unit at which the schematic is shown 1:1 on a
 /// nominal 96 dpi display. The status bar's zoom percentage is relative to this,
 /// so "100%" means a millimetre of schematic is a millimetre of glass.
-pub const REFERENCE_SCALE: f64 = 96.0 / 25.4 / 1.0e6;
+pub const REFERENCE_SCALE: f64 = 96.0 / 25.4 / crate::grid::IU_PER_MM;
 
 #[derive(Clone, Copy, Debug)]
 struct Press {

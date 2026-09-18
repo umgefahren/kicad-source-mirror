@@ -11,11 +11,13 @@
 //! shell is runnable — and photographable — while the renderer and the C++
 //! host are still being built.
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 use gpui_kit::component::Root;
 use gpui_kit::component::theme::ThemeMode;
 use gpui_kit::{App, AppContext as _, Bounds, WindowBounds, WindowOptions, point, px, size};
+use kicad_sch_render::SchematicRenderer;
 use kicad_sch_ui::shell::{self, SchematicShell};
 
 /// Command-line options. Hand-parsed: three flags do not justify a dependency
@@ -31,6 +33,10 @@ struct Options {
     /// Window size in logical pixels.
     width: f32,
     height: f32,
+    /// A recorded draw stream to open, such as one of the fixtures in
+    /// `qa/data/draw_streams/`. Without one the built-in demonstration stream
+    /// is shown.
+    stream: Option<PathBuf>,
 }
 
 impl Default for Options {
@@ -41,13 +47,14 @@ impl Default for Options {
             run_for: None,
             width: 1600.,
             height: 1000.,
+            stream: None,
         }
     }
 }
 
 fn usage() -> &'static str {
-    "kicad-eeschema-gpui [--light] [--frame-stats] [--run-for SECONDS] \
-     [--size WIDTHxHEIGHT]"
+    "kicad-eeschema-gpui [--stream FILE.kgds] [--light] [--frame-stats] \
+     [--run-for SECONDS] [--size WIDTHxHEIGHT]"
 }
 
 fn parse_args(args: impl Iterator<Item = String>) -> Result<Options, String> {
@@ -78,6 +85,12 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Options, String> {
                 options.height = height
                     .parse()
                     .map_err(|_| format!("--size: {height} is not a number"))?;
+            }
+            "--stream" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "--stream needs a path".to_string())?;
+                options.stream = Some(PathBuf::from(value));
             }
             "--help" | "-h" => return Err(usage().to_string()),
             other => return Err(format!("unknown argument {other}\n{}", usage())),
@@ -114,6 +127,23 @@ fn main() {
                 .detach();
             }
 
+            // The stream is read before the window opens, so a bad path is a
+            // clear message on the terminal rather than an empty canvas.
+            let renderer = match options.stream.as_deref() {
+                Some(path) => match kicad_sch_ui::demo::load_stream(path) {
+                    Ok(stream) => {
+                        let mut renderer = SchematicRenderer::new();
+                        renderer.set_stream(stream);
+                        Some(renderer)
+                    }
+                    Err(error) => {
+                        eprintln!("could not read {}: {error}", path.display());
+                        std::process::exit(1);
+                    }
+                },
+                None => None,
+            };
+
             let bounds = Bounds {
                 origin: point(px(0.), px(0.)),
                 size: size(px(options.width), px(options.height)),
@@ -135,7 +165,17 @@ fn main() {
                     },
                     move |window, cx| {
                         let view = cx.new(|cx| {
-                            let mut shell = SchematicShell::new(window, cx);
+                            let mut shell = match renderer {
+                                Some(renderer) => SchematicShell::new_with_renderer(
+                                    std::rc::Rc::new(std::cell::RefCell::new(renderer)),
+                                    kicad_sch_ui::input::shared_sink(
+                                        kicad_sch_ui::input::NullSink,
+                                    ),
+                                    window,
+                                    cx,
+                                ),
+                                None => SchematicShell::new(window, cx),
+                            };
                             if frame_stats {
                                 shell.set_frame_stats_enabled(true);
                             }
@@ -171,8 +211,21 @@ mod tests {
 
     #[test]
     fn the_screenshot_flags_parse() {
-        let options = parse(&["--light", "--frame-stats", "--run-for", "2.5", "--size", "800x600"])
-            .expect("valid arguments");
+        let options = parse(&[
+            "--light",
+            "--frame-stats",
+            "--run-for",
+            "2.5",
+            "--size",
+            "800x600",
+            "--stream",
+            "qa/data/draw_streams/ecc83_pp_v2.kgds",
+        ])
+        .expect("valid arguments");
+        assert_eq!(
+            options.stream.as_deref(),
+            Some(std::path::Path::new("qa/data/draw_streams/ecc83_pp_v2.kgds"))
+        );
         assert!(options.light);
         assert!(options.frame_stats);
         assert_eq!(options.run_for, Some(Duration::from_millis(2500)));
@@ -186,5 +239,6 @@ mod tests {
         assert!(parse(&["--run-for"]).is_err());
         assert!(parse(&["--run-for", "-1"]).is_err());
         assert!(parse(&["--size", "wide"]).is_err());
+        assert!(parse(&["--stream"]).is_err());
     }
 }
