@@ -35,10 +35,7 @@ fn rich_stream() -> Stream {
         g.set_layer_depth(-12.0);
         g.line([0.0, 0.0], [2_540_000.0, 0.0]);
         g.segment([0.0, 0.0], [0.0, 2_540_000.0], 101_600.0);
-        g.segment_chain(
-            &[[0.0, 0.0], [1e6, 0.0], [1e6, 1e6]],
-            50_800.0,
-        );
+        g.segment_chain(&[[0.0, 0.0], [1e6, 0.0], [1e6, 1e6]], 50_800.0);
         g.polyline(&[[0.0, 0.0], [1e6, 1e6], [2e6, 0.0]]);
         g.polyline_closed(&[[0.0, 0.0], [1e6, 0.0], [1e6, 1e6]]);
     });
@@ -374,15 +371,21 @@ fn rejects_a_group_body_outside_the_group_command_array() {
         first_cmd: 0,
         cmd_count: 5,
     }];
-    let err = StreamView::new(minimal_parts(&[cmd(Op::Nop, 0, 0)], &[], &groups, &[], &[]))
-        .unwrap_err();
+    let err =
+        StreamView::new(minimal_parts(&[cmd(Op::Nop, 0, 0)], &[], &groups, &[], &[])).unwrap_err();
     assert!(matches!(err, DecodeError::GroupOutOfRange { .. }));
 }
 
 #[test]
 fn rejects_a_draw_group_of_an_unknown_id() {
-    let err = StreamView::new(minimal_parts(&[], &[], &[], &[cmd(Op::DrawGroup, 3, 0)], &[]))
-        .unwrap_err();
+    let err = StreamView::new(minimal_parts(
+        &[],
+        &[],
+        &[],
+        &[cmd(Op::DrawGroup, 3, 0)],
+        &[],
+    ))
+    .unwrap_err();
     assert!(matches!(err, DecodeError::UnknownGroupId { id: 3, .. }));
 }
 
@@ -478,8 +481,14 @@ fn accepts_a_diamond_of_group_references() {
 fn rejects_non_finite_coordinates() {
     for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
         let coords = [0.0, 0.0, bad];
-        let err = StreamView::new(minimal_parts(&[], &[], &[], &[cmd(Op::Circle, 0, 0)], &coords))
-            .unwrap_err();
+        let err = StreamView::new(minimal_parts(
+            &[],
+            &[],
+            &[],
+            &[cmd(Op::Circle, 0, 0)],
+            &coords,
+        ))
+        .unwrap_err();
         assert!(
             matches!(err, DecodeError::NonFiniteCoord { .. }),
             "{bad} was not rejected: {err}"
@@ -489,22 +498,40 @@ fn rejects_non_finite_coordinates() {
 
 #[test]
 fn rejects_an_unknown_render_target() {
-    let err = StreamView::new(minimal_parts(&[], &[], &[], &[cmd(Op::SetTarget, 9, 0)], &[]))
-        .unwrap_err();
+    let err = StreamView::new(minimal_parts(
+        &[],
+        &[],
+        &[],
+        &[cmd(Op::SetTarget, 9, 0)],
+        &[],
+    ))
+    .unwrap_err();
     assert!(matches!(err, DecodeError::UnknownTarget { raw: 9, .. }));
 }
 
 #[test]
 fn rejects_an_unknown_grid_style() {
     let coords = [0.0, 0.0, 1.0, 1.0, 1.0, 17.0];
-    let err = StreamView::new(minimal_parts(&[], &[], &[], &[cmd(Op::Grid, 0, 0)], &coords))
-        .unwrap_err();
+    let err = StreamView::new(minimal_parts(
+        &[],
+        &[],
+        &[],
+        &[cmd(Op::Grid, 0, 0)],
+        &coords,
+    ))
+    .unwrap_err();
     assert!(matches!(err, DecodeError::UnknownGridStyle { .. }));
 
     // A fractional style is not a style either.
     let coords = [0.0, 0.0, 1.0, 1.0, 1.0, 0.5];
     assert!(matches!(
-        StreamView::new(minimal_parts(&[], &[], &[], &[cmd(Op::Grid, 0, 0)], &coords)),
+        StreamView::new(minimal_parts(
+            &[],
+            &[],
+            &[],
+            &[cmd(Op::Grid, 0, 0)],
+            &coords
+        )),
         Err(DecodeError::UnknownGridStyle { .. })
     ));
 }
@@ -610,7 +637,10 @@ fn every_truncation_of_a_valid_file_is_a_clean_error() {
     let bytes = rich_stream().to_bytes();
     for cut in 0..bytes.len() {
         match Stream::from_bytes(&bytes[..cut]) {
-            Ok(_) => panic!("a stream truncated to {cut} of {} bytes parsed", bytes.len()),
+            Ok(_) => panic!(
+                "a stream truncated to {cut} of {} bytes parsed",
+                bytes.len()
+            ),
             Err(_) => {} // Any error is fine; not panicking is the point.
         }
     }

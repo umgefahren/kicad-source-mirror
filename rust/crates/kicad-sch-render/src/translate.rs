@@ -15,10 +15,10 @@ use std::collections::HashMap;
 use kicad_gal::{Affine, Color, Command, GridStyle, Instruction, StreamView, Target};
 
 use crate::camera::WorldRect;
-use crate::geometry::{
-    flatten_arc, flatten_circle, flatten_cubic, flatten_ellipse_arc, Projector,
+use crate::geometry::{flatten_arc, flatten_circle, flatten_cubic, flatten_ellipse_arc, Projector};
+use crate::scene::{
+    signed_area2, BatchBuilder, Contour, Geometry, PackedColor, PixelRect, Polyline,
 };
-use crate::scene::{signed_area2, BatchBuilder, Contour, Geometry, PackedColor, PixelRect, Polyline};
 
 /// A grid whose marks are closer together than this on screen is not drawn.
 ///
@@ -208,8 +208,11 @@ impl Emitter {
         if sort_by_depth {
             // Larger depth is farther away and must be painted first. A stable
             // sort keeps stream order within one depth.
-            self.pending
-                .sort_by(|a, b| b.depth.partial_cmp(&a.depth).unwrap_or(std::cmp::Ordering::Equal));
+            self.pending.sort_by(|a, b| {
+                b.depth
+                    .partial_cmp(&a.depth)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
         }
 
         let mut builder = BatchBuilder::new();
@@ -669,12 +672,7 @@ fn apply<'a>(
 }
 
 /// Emit a shape that is closed: filled, stroked, or both, per the state.
-fn emit_closed_shape(
-    em: &mut Emitter,
-    state: &GalState,
-    depth: f64,
-    points: Vec<[f32; 2]>,
-) {
+fn emit_closed_shape(em: &mut Emitter, state: &GalState, depth: f64, points: Vec<[f32; 2]>) {
     // A circle or rectangle is not part of a contour run, so a `HOLE` that
     // followed one would not belong to it.
     em.open_fill = None;
@@ -711,13 +709,7 @@ fn emit_closed_shape(
 /// with no promise about winding. Reversing a hole whose winding matches its
 /// outline makes the non-zero fill rule subtract it either way, which is what
 /// lets every polygon of one colour share a single tessellation.
-fn emit_contour(
-    em: &mut Emitter,
-    state: &GalState,
-    depth: f64,
-    points: Vec<[f32; 2]>,
-    hole: bool,
-) {
+fn emit_contour(em: &mut Emitter, state: &GalState, depth: f64, points: Vec<[f32; 2]>, hole: bool) {
     let stroke = |em: &mut Emitter, points: Vec<[f32; 2]>| {
         let w = stroke_width_px(state.line_width, state, &em.proj);
         em.push(
@@ -1074,11 +1066,7 @@ impl Frame {
 /// rectangle the grid is expanded over. Groups are *not* expanded: they come
 /// back as [`FrameItem::Group`] so the caller can serve them from its
 /// tessellation cache.
-pub fn translate_frame(
-    view: &StreamView<'_>,
-    proj: Projector,
-    visible: &WorldRect,
-) -> Frame {
+pub fn translate_frame(view: &StreamView<'_>, proj: Projector, visible: &WorldRect) -> Frame {
     let mut frame = Frame::default();
     let mut state = GalState::default();
     let mut stack: Vec<Affine> = Vec::new();
@@ -1163,7 +1151,14 @@ pub fn measure_group(view: &StreamView<'_>, id: u32) -> WorldRect {
         {
             widest = widest.max(width);
         }
-        apply(view, inst, &mut state, &mut stack, &mut em, &WorldRect::EMPTY);
+        apply(
+            view,
+            inst,
+            &mut state,
+            &mut stack,
+            &mut em,
+            &WorldRect::EMPTY,
+        );
     }
     let (_, bounds, _, _) = em.finish(false);
     // Half a stroke width spills outside the centreline on every side.

@@ -319,21 +319,14 @@ impl Instruction<'_> {
 /// Fetch `len` coordinates starting at `first`, or fail with the indices that
 /// went wrong. Every arithmetic step is checked because `first` and `len` come
 /// straight off the wire.
-fn coords_at(
-    index: usize,
-    coords: &[f64],
-    first: u32,
-    len: u64,
-) -> Result<&[f64], DecodeError> {
+fn coords_at(index: usize, coords: &[f64], first: u32, len: u64) -> Result<&[f64], DecodeError> {
     let first = first as u64;
-    let end = first
-        .checked_add(len)
-        .ok_or(DecodeError::CoordOutOfRange {
-            index,
-            first,
-            len,
-            arena_len: coords.len(),
-        })?;
+    let end = first.checked_add(len).ok_or(DecodeError::CoordOutOfRange {
+        index,
+        first,
+        len,
+        arena_len: coords.len(),
+    })?;
 
     let (Ok(f), Ok(e)) = (usize::try_from(first), usize::try_from(end)) else {
         return Err(DecodeError::CoordOutOfRange {
@@ -371,10 +364,7 @@ pub(crate) fn decode_in<'a>(
     coords: &'a [f64],
     image_count: usize,
 ) -> Result<Command<'a>, DecodeError> {
-    let op = Op::from_raw(cmd.op).ok_or(DecodeError::UnknownOpcode {
-        index,
-        raw: cmd.op,
-    })?;
+    let op = Op::from_raw(cmd.op).ok_or(DecodeError::UnknownOpcode { index, raw: cmd.op })?;
 
     if cmd.flags & !flags::KNOWN != 0 {
         return Err(DecodeError::UnknownFlags {

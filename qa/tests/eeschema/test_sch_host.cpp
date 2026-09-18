@@ -127,14 +127,29 @@ struct SCH_HOST_SETTINGS_FIXTURE
 {
     SCH_HOST_SETTINGS_FIXTURE()
     {
+        // The condition that matters is whether the *kiface* has settings, not
+        // whether the settings manager has them registered. test_module.cpp
+        // already registers an EESCHEMA_SETTINGS at startup, so guarding on the
+        // registration would skip the InitSettings() call that actually matters
+        // and leave SCH_PAINTER's eeconfig() null.
+        //
+        // SCH_HOST::ensureKifaceSettings() also covers this, so this fixture is
+        // belt and braces: it keeps any future test that drives SCH_PAINTER
+        // without going through SCH_HOST from hitting the same null.
+        if( Kiface().KifaceSettings() )
+            return;
+
         SETTINGS_MANAGER& manager = Pgm().GetSettingsManager();
 
-        if( !manager.GetAppSettings<EESCHEMA_SETTINGS>( "eeschema" ) )
+        EESCHEMA_SETTINGS* settings = manager.GetAppSettings<EESCHEMA_SETTINGS>( "eeschema" );
+
+        if( !settings )
         {
-            EESCHEMA_SETTINGS* settings = new EESCHEMA_SETTINGS;
+            settings = new EESCHEMA_SETTINGS;
             manager.RegisterSettings( settings, false );
-            Kiface().InitSettings( settings );
         }
+
+        Kiface().InitSettings( settings );
     }
 };
 

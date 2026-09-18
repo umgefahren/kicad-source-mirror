@@ -69,7 +69,11 @@ impl BoundsIndex {
             let mut keyed: Vec<(u32, (u32, WorldRect))> = ordered
                 .into_iter()
                 .map(|(payload, b)| {
-                    let c = if b.is_empty() { total.center() } else { b.center() };
+                    let c = if b.is_empty() {
+                        total.center()
+                    } else {
+                        b.center()
+                    };
                     let x = (((c[0] - total.min[0]) * sx).clamp(0.0, 65535.0)) as u32;
                     let y = (((c[1] - total.min[1]) * sy).clamp(0.0, 65535.0)) as u32;
                     (hilbert(x, y), (payload, b))
@@ -320,10 +324,7 @@ mod tests {
 
     #[test]
     fn empty_rectangles_stay_indexed_but_never_match() {
-        let items = vec![
-            (0u32, WorldRect::EMPTY),
-            (1u32, rect(0.0, 0.0, 10.0, 10.0)),
-        ];
+        let items = vec![(0u32, WorldRect::EMPTY), (1u32, rect(0.0, 0.0, 10.0, 10.0))];
         let idx = BoundsIndex::build(items);
         assert_eq!(idx.len(), 2);
         assert_eq!(idx.query(&rect(-100.0, -100.0, 1000.0, 1000.0)), vec![1]);
@@ -331,7 +332,8 @@ mod tests {
 
     #[test]
     fn identical_rectangles_do_not_confuse_the_hilbert_sort() {
-        let items: Vec<(u32, WorldRect)> = (0..100).map(|i| (i, rect(5.0, 5.0, 1.0, 1.0))).collect();
+        let items: Vec<(u32, WorldRect)> =
+            (0..100).map(|i| (i, rect(5.0, 5.0, 1.0, 1.0))).collect();
         let idx = BoundsIndex::build(items);
         let mut got = idx.query(&rect(5.0, 5.0, 0.1, 0.1));
         got.sort_unstable();

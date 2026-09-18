@@ -35,15 +35,21 @@ struct Cursor<'a> {
 
 impl<'a> Cursor<'a> {
     fn take(&mut self, n: usize, section: Section) -> Result<&'a [u8], DecodeError> {
-        let end = self.pos.checked_add(n).ok_or(DecodeError::SectionTooLarge {
-            section,
-            count: n as u64,
-        })?;
-        let slice = self.bytes.get(self.pos..end).ok_or(DecodeError::Truncated {
-            section,
-            expected: end as u64,
-            found: self.bytes.len() as u64,
-        })?;
+        let end = self
+            .pos
+            .checked_add(n)
+            .ok_or(DecodeError::SectionTooLarge {
+                section,
+                count: n as u64,
+            })?;
+        let slice = self
+            .bytes
+            .get(self.pos..end)
+            .ok_or(DecodeError::Truncated {
+                section,
+                expected: end as u64,
+                found: self.bytes.len() as u64,
+            })?;
         self.pos = end;
         Ok(slice)
     }
@@ -51,7 +57,10 @@ impl<'a> Cursor<'a> {
     /// Skip the padding that follows a section, tolerating a file that stops
     /// exactly at the end of its last section without a trailing pad.
     fn align(&mut self) {
-        self.pos = self.pos.next_multiple_of(SECTION_ALIGN).min(self.bytes.len());
+        self.pos = self
+            .pos
+            .next_multiple_of(SECTION_ALIGN)
+            .min(self.bytes.len());
     }
 }
 
@@ -98,7 +107,11 @@ fn read_cmds(
     Ok(out)
 }
 
-fn read_coords(cur: &mut Cursor<'_>, count: u64, section: Section) -> Result<Vec<f64>, DecodeError> {
+fn read_coords(
+    cur: &mut Cursor<'_>,
+    count: u64,
+    section: Section,
+) -> Result<Vec<f64>, DecodeError> {
     let n = usize::try_from(count).map_err(|_| DecodeError::SectionTooLarge { section, count })?;
     let raw = cur.take(section_bytes(count, 8, section)?, section)?;
     let mut out = Vec::with_capacity(n);

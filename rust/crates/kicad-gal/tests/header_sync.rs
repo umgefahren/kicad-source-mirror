@@ -19,7 +19,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use kicad_gal::abi::{
-    coord_refs, kgds_cmd, kgds_file_header, kgds_group, kgds_image, kgds_stream_view, flags,
+    coord_refs, flags, kgds_cmd, kgds_file_header, kgds_group, kgds_image, kgds_stream_view,
     GridStyle, Op, Target, MAX_COORD_REFS,
 };
 use kicad_gal::{KGDS_MAGIC, KGDS_VERSION};
@@ -155,10 +155,7 @@ fn magic_and_version_match_the_header() {
     let src = strip_comments(&header_text());
     assert_eq!(define(&src, "KGDS_MAGIC") as u32, KGDS_MAGIC);
     assert_eq!(define(&src, "KGDS_VERSION") as u32, KGDS_VERSION);
-    assert_eq!(
-        define(&src, "KGDS_MAX_COORD_REFS") as usize,
-        MAX_COORD_REFS
-    );
+    assert_eq!(define(&src, "KGDS_MAX_COORD_REFS") as usize, MAX_COORD_REFS);
 }
 
 #[test]
@@ -178,8 +175,14 @@ fn every_opcode_matches_the_header() {
 
     // Compare as whole maps so that an added or removed opcode is reported as
     // such rather than as a mismatched value.
-    let only_c: Vec<_> = c_ops.keys().filter(|k| !rust_ops.contains_key(*k)).collect();
-    let only_rust: Vec<_> = rust_ops.keys().filter(|k| !c_ops.contains_key(*k)).collect();
+    let only_c: Vec<_> = c_ops
+        .keys()
+        .filter(|k| !rust_ops.contains_key(*k))
+        .collect();
+    let only_rust: Vec<_> = rust_ops
+        .keys()
+        .filter(|k| !c_ops.contains_key(*k))
+        .collect();
     assert!(
         only_c.is_empty(),
         "opcodes in the header that kicad-gal does not know: {only_c:?}"
@@ -280,7 +283,9 @@ fn record_sizes_match_the_headers_static_asserts() {
             "kgds_group" => size_of::<kgds_group>(),
             "kgds_image" => size_of::<kgds_image>(),
             "kgds_file_header" => size_of::<kgds_file_header>(),
-            other => panic!("the header asserts a size for {other}, which kicad-gal does not mirror"),
+            other => {
+                panic!("the header asserts a size for {other}, which kicad-gal does not mirror")
+            }
         };
         assert_eq!(actual, expected, "sizeof({type_name}) drifted");
         found += 1;

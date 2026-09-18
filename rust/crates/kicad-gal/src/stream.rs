@@ -197,13 +197,21 @@ impl<'a> StreamView<'a> {
         let group_cmds =
             unsafe { slice_from_raw(raw.group_cmds, raw.group_cmd_count, Section::GroupCommands)? };
         let group_coords = unsafe {
-            slice_from_raw(raw.group_coords, raw.group_coord_count, Section::GroupCoords)?
+            slice_from_raw(
+                raw.group_coords,
+                raw.group_coord_count,
+                Section::GroupCoords,
+            )?
         };
         let groups = unsafe { slice_from_raw(raw.groups, raw.group_count, Section::Groups)? };
         let frame_cmds =
             unsafe { slice_from_raw(raw.frame_cmds, raw.frame_cmd_count, Section::FrameCommands)? };
         let frame_coords = unsafe {
-            slice_from_raw(raw.frame_coords, raw.frame_coord_count, Section::FrameCoords)?
+            slice_from_raw(
+                raw.frame_coords,
+                raw.frame_coord_count,
+                Section::FrameCoords,
+            )?
         };
         let strings = unsafe { slice_from_raw(raw.strings, raw.string_bytes, Section::Strings)? };
         let images = unsafe { slice_from_raw(raw.images, raw.image_count, Section::Images)? };
@@ -518,15 +526,14 @@ fn validate<'a>(parts: &StreamParts<'a>) -> Result<GroupIndex<'a>, DecodeError> 
             image: i,
             raw: img.format,
         })?;
-        let end =
-            img.data_offset
-                .checked_add(img.data_length)
-                .ok_or(DecodeError::ImageDataOutOfRange {
-                    image: i,
-                    offset: img.data_offset,
-                    len: img.data_length,
-                    arena_len: parts.image_data.len(),
-                })?;
+        let end = img.data_offset.checked_add(img.data_length).ok_or(
+            DecodeError::ImageDataOutOfRange {
+                image: i,
+                offset: img.data_offset,
+                len: img.data_length,
+                arena_len: parts.image_data.len(),
+            },
+        )?;
         if end > parts.image_data.len() as u64 {
             return Err(DecodeError::ImageDataOutOfRange {
                 image: i,

@@ -209,6 +209,14 @@ public:
     SCH_RENDER_SETTINGS&  RenderSettings() const;
 
 private:
+    /**
+     * Make sure Kiface().KifaceSettings() is live before anything draws.
+     *
+     * SCH_PAINTER dereferences it without a null check, and only the eeschema
+     * kiface module normally installs it.
+     */
+    static void ensureKifaceSettings();
+
     /// Build the GAL/view/painter quartet. Called once, from the constructor.
     void buildCanvas();
 

@@ -26,7 +26,7 @@ use gpui::{
 };
 use kicad_gal::{Stream, StreamView};
 
-use crate::cache::{CachedGroup, CacheStats, TessellationCache};
+use crate::cache::{CacheStats, CachedGroup, TessellationCache};
 use crate::camera::{Camera, WorldRect};
 use crate::geometry::Projector;
 use crate::index::BoundsIndex;
@@ -249,10 +249,7 @@ impl SchematicRenderer {
         let proj = Projector::new(
             self.camera.center(),
             self.camera.scale(),
-            [
-                origin[0] + viewport[0] * 0.5,
-                origin[1] + viewport[1] * 0.5,
-            ],
+            [origin[0] + viewport[0] * 0.5, origin[1] + viewport[1] * 0.5],
         );
         let visible = self.camera.visible_world_rect(CULL_MARGIN_PX);
 
@@ -297,10 +294,8 @@ impl SchematicRenderer {
             for i in order {
                 // `std::mem::replace` keeps the indices valid while the vector
                 // is drained out of order.
-                let taken = std::mem::replace(
-                    &mut groups[i],
-                    PreparedItem::Direct(Tessellated::default()),
-                );
+                let taken =
+                    std::mem::replace(&mut groups[i], PreparedItem::Direct(Tessellated::default()));
                 items.push(taken);
             }
             groups.clear();
@@ -536,10 +531,7 @@ impl Element for SchematicCanvas {
         // because it keeps `paint` down to issuing primitives.
         let frame = {
             let mut r = self.renderer.borrow_mut();
-            r.set_viewport([
-                bounds.size.width.to_f64(),
-                bounds.size.height.to_f64(),
-            ]);
+            r.set_viewport([bounds.size.width.to_f64(), bounds.size.height.to_f64()]);
             r.prepare([bounds.origin.x.to_f64(), bounds.origin.y.to_f64()])
         };
         CanvasPrepaint {
@@ -558,6 +550,8 @@ impl Element for SchematicCanvas {
         window: &mut Window,
         _: &mut App,
     ) {
-        self.renderer.borrow().paint(&prepaint.frame, bounds, window);
+        self.renderer
+            .borrow()
+            .paint(&prepaint.frame, bounds, window);
     }
 }

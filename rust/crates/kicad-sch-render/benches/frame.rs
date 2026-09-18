@@ -55,11 +55,7 @@ fn synthetic_sheet(symbols: u32) -> Stream {
             for p in 0..4 {
                 let y = oy + 2.0 * MM + p as f64 * 2.0 * MM;
                 g.segment([ox - 2.54 * MM, y], [ox, y], 0.15 * MM);
-                g.segment(
-                    [ox + 12.0 * MM, y],
-                    [ox + 14.54 * MM, y],
-                    0.15 * MM,
-                );
+                g.segment([ox + 12.0 * MM, y], [ox + 14.54 * MM, y], 0.15 * MM);
             }
 
             g.set_is_fill(true);

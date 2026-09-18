@@ -69,7 +69,10 @@ fn demo_stream() -> Stream {
     b.finish().expect("the demo stream is valid")
 }
 
-fn host(cx: &mut TestAppContext, stream: Stream) -> (Rc<RefCell<SchematicRenderer>>, AnyWindowHandle) {
+fn host(
+    cx: &mut TestAppContext,
+    stream: Stream,
+) -> (Rc<RefCell<SchematicRenderer>>, AnyWindowHandle) {
     let renderer = Rc::new(RefCell::new(SchematicRenderer::new()));
     renderer.borrow_mut().set_stream(stream);
     let handle = cx.add_window({

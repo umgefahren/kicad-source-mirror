@@ -169,8 +169,14 @@ pub struct kgds_file_header {
 // rather than discovering a mismatch as corrupt geometry at runtime. These
 // mirror the static_asserts at the foot of the C header.
 const _: () = assert!(size_of::<kgds_cmd>() == 24, "kgds_cmd must stay 24 bytes");
-const _: () = assert!(size_of::<kgds_group>() == 16, "kgds_group must stay 16 bytes");
-const _: () = assert!(size_of::<kgds_image>() == 32, "kgds_image must stay 32 bytes");
+const _: () = assert!(
+    size_of::<kgds_group>() == 16,
+    "kgds_group must stay 16 bytes"
+);
+const _: () = assert!(
+    size_of::<kgds_image>() == 32,
+    "kgds_image must stay 32 bytes"
+);
 const _: () = assert!(
     size_of::<kgds_file_header>() == 80,
     "kgds_file_header must stay 80 bytes"
@@ -608,11 +614,26 @@ pub struct Color {
 
 impl Color {
     /// Fully opaque black.
-    pub const BLACK: Color = Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 };
+    pub const BLACK: Color = Color {
+        r: 0.0,
+        g: 0.0,
+        b: 0.0,
+        a: 1.0,
+    };
     /// Fully opaque white.
-    pub const WHITE: Color = Color { r: 1.0, g: 1.0, b: 1.0, a: 1.0 };
+    pub const WHITE: Color = Color {
+        r: 1.0,
+        g: 1.0,
+        b: 1.0,
+        a: 1.0,
+    };
     /// Fully transparent.
-    pub const TRANSPARENT: Color = Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 };
+    pub const TRANSPARENT: Color = Color {
+        r: 0.0,
+        g: 0.0,
+        b: 0.0,
+        a: 0.0,
+    };
 
     /// Construct from components in `[0, 1]`.
     pub const fn new(r: f32, g: f32, b: f32, a: f32) -> Color {

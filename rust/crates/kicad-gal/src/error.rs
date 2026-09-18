@@ -176,7 +176,10 @@ impl fmt::Display for DecodeError {
                 first.saturating_add(*len)
             ),
             DecodeError::PointCountOverflow { index, points } => {
-                write!(f, "command {index}: point count {points} is not addressable")
+                write!(
+                    f,
+                    "command {index}: point count {points} is not addressable"
+                )
             }
             DecodeError::NonFiniteCoord { coord, value } => {
                 write!(f, "coords[{coord}] is not finite ({value})")
@@ -198,10 +201,16 @@ impl fmt::Display for DecodeError {
                 write!(f, "command {index}: DRAW_GROUP of unknown group id {id}")
             }
             DecodeError::GroupCycle { id } => {
-                write!(f, "group id {id} takes part in a cycle of DRAW_GROUP references")
+                write!(
+                    f,
+                    "group id {id} takes part in a cycle of DRAW_GROUP references"
+                )
             }
             DecodeError::GroupTooDeep { id, depth } => {
-                write!(f, "group id {id} nests {depth} deep, past the supported limit")
+                write!(
+                    f,
+                    "group id {id} nests {depth} deep, past the supported limit"
+                )
             }
             DecodeError::ImageOutOfRange {
                 index,
@@ -238,10 +247,16 @@ impl fmt::Display for DecodeError {
                 "{section} section truncated: expected {expected} bytes, found {found}"
             ),
             DecodeError::SectionTooLarge { section, count } => {
-                write!(f, "{section} section declares {count} entries, which cannot be read")
+                write!(
+                    f,
+                    "{section} section declares {count} entries, which cannot be read"
+                )
             }
             DecodeError::SliceTooLarge { section, count } => {
-                write!(f, "{section} section of {count} entries is too large to borrow")
+                write!(
+                    f,
+                    "{section} section of {count} entries is too large to borrow"
+                )
             }
             DecodeError::NullSection { section } => {
                 write!(f, "{section} section is non-empty but its pointer is null")

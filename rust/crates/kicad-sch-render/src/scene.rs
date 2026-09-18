@@ -125,9 +125,16 @@ impl Batch {
 enum BatchKey {
     /// Width is quantised to a 64th of a pixel: finer than anything visible,
     /// coarse enough that floating-point noise does not split a batch.
-    Stroke { color: PackedColor, width_q: i64 },
-    Fill { color: PackedColor },
-    Quads { color: PackedColor },
+    Stroke {
+        color: PackedColor,
+        width_q: i64,
+    },
+    Fill {
+        color: PackedColor,
+    },
+    Quads {
+        color: PackedColor,
+    },
 }
 
 fn quantise_width(width_px: f32) -> i64 {
@@ -208,7 +215,10 @@ impl BatchBuilder {
     /// Add a filled shape: an outline followed by however many holes it has.
     pub fn fill(&mut self, color: PackedColor, contours: impl IntoIterator<Item = Contour>) {
         let key = BatchKey::Fill { color };
-        let mut iter = contours.into_iter().filter(|c| c.points.len() >= 3).peekable();
+        let mut iter = contours
+            .into_iter()
+            .filter(|c| c.points.len() >= 3)
+            .peekable();
         if iter.peek().is_none() {
             return;
         }

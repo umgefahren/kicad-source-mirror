@@ -19,8 +19,10 @@
 
 use std::fmt;
 
-use crate::abi::{flags, kgds_cmd, kgds_group, kgds_image, Color, GridStyle, ImageFormat, Op,
-                 Target, KGDS_VERSION};
+use crate::abi::{
+    flags, kgds_cmd, kgds_group, kgds_image, Color, GridStyle, ImageFormat, Op, Target,
+    KGDS_VERSION,
+};
 use crate::command::Affine;
 use crate::error::DecodeError;
 use crate::stream::{Stream, StreamParts};
@@ -60,7 +62,10 @@ impl fmt::Display for BuildError {
                 f.write_str("coordinate arena exceeded the u32 index space")
             }
             BuildError::TooManyPoints { points } => {
-                write!(f, "point run of {points} points exceeds the u32 count field")
+                write!(
+                    f,
+                    "point run of {points} points exceeds the u32 count field"
+                )
             }
             BuildError::NestedGroup { open, attempted } => write!(
                 f,
@@ -484,7 +489,13 @@ impl StreamBuilder {
         end: [f64; 2],
     ) -> &mut Self {
         let i = self.push_coords(&[
-            start[0], start[1], control_a[0], control_a[1], control_b[0], control_b[1], end[0],
+            start[0],
+            start[1],
+            control_a[0],
+            control_a[1],
+            control_b[0],
+            control_b[1],
+            end[0],
             end[1],
         ]);
         self.emit_geom(Op::Curve, 0, [i, 0, 0, 0, 0])

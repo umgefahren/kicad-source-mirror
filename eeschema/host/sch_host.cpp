@@ -23,6 +23,8 @@
 #include <drawing_sheet/ds_data_model.h>
 #include <drawing_sheet/ds_proxy_view_item.h>
 #include <eeschema_helpers.h>
+#include <eeschema_settings.h>
+#include <kiface_base.h>
 #include <pgm_base.h>
 #include <project.h>
 #include <settings/color_settings.h>
@@ -61,8 +63,36 @@ SCH_HOST::~SCH_HOST()
 }
 
 
+void SCH_HOST::ensureKifaceSettings()
+{
+    // SCH_PAINTER reads eeconfig() — which is Kiface().KifaceSettings() — and
+    // dereferences it with no null check, at sch_painter.cpp:594 and six other
+    // sites. In the GUI the eeschema kiface module installs those settings during
+    // OnKifaceStart, so the pointer is always live by the time anything draws. A
+    // process that never loaded that module — a test binary, a CLI tool, a Rust
+    // host — has nothing to install them, and the first piece of text drawn is a
+    // null dereference several frames deep inside KIFONT.
+    //
+    // Text is most of a schematic's geometry, so that is not a corner case; it is
+    // the first thing that happens. The host stands the settings up rather than
+    // making it the embedder's problem, because a C ABI that segfaults when the
+    // caller forgets an undocumented global is not an ABI.
+    if( Kiface().KifaceSettings() )
+        return;
+
+    // Deliberately leaked. It has to outlive every SCH_HOST and the global
+    // Kiface() itself, and a function-local static would tie its destruction to
+    // an order we do not control.
+    static EESCHEMA_SETTINGS* fallbackSettings = new EESCHEMA_SETTINGS;
+
+    Kiface().InitSettings( fallbackSettings );
+}
+
+
 void SCH_HOST::buildCanvas()
 {
+    ensureKifaceSettings();
+
     m_gal = std::make_unique<KIGFX::RECORDING_GAL>( m_displayOptions );
 
     // Eeschema's internal unit is 100 nm, not the 1 nm the GAL base class assumes.

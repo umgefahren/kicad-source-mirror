@@ -284,7 +284,15 @@ mod tests {
         let mut pts = Vec::new();
         let scale = 1.0e-3;
         let r = 1.0e6;
-        flatten_arc([0.0, 0.0], r, 0.0, std::f64::consts::PI, Affine::IDENTITY, scale, &mut pts);
+        flatten_arc(
+            [0.0, 0.0],
+            r,
+            0.0,
+            std::f64::consts::PI,
+            Affine::IDENTITY,
+            scale,
+            &mut pts,
+        );
         assert!(pts.len() >= 2);
 
         // Every chord midpoint must be within the tolerance of the true arc.
@@ -305,7 +313,15 @@ mod tests {
     #[test]
     fn flattening_respects_the_transform() {
         let mut plain = Vec::new();
-        flatten_arc([0.0, 0.0], 100.0, 0.0, 1.0, Affine::IDENTITY, 1.0, &mut plain);
+        flatten_arc(
+            [0.0, 0.0],
+            100.0,
+            0.0,
+            1.0,
+            Affine::IDENTITY,
+            1.0,
+            &mut plain,
+        );
         let mut moved = Vec::new();
         flatten_arc(
             [0.0, 0.0],
@@ -326,7 +342,15 @@ mod tests {
     #[test]
     fn a_scaled_arc_is_flattened_more_finely() {
         let mut coarse = Vec::new();
-        flatten_arc([0.0, 0.0], 100.0, 0.0, 6.0, Affine::IDENTITY, 1.0, &mut coarse);
+        flatten_arc(
+            [0.0, 0.0],
+            100.0,
+            0.0,
+            6.0,
+            Affine::IDENTITY,
+            1.0,
+            &mut coarse,
+        );
         let mut fine = Vec::new();
         flatten_arc(
             [0.0, 0.0],

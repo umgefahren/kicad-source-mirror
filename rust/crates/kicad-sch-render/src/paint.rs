@@ -349,7 +349,10 @@ fn place_path(path: &Path<Pixels>, placement: Placement) -> Path<Pixels> {
         return out;
     }
     for v in &mut out.vertices {
-        let p = placement.apply([v.xy_position.x.to_f64() as f32, v.xy_position.y.to_f64() as f32]);
+        let p = placement.apply([
+            v.xy_position.x.to_f64() as f32,
+            v.xy_position.y.to_f64() as f32,
+        ]);
         v.xy_position = gpui::point(px(p[0]), px(p[1]));
     }
     let min = placement.apply([
@@ -405,7 +408,9 @@ mod tests {
     fn a_single_oversized_shape_becomes_its_own_chunk() {
         let shapes = vec![poly(10), poly(5_000), poly(10)];
         let chunks = chunk_by_points(&shapes, 100);
-        assert!(chunks.iter().any(|c| c.len() == 1 && c[0].points.len() == 5_000));
+        assert!(chunks
+            .iter()
+            .any(|c| c.len() == 1 && c[0].points.len() == 5_000));
         assert_eq!(chunks.iter().map(|c| c.len()).sum::<usize>(), 3);
     }
 
@@ -514,7 +519,8 @@ mod tests {
             assert_eq!(a.st_position, b.st_position);
         }
         assert!(
-            (placed.bounds.size.width.to_f64() - path.bounds.size.width.to_f64() * 2.0).abs() < 1e-3
+            (placed.bounds.size.width.to_f64() - path.bounds.size.width.to_f64() * 2.0).abs()
+                < 1e-3
         );
     }
 

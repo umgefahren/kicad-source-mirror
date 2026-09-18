@@ -54,7 +54,11 @@ fn a_segment_becomes_one_stroke_with_the_recorded_colour_and_width() {
     let c = camera();
     let mut b = StreamBuilder::new();
     b.set_stroke_color(Color::new(0.0, 1.0, 0.0, 1.0));
-    b.segment([c.center()[0], c.center()[1]], [c.center()[0] + MM, c.center()[1]], 0.15 * MM);
+    b.segment(
+        [c.center()[0], c.center()[1]],
+        [c.center()[0] + MM, c.center()[1]],
+        0.15 * MM,
+    );
     let s = b.finish().expect("valid");
 
     let frame = frame_of(&s, &c);
@@ -74,7 +78,10 @@ fn a_segment_becomes_one_stroke_with_the_recorded_colour_and_width() {
             // The segment starts at the camera centre, which is the middle of
             // the viewport, and runs 100 px to the right.
             let p = polylines[0].points[0];
-            assert!((p[0] - 400.0).abs() < 0.01 && (p[1] - 300.0).abs() < 0.01, "{p:?}");
+            assert!(
+                (p[0] - 400.0).abs() < 0.01 && (p[1] - 300.0).abs() < 0.01,
+                "{p:?}"
+            );
             let q = polylines[0].points[1];
             assert!((q[0] - 500.0).abs() < 0.01, "{q:?}");
         }
@@ -89,7 +96,10 @@ fn a_hairline_is_floored_at_the_minimum_line_width() {
     b.set_min_line_width(2.0);
     // One internal unit wide: 1e-4 px before the floor.
     b.set_line_width(1.0);
-    b.line([c.center()[0], c.center()[1]], [c.center()[0] + MM, c.center()[1]]);
+    b.line(
+        [c.center()[0], c.center()[1]],
+        [c.center()[0] + MM, c.center()[1]],
+    );
     let s = b.finish().expect("valid");
 
     let frame = frame_of(&s, &c);
@@ -252,7 +262,10 @@ fn transforms_compose_and_the_stack_restores_them() {
     // The transformed segment starts at the viewport centre and is twice as
     // long and twice as wide as the untransformed one.
     let p = polylines[0].points[0];
-    assert!((p[0] - 400.0).abs() < 0.01 && (p[1] - 300.0).abs() < 0.01, "{p:?}");
+    assert!(
+        (p[0] - 400.0).abs() < 0.01 && (p[1] - 300.0).abs() < 0.01,
+        "{p:?}"
+    );
     let q = polylines[0].points[1];
     assert!((q[0] - 600.0).abs() < 0.01, "expected 200 px, got {q:?}");
     assert!((width_px - 20.0).abs() < 0.01, "{width_px}");
@@ -495,7 +508,11 @@ fn a_lined_grid_becomes_one_stroke_batch() {
     match &g.batches[0] {
         Batch::Stroke { polylines, .. } => {
             // Roughly nine verticals and seven horizontals.
-            assert!(polylines.len() >= 14 && polylines.len() <= 22, "{}", polylines.len());
+            assert!(
+                polylines.len() >= 14 && polylines.len() <= 22,
+                "{}",
+                polylines.len()
+            );
         }
         other => panic!("expected strokes, got {other:?}"),
     }
@@ -559,7 +576,10 @@ fn a_pan_re_tessellates_nothing() {
     r.zoom_to_fit(20.0);
 
     let first = r.prepare([0.0, 0.0]);
-    assert!(first.stats.cache_misses > 0, "nothing was tessellated at all");
+    assert!(
+        first.stats.cache_misses > 0,
+        "nothing was tessellated at all"
+    );
     assert!(first.stats.groups_drawn > 0);
 
     for _ in 0..30 {
@@ -618,7 +638,10 @@ fn a_selection_re_tessellates_nothing() {
     // The same group at the same serial, now drawn with an override.
     r.set_stream(selected);
     let f = r.prepare([0.0, 0.0]);
-    assert_eq!(f.stats.cache_misses, 0, "selecting an item rebuilt its geometry");
+    assert_eq!(
+        f.stats.cache_misses, 0,
+        "selecting an item rebuilt its geometry"
+    );
     assert_eq!(f.stats.cache_hits, 1);
 }
 
@@ -657,7 +680,11 @@ fn groups_outside_the_viewport_are_culled_before_they_are_tessellated() {
 
     let f = r.prepare([0.0, 0.0]);
     assert_eq!(f.stats.groups_referenced, 100);
-    assert!(f.stats.groups_culled > 80, "culled {}", f.stats.groups_culled);
+    assert!(
+        f.stats.groups_culled > 80,
+        "culled {}",
+        f.stats.groups_culled
+    );
     assert!(f.stats.groups_drawn >= 1);
     assert_eq!(
         f.stats.groups_drawn + f.stats.groups_culled,
@@ -698,9 +725,7 @@ fn the_spatial_index_agrees_with_a_direct_bounds_test() {
     let mut brute: Vec<u32> = view
         .groups()
         .iter()
-        .filter(|g| {
-            kicad_sch_render::translate::measure_group(&view, g.id).intersects(&query)
-        })
+        .filter(|g| kicad_sch_render::translate::measure_group(&view, g.id).intersects(&query))
         .map(|g| g.id)
         .collect();
     brute.sort_unstable();
