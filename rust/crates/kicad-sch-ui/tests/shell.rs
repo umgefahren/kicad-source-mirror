@@ -744,6 +744,17 @@ async fn the_command_palette_filters_and_runs_a_command(cx: &mut TestAppContext)
     })
     .expect("window is live");
     cx.run_until_parked();
+    cx.update_window(harness.window, |_, window, cx| {
+        window.render_frame(cx);
+        let state = harness.shell.read(cx).command_state().clone();
+        let state = state.read(cx);
+        eprintln!(
+            "DEBUG query={:?} matched={} selected={:?}",
+            state.query(cx),
+            state.matched_count(),
+            state.selected_index()
+        );
+    }).expect("live");
 
     cx.update_window(harness.window, |_, window, cx| {
         window.press("enter", cx);

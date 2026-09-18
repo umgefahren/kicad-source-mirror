@@ -325,6 +325,12 @@ impl SchematicShell {
         self.palette_open
     }
 
+    /// The command palette's interaction state: its query, its selection and
+    /// how many commands survived the query.
+    pub fn command_state(&self) -> &Entity<CommandState> {
+        &self.command_state
+    }
+
     /// The display units.
     pub fn units(&self) -> Units {
         self.units

@@ -520,6 +520,49 @@ BOOST_AUTO_TEST_CASE( MalformedStreamsAreRejected )
 }
 
 
+BOOST_AUTO_TEST_CASE( AbsurdPointCountsSaturateRatherThanWrap )
+{
+    // Two scalars per point used to be computed in 32 bits, so a point count at
+    // or above 2^31 wrapped to a small number. A small wrong count passes every
+    // bounds check, and compaction would then relocate the wrong range -- silent
+    // corruption from a single bad field. Saturating instead produces a count
+    // that no bounds check can accept.
+    kgds_cmd cmd = {};
+    cmd.op = KGDS_OP_POLYLINE;
+    cmd.arg0 = 0;
+    cmd.arg1 = 0x80000000u;
+
+    kgds_coord_ref refs[KGDS_MAX_COORD_REFS];
+    BOOST_REQUIRE_EQUAL( kgds_coord_refs( &cmd, refs ), 1 );
+    BOOST_CHECK_EQUAL( refs[0].count, 0xFFFFFFFFu );
+
+    // Ordinary counts are unaffected.
+    cmd.arg1 = 3;
+    BOOST_REQUIRE_EQUAL( kgds_coord_refs( &cmd, refs ), 1 );
+    BOOST_CHECK_EQUAL( refs[0].count, 6u );
+
+    // And such a stream is refused on load rather than trusted.
+    kgds_file_header header = {};
+    header.magic = KGDS_MAGIC;
+    header.version = KGDS_VERSION;
+    header.group_cmd_count = 1;
+    header.group_coord_count = 4;
+
+    kgds_cmd poisoned = {};
+    poisoned.op = KGDS_OP_POLYLINE;
+    poisoned.arg1 = 0x80000000u;
+
+    std::string bytes( reinterpret_cast<const char*>( &header ), sizeof( header ) );
+    bytes.append( reinterpret_cast<const char*>( &poisoned ), sizeof( poisoned ) );
+    bytes.append( 8, '\0' );
+    bytes.append( 4 * sizeof( double ), '\0' );
+
+    std::stringstream buffer( bytes, std::ios::in | std::ios::binary );
+    DRAW_STREAM       stream;
+    BOOST_CHECK( !stream.Deserialize( buffer ) );
+}
+
+
 BOOST_AUTO_TEST_CASE( ColourPackingClampsAndRoundTrips )
 {
     BOOST_CHECK_EQUAL( DRAW_STREAM::PackColor( COLOR4D( 0.0, 0.0, 0.0, 0.0 ) ), 0x00000000u );

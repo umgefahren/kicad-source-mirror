@@ -108,8 +108,9 @@ typedef enum kgds_op
     KGDS_OP_CLEAR_SCREEN = 0x03,
 
     /**
-     * Replay a cached group. arg0: group id, to be looked up in the group
-     * table. Emitted by GAL::DrawGroup.
+     * Replay a cached group. arg0: the group's id, which is looked up in the
+     * group table — it is an id, not a position in that table, and the two are
+     * not interchangeable. Emitted by GAL::DrawGroup.
      *
      * flags may carry ::KGDS_FLAG_GROUP_COLOR, in which case arg1 is a packed
      * RGBA8 colour overriding every colour in the group, and/or
@@ -436,6 +437,23 @@ typedef struct kgds_coord_ref
 #define KGDS_MAX_COORD_REFS 3
 
 /**
+ * Scalars occupied by a run of 2D points.
+ *
+ * Two scalars per point, computed in 64 bits and saturated. A point count near
+ * 2^31 cannot describe real geometry — it would need tens of gigabytes of
+ * coordinates — but doubling it in 32 bits wraps to a small number, and a small
+ * wrong count passes bounds checks and silently relocates or reads the wrong
+ * range. Saturating instead yields a count that every bounds check rejects, so
+ * a corrupt command fails loudly rather than quietly.
+ */
+static inline uint32_t kgds_point_run_scalars( uint32_t aPointCount )
+{
+    const uint64_t scalars = 2ull * (uint64_t) aPointCount;
+
+    return scalars > 0xFFFFFFFFu ? 0xFFFFFFFFu : (uint32_t) scalars;
+}
+
+/**
  * Report which parts of the coordinate arena a command refers to.
  *
  * Both sides of the FFI boundary need this and must agree exactly: the producer
@@ -499,13 +517,13 @@ static inline int kgds_coord_refs( const kgds_cmd* aCmd, kgds_coord_ref* aOut )
         break;
 
     case KGDS_OP_SEGMENT_CHAIN:
-        KGDS_REF( aCmd->arg0, 2u * aCmd->arg1 );
+        KGDS_REF( aCmd->arg0, kgds_point_run_scalars( aCmd->arg1 ) );
         KGDS_REF( aCmd->arg2, 1 );
         break;
 
     case KGDS_OP_POLYLINE:
     case KGDS_OP_POLYGON:
-        KGDS_REF( aCmd->arg0, 2u * aCmd->arg1 );
+        KGDS_REF( aCmd->arg0, kgds_point_run_scalars( aCmd->arg1 ) );
         break;
 
     case KGDS_OP_CIRCLE:

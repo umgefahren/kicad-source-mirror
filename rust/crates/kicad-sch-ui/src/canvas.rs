@@ -128,6 +128,12 @@ pub struct CanvasState {
     /// Set whenever the camera changed, so the next paint can report it once
     /// rather than on every mouse move.
     viewport_dirty: bool,
+    /// A fit that was asked for before the canvas had a size, to be applied as
+    /// soon as layout provides one. The shell fits the sheet when it builds the
+    /// window, which is necessarily before the first layout, and fitting an
+    /// A4 sheet into a one-pixel viewport would otherwise clamp the zoom to its
+    /// minimum and leave the schematic a speck.
+    fit_pending: bool,
 }
 
 impl CanvasState {
@@ -144,6 +150,7 @@ impl CanvasState {
             press: None,
             crosshair: true,
             viewport_dirty: true,
+            fit_pending: true,
         }
     }
 
@@ -274,10 +281,11 @@ impl CanvasState {
     }
 
     /// Frame the whole sheet.
+    ///
+    /// Deferred until the canvas has a size if it does not have one yet.
     pub fn zoom_to_fit(&mut self) {
         let bounds = self.scene.sheet_bounds();
-        self.camera.zoom_to_fit(bounds);
-        self.viewport_dirty = true;
+        self.fit(bounds);
     }
 
     /// Frame the drawn items, falling back to the sheet when the scene has
@@ -287,8 +295,22 @@ impl CanvasState {
             .scene
             .content_bounds()
             .unwrap_or_else(|| self.scene.sheet_bounds());
-        self.camera.zoom_to_fit(bounds);
+        self.fit(bounds);
+    }
+
+    fn fit(&mut self, bounds: WorldRect) {
         self.viewport_dirty = true;
+        if self.has_a_usable_viewport() {
+            self.fit_pending = false;
+            self.camera.zoom_to_fit(bounds);
+        } else {
+            self.fit_pending = true;
+        }
+    }
+
+    fn has_a_usable_viewport(&self) -> bool {
+        let size = self.camera.viewport().size;
+        f32::from(size.width) > 2.0 && f32::from(size.height) > 2.0
     }
 
     /// Return to 1:1.
@@ -392,6 +414,9 @@ impl Element for CanvasElement {
             if state.camera.viewport() != bounds {
                 state.camera.set_viewport(bounds);
                 state.viewport_dirty = true;
+            }
+            if state.fit_pending && state.has_a_usable_viewport() {
+                state.zoom_to_fit();
             }
         });
         CanvasPrepaint {
