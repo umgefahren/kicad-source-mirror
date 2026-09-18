@@ -9,10 +9,19 @@
 //! right.
 //!
 //! Both are real `DockArea` panels, so they can be dragged, tabbed, zoomed and
-//! persisted by the dock machinery rather than being hard-coded columns. What
-//! they show is placeholder data held in [`DesignState`]; when the host is
-//! attached, that struct is what gets filled from `SCHEMATIC`'s sheet list and
-//! the selection, and neither panel changes.
+//! persisted by the dock machinery rather than being hard-coded columns.
+//!
+//! # What they can honestly show today
+//!
+//! A sheet hierarchy and per-item properties come from `SCHEMATIC` and the
+//! selection, which live in C++ behind a link that is not wired yet. Rather
+//! than invent a plausible-looking tree — placeholder data sitting beside real
+//! rendering is worse than none, because a reader cannot tell which is which —
+//! [`DesignState`] reports what the loaded draw stream actually contains, and
+//! says plainly that the document model is not connected.
+//!
+//! When the host arrives, [`DesignState::set_document_tree`] replaces the
+//! contents and neither panel changes.
 
 use gpui_kit::component::dock::{Panel, PanelEvent};
 use gpui_kit::component::list::ListItem;
@@ -44,47 +53,161 @@ impl Property {
     }
 }
 
+/// Where what the panels show came from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DocumentSource {
+    /// The built-in demonstration stream, synthesised by [`crate::demo`].
+    Demonstration,
+    /// A draw stream recorded from a real schematic by `kicad-sch-dump`.
+    RecordedStream {
+        /// The file it was read from, as shown in the title and the panels.
+        file: SharedString,
+    },
+    /// Nothing loaded.
+    Empty,
+}
+
+impl DocumentSource {
+    /// The name to put in the canvas tab and the panel headers.
+    pub fn title(&self) -> SharedString {
+        match self {
+            DocumentSource::Demonstration => "demonstration stream".into(),
+            DocumentSource::RecordedStream { file } => file.clone(),
+            DocumentSource::Empty => "no document".into(),
+        }
+    }
+
+    /// One line describing where the geometry came from.
+    pub fn description(&self) -> SharedString {
+        match self {
+            DocumentSource::Demonstration => "Synthesised draw stream".into(),
+            DocumentSource::RecordedStream { .. } => {
+                "Recorded draw stream (RECORDING_GAL)".into()
+            }
+            DocumentSource::Empty => "Nothing loaded".into(),
+        }
+    }
+}
+
+/// Facts about the loaded draw stream, which is all the shell can know about
+/// the document without the C++ host.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StreamFacts {
+    /// Retained groups — one per cached `KIGFX::VIEW` item.
+    pub groups: usize,
+    /// Commands across all group bodies.
+    pub group_commands: usize,
+    /// Commands in the frame body, mostly `DRAW_GROUP` references.
+    pub frame_commands: usize,
+    /// Embedded images.
+    pub images: usize,
+}
+
+/// One row in the properties panel.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Property {
+    /// The field name.
+    pub name: SharedString,
+    /// The field value, already formatted.
+    pub value: SharedString,
+}
+
+impl Property {
+    /// A property row.
+    pub fn new(name: impl Into<SharedString>, value: impl Into<SharedString>) -> Self {
+        Self {
+            name: name.into(),
+            value: value.into(),
+        }
+    }
+}
+
 /// What the two panels display.
 ///
-/// Shared between them so that picking a sheet on the left changes what the
-/// right shows without either panel knowing about the other.
+/// Shared between them so that picking a row on the left changes what the right
+/// shows without either panel knowing about the other.
 pub struct DesignState {
+    source: DocumentSource,
+    facts: StreamFacts,
+    /// Document extent in internal units, as the renderer reports it.
+    extent: [f64; 2],
+    origin: [f64; 2],
     hierarchy: Vec<TreeItem>,
     selected_id: SharedString,
     selected_label: SharedString,
     selected_kind: SharedString,
     properties: Vec<Property>,
+    /// Whether the tree is the real document hierarchy or the stream summary.
+    connected: bool,
 }
 
 impl Default for DesignState {
     fn default() -> Self {
-        Self::placeholder()
+        Self::from_stream(DocumentSource::Empty, StreamFacts::default(), [0., 0.], [0., 0.])
     }
 }
 
 impl DesignState {
-    /// The placeholder design shown until a real schematic is loaded.
-    pub fn placeholder() -> Self {
-        Self {
-            hierarchy: placeholder_hierarchy(),
-            selected_id: "sheet-root".into(),
-            selected_label: "Root Sheet".into(),
-            selected_kind: "Sheet".into(),
-            properties: placeholder_properties("Root Sheet"),
-        }
+    /// Describe a loaded draw stream.
+    pub fn from_stream(
+        source: DocumentSource,
+        facts: StreamFacts,
+        origin: [f64; 2],
+        extent: [f64; 2],
+    ) -> Self {
+        let mut this = Self {
+            source,
+            facts,
+            extent,
+            origin,
+            hierarchy: Vec::new(),
+            selected_id: "document".into(),
+            selected_label: SharedString::default(),
+            selected_kind: "Document".into(),
+            properties: Vec::new(),
+            connected: false,
+        };
+        this.selected_label = this.source.title();
+        this.hierarchy = this.stream_tree();
+        this.properties = this.document_properties();
+        this
     }
 
-    /// The sheet tree.
+    /// Replace the summary with the host's real sheet tree.
+    ///
+    /// The single call the C++ side will make once `SCHEMATIC` is reachable;
+    /// everything else in both panels already works against it.
+    pub fn set_document_tree(&mut self, items: Vec<TreeItem>) {
+        self.hierarchy = items;
+        self.connected = true;
+    }
+
+    /// Whether the panels are showing the real document model.
+    pub fn is_connected(&self) -> bool {
+        self.connected
+    }
+
+    /// Where the geometry came from.
+    pub fn source(&self) -> &DocumentSource {
+        &self.source
+    }
+
+    /// What the loaded stream contains.
+    pub fn facts(&self) -> StreamFacts {
+        self.facts
+    }
+
+    /// The tree.
     pub fn hierarchy(&self) -> &[TreeItem] {
         &self.hierarchy
     }
 
-    /// The id of the selected hierarchy row.
+    /// The id of the selected row.
     pub fn selected_id(&self) -> &SharedString {
         &self.selected_id
     }
 
-    /// The label of the selected hierarchy row.
+    /// The label of the selected row.
     pub fn selected_label(&self) -> &SharedString {
         &self.selected_label
     }
@@ -99,58 +222,104 @@ impl DesignState {
         &self.properties
     }
 
-    /// Select a hierarchy row, refreshing the properties that follow from it.
+    /// The line the hierarchy panel shows under its header.
+    pub fn connection_note(&self) -> SharedString {
+        if self.connected {
+            self.source.description()
+        } else {
+            "Document model not connected \u{2014} showing draw stream contents".into()
+        }
+    }
+
+    /// Select a row.
     pub fn select(&mut self, id: impl Into<SharedString>, label: impl Into<SharedString>) {
         self.selected_id = id.into();
         self.selected_label = label.into();
-        self.selected_kind = if self.selected_id.starts_with("sym-") {
-            "Symbol".into()
+        self.selected_kind = if self.connected {
+            if self.selected_id.starts_with("sym-") {
+                "Symbol".into()
+            } else {
+                "Sheet".into()
+            }
         } else {
-            "Sheet".into()
+            "Document".into()
         };
-        self.properties = placeholder_properties(&self.selected_label);
+        self.properties = self.document_properties();
     }
-}
 
-fn placeholder_hierarchy() -> Vec<TreeItem> {
-    vec![
-        TreeItem::new("sheet-root", "Root Sheet")
-            .expanded(true)
-            .children([
-                TreeItem::new("sym-u1", "U1  MCU-48"),
-                TreeItem::new("sym-r1", "R1  10k"),
-                TreeItem::new("sym-c1", "C1  100n"),
-                TreeItem::new("sheet-power", "Power")
-                    .expanded(true)
-                    .children([
-                        TreeItem::new("sym-u2", "U2  LDO-3V3"),
-                        TreeItem::new("sym-c2", "C2  10u"),
-                        TreeItem::new("sym-c3", "C3  10u"),
-                    ]),
-                TreeItem::new("sheet-analog", "Analog Front End").children([
-                    TreeItem::new("sym-u3", "U3  OPA-DUAL"),
-                    TreeItem::new("sym-r2", "R2  100k"),
-                    TreeItem::new("sym-r3", "R3  100k"),
+    fn stream_tree(&self) -> Vec<TreeItem> {
+        let mm = crate::grid::IU_PER_MM;
+        vec![
+            TreeItem::new("document", self.source.title())
+                .expanded(true)
+                .children([
+                    TreeItem::new("stream", "Draw stream")
+                        .expanded(true)
+                        .children([
+                            TreeItem::new(
+                                "stream-groups",
+                                format!("{} retained groups", self.facts.groups),
+                            ),
+                            TreeItem::new(
+                                "stream-gcmds",
+                                format!("{} group commands", self.facts.group_commands),
+                            ),
+                            TreeItem::new(
+                                "stream-fcmds",
+                                format!("{} frame commands", self.facts.frame_commands),
+                            ),
+                            TreeItem::new(
+                                "stream-images",
+                                format!("{} images", self.facts.images),
+                            ),
+                        ]),
+                    TreeItem::new("extent", "Extent")
+                        .expanded(true)
+                        .children([
+                            TreeItem::new(
+                                "extent-size",
+                                format!(
+                                    "{:.1} \u{00d7} {:.1} mm",
+                                    self.extent[0] / mm,
+                                    self.extent[1] / mm
+                                ),
+                            ),
+                            TreeItem::new(
+                                "extent-origin",
+                                format!(
+                                    "origin {:.1}, {:.1} mm",
+                                    self.origin[0] / mm,
+                                    self.origin[1] / mm
+                                ),
+                            ),
+                        ]),
                 ]),
-                TreeItem::new("sheet-io", "Connectors").children([
-                    TreeItem::new("sym-j1", "J1  USB-C"),
-                    TreeItem::new("sym-j2", "J2  HEADER-2x5"),
-                ]),
-            ]),
-    ]
-}
+        ]
+    }
 
-fn placeholder_properties(label: &str) -> Vec<Property> {
-    vec![
-        Property::new("Name", label.to_string()),
-        Property::new("Library", "kicad_sch_ui:placeholder"),
-        Property::new("Position", "112.5, 68.0 mm"),
-        Property::new("Rotation", "0\u{b0}"),
-        Property::new("Unit", "1 of 1"),
-        Property::new("Exclude from BOM", "No"),
-        Property::new("Exclude from board", "No"),
-        Property::new("Do not populate", "No"),
-    ]
+    fn document_properties(&self) -> Vec<Property> {
+        let mm = crate::grid::IU_PER_MM;
+        vec![
+            Property::new("Document", self.source.title()),
+            Property::new("Source", self.source.description()),
+            Property::new("Retained groups", self.facts.groups.to_string()),
+            Property::new("Group commands", self.facts.group_commands.to_string()),
+            Property::new("Frame commands", self.facts.frame_commands.to_string()),
+            Property::new("Images", self.facts.images.to_string()),
+            Property::new(
+                "Width",
+                format!("{:.3} mm", self.extent[0] / mm),
+            ),
+            Property::new(
+                "Height",
+                format!("{:.3} mm", self.extent[1] / mm),
+            ),
+            Property::new(
+                "Origin",
+                format!("{:.3}, {:.3} mm", self.origin[0] / mm, self.origin[1] / mm),
+            ),
+        ]
+    }
 }
 
 /// The sheet hierarchy panel.
@@ -205,6 +374,23 @@ impl Panel for HierarchyPanel {
 impl Render for HierarchyPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let design = self.design.clone();
+        let (heading, note, connected) = {
+            let state = self.design.read(cx);
+            (
+                if state.is_connected() {
+                    SharedString::from("SHEETS AND SYMBOLS")
+                } else {
+                    SharedString::from("DRAW STREAM")
+                },
+                state.connection_note(),
+                state.is_connected(),
+            )
+        };
+        let theme = cx.theme();
+        let muted = theme.muted_foreground;
+        // An unconnected panel is a caveat, not an error: the warning colour
+        // says "read this" without claiming something is broken.
+        let warning = if connected { muted } else { theme.warning };
         div()
             .id("hierarchy-panel")
             .test_support()
@@ -213,15 +399,28 @@ impl Render for HierarchyPanel {
             .v_flex()
             .child(
                 div()
-                    .h_flex()
-                    .items_center()
-                    .gap_2()
+                    .v_flex()
+                    .gap_1()
                     .px_3()
                     .py_2()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(Icon::new(IconName::ListTree).size_4())
-                    .child("SHEETS AND SYMBOLS"),
+                    .child(
+                        div()
+                            .h_flex()
+                            .items_center()
+                            .gap_2()
+                            .text_xs()
+                            .text_color(muted)
+                            .child(Icon::new(IconName::ListTree).size_4())
+                            .child(heading),
+                    )
+                    .child(
+                        div()
+                            .id("hierarchy-note")
+                            .test_support()
+                            .text_xs()
+                            .text_color(warning)
+                            .child(note),
+                    ),
             )
             .child(
                 div()
@@ -236,8 +435,10 @@ impl Render for HierarchyPanel {
                         let design = design.clone();
                         let icon = if item.is_folder() {
                             IconName::Folder
-                        } else {
+                        } else if connected {
                             IconName::Component
+                        } else {
+                            IconName::Dash
                         };
                         ListItem::new(item.id.clone())
                             .selected(selected)
@@ -308,6 +509,7 @@ impl Render for PropertiesPanel {
         let kind = design.selected_kind().clone();
         let label = design.selected_label().clone();
         let properties = design.properties().to_vec();
+        let connected = design.is_connected();
         let theme = cx.theme();
         let muted = theme.muted_foreground;
         let border = theme.border;
@@ -345,16 +547,33 @@ impl Render for PropertiesPanel {
                     .children(properties.into_iter().map(|property| {
                         div()
                             .h_flex()
-                            .items_center()
+                            .items_start()
                             .justify_between()
                             .gap_2()
                             .px_3()
                             .py_1()
                             .text_xs()
-                            .child(div().text_color(muted).child(property.name))
-                            .child(div().child(property.value))
+                            .child(div().flex_shrink_0().text_color(muted).child(property.name))
+                            .child(div().text_right().child(property.value))
                     })),
             )
+            .when(!connected, |this| {
+                this.child(
+                    div()
+                        .id("properties-note")
+                        .test_support()
+                        .px_3()
+                        .py_2()
+                        .border_t_1()
+                        .border_color(border)
+                        .text_xs()
+                        .text_color(muted)
+                        .child(
+                            "Per-item properties need the C++ document model, \
+                             which this shell is not connected to yet.",
+                        ),
+                )
+            })
     }
 }
 
@@ -362,22 +581,86 @@ impl Render for PropertiesPanel {
 mod tests {
     use super::*;
 
+    fn facts() -> StreamFacts {
+        StreamFacts {
+            groups: 336,
+            group_commands: 2971,
+            frame_commands: 795,
+            images: 0,
+        }
+    }
+
+    fn state() -> DesignState {
+        DesignState::from_stream(
+            DocumentSource::RecordedStream {
+                file: "ecc83-pp_v2.kicad_sch".into(),
+            },
+            facts(),
+            [649_073.0, 367_249.0],
+            [1_660_271.0, 1_393_524.0],
+        )
+    }
+
+    /// The panels must not imply they are showing a document model they are
+    /// not connected to. This is the assertion that keeps that honest.
     #[test]
-    fn selecting_a_symbol_changes_the_reported_kind() {
-        let mut design = DesignState::placeholder();
-        assert_eq!(design.selected_kind().as_ref(), "Sheet");
-        design.select("sym-u1", "U1  MCU-48");
-        assert_eq!(design.selected_kind().as_ref(), "Symbol");
-        assert_eq!(design.selected_label().as_ref(), "U1  MCU-48");
-        assert_eq!(design.properties()[0].value.as_ref(), "U1  MCU-48");
+    fn an_unconnected_panel_says_so() {
+        let design = state();
+        assert!(!design.is_connected());
+        assert!(
+            design.connection_note().contains("not connected"),
+            "{}",
+            design.connection_note()
+        );
     }
 
     #[test]
-    fn the_placeholder_hierarchy_has_nested_sheets() {
-        let design = DesignState::placeholder();
+    fn the_tree_reports_the_streams_real_numbers() {
+        let design = state();
         let root = &design.hierarchy()[0];
-        assert!(root.is_folder());
-        assert!(root.is_expanded());
-        assert!(root.ancestors(&"sym-u2".into()).is_some());
+        assert_eq!(root.label.as_ref(), "ecc83-pp_v2.kicad_sch");
+        let rendered = format!("{:?}", design.hierarchy());
+        assert!(rendered.contains("336 retained groups"), "{rendered}");
+        assert!(rendered.contains("795 frame commands"), "{rendered}");
+        // 1 660 271 internal units at 100 nm each is 166.0 mm.
+        assert!(rendered.contains("166.0"), "{rendered}");
+    }
+
+    #[test]
+    fn the_properties_are_the_documents_own_and_are_labelled_as_such() {
+        let design = state();
+        let names: Vec<&str> = design
+            .properties()
+            .iter()
+            .map(|property| property.name.as_ref())
+            .collect();
+        assert!(names.contains(&"Retained groups"));
+        assert!(names.contains(&"Width"));
+        assert_eq!(design.selected_kind().as_ref(), "Document");
+        let width = design
+            .properties()
+            .iter()
+            .find(|property| property.name == "Width")
+            .expect("width is reported");
+        assert_eq!(width.value.as_ref(), "166.027 mm");
+    }
+
+    #[test]
+    fn the_host_can_replace_the_summary_with_a_real_tree() {
+        let mut design = state();
+        design.set_document_tree(vec![
+            TreeItem::new("sheet-root", "Root Sheet").child(TreeItem::new("sym-u1", "U1")),
+        ]);
+        assert!(design.is_connected());
+        assert_eq!(design.hierarchy()[0].label.as_ref(), "Root Sheet");
+        design.select("sym-u1", "U1");
+        assert_eq!(design.selected_kind().as_ref(), "Symbol");
+    }
+
+    #[test]
+    fn an_empty_document_still_describes_itself() {
+        let design = DesignState::default();
+        assert_eq!(design.source(), &DocumentSource::Empty);
+        assert_eq!(design.source().title().as_ref(), "no document");
     }
 }
