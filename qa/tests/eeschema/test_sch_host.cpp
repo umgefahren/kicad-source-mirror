@@ -51,6 +51,10 @@
 
 // Code under test
 #include <host/sch_host.h>
+#include <eeschema_settings.h>
+#include <kiface_base.h>
+#include <pgm_base.h>
+#include <settings/settings_manager.h>
 
 
 namespace
@@ -108,7 +112,34 @@ bool coordIndicesInRange( const kgds_stream_view& aView )
 } // namespace
 
 
-BOOST_AUTO_TEST_SUITE( SchHost )
+/**
+ * Installs the application settings SCH_PAINTER reads.
+ *
+ * qa_eeschema links the mock Kiface() from qa/mocks, whose KifaceSettings() is
+ * null. SCH_PAINTER reaches for eeconfig() the first time it draws a sheet, so
+ * without this every render test dies in a null dereference a long way from its
+ * cause -- which is exactly how it first showed up.
+ *
+ * The settings manager owns the object once registered; InitSettings() only
+ * hands the kiface a pointer to it.
+ */
+struct SCH_HOST_SETTINGS_FIXTURE
+{
+    SCH_HOST_SETTINGS_FIXTURE()
+    {
+        SETTINGS_MANAGER& manager = Pgm().GetSettingsManager();
+
+        if( !manager.GetAppSettings<EESCHEMA_SETTINGS>( "eeschema" ) )
+        {
+            EESCHEMA_SETTINGS* settings = new EESCHEMA_SETTINGS;
+            manager.RegisterSettings( settings, false );
+            Kiface().InitSettings( settings );
+        }
+    }
+};
+
+
+BOOST_FIXTURE_TEST_SUITE( SchHost, SCH_HOST_SETTINGS_FIXTURE )
 
 
 /**

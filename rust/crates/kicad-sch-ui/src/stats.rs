@@ -131,9 +131,7 @@ impl FrameStats {
 
     /// Frames per second implied by the mean interval.
     pub fn fps(&self) -> Option<f32> {
-        self.mean_ms()
-            .filter(|ms| *ms > 0.)
-            .map(|ms| 1000.0 / ms)
+        self.mean_ms().filter(|ms| *ms > 0.).map(|ms| 1000.0 / ms)
     }
 
     /// Whether the window is inside the 120 Hz budget at the 99th percentile.

@@ -21,8 +21,8 @@ description = "gpui-kit application shell for the KiCad schematic editor"
 gpui-kit = "0.6.1"
 # The renderer owns the camera, the tessellation cache and the draw stream; the
 # shell drives them rather than keeping a second copy of any of it.
-kicad-sch-render = { path = "../kicad-sch-render", version = "0.1.0" }
-kicad-gal = { path = "../kicad-gal", version = "0.1.0" }
+kicad-sch-render.workspace = true
+kicad-gal.workspace = true
 
 [dev-dependencies]
 gpui-kit = { version = "0.6.1", features = ["test-support"] }

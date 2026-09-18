@@ -16,6 +16,6 @@ name = "kicad-eeschema-gpui"
 path = "src/main.rs"
 
 [dependencies]
-kicad-sch-ui = { path = "../kicad-sch-ui", version = "0.1.0" }
-kicad-sch-render = { path = "../kicad-sch-render", version = "0.1.0" }
+kicad-sch-ui.workspace = true
+kicad-sch-render.workspace = true
 gpui-kit = "0.6.1"

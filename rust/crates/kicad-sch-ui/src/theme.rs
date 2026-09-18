@@ -43,10 +43,22 @@ pub fn apply(mode: ThemeMode, window: Option<&mut Window>, cx: &mut App) {
         theme.font_size = px(14.);
         theme.shadow = true;
 
-        let accent = if dark { color(0x3f9ae5) } else { color(0x1d6fb8) };
+        let accent = if dark {
+            color(0x3f9ae5)
+        } else {
+            color(0x1d6fb8)
+        };
         theme.colors.primary = accent;
-        theme.colors.primary_hover = if dark { color(0x55a8ea) } else { color(0x2f80ca) };
-        theme.colors.primary_active = if dark { color(0x2f86cf) } else { color(0x175c9b) };
+        theme.colors.primary_hover = if dark {
+            color(0x55a8ea)
+        } else {
+            color(0x2f80ca)
+        };
+        theme.colors.primary_active = if dark {
+            color(0x2f86cf)
+        } else {
+            color(0x175c9b)
+        };
         theme.colors.primary_foreground = color(0xffffff);
         theme.colors.button_primary = accent;
         theme.colors.button_primary_hover = theme.colors.primary_hover;

@@ -23,13 +23,13 @@
 //! When the host arrives, [`DesignState::set_document_tree`] replaces the
 //! contents and neither panel changes.
 
+use gpui_kit::TestSupportExt;
+use gpui_kit::assets::IconName;
 use gpui_kit::component::dock::{Panel, PanelEvent};
 use gpui_kit::component::list::ListItem;
 use gpui_kit::component::tree::{TreeItem, TreeState, tree};
 use gpui_kit::component::{ActiveTheme, Icon, StyledExt};
-use gpui_kit::assets::IconName;
 use gpui_kit::prelude::*;
-use gpui_kit::TestSupportExt;
 use gpui_kit::{
     App, Context, Entity, EventEmitter, FocusHandle, Focusable, SharedString, Window, div, px,
 };
@@ -62,9 +62,7 @@ impl DocumentSource {
     pub fn description(&self) -> SharedString {
         match self {
             DocumentSource::Demonstration => "Synthesised draw stream".into(),
-            DocumentSource::RecordedStream { .. } => {
-                "Recorded draw stream (RECORDING_GAL)".into()
-            }
+            DocumentSource::RecordedStream { .. } => "Recorded draw stream".into(),
             DocumentSource::Empty => "Nothing loaded".into(),
         }
     }
@@ -124,7 +122,12 @@ pub struct DesignState {
 
 impl Default for DesignState {
     fn default() -> Self {
-        Self::from_stream(DocumentSource::Empty, StreamFacts::default(), [0., 0.], [0., 0.])
+        Self::from_stream(
+            DocumentSource::Empty,
+            StreamFacts::default(),
+            [0., 0.],
+            [0., 0.],
+        )
     }
 }
 
@@ -249,31 +252,26 @@ impl DesignState {
                                 "stream-fcmds",
                                 format!("{} frame commands", self.facts.frame_commands),
                             ),
-                            TreeItem::new(
-                                "stream-images",
-                                format!("{} images", self.facts.images),
-                            ),
+                            TreeItem::new("stream-images", format!("{} images", self.facts.images)),
                         ]),
-                    TreeItem::new("extent", "Extent")
-                        .expanded(true)
-                        .children([
-                            TreeItem::new(
-                                "extent-size",
-                                format!(
-                                    "{:.1} \u{00d7} {:.1} mm",
-                                    self.extent[0] / mm,
-                                    self.extent[1] / mm
-                                ),
+                    TreeItem::new("extent", "Extent").expanded(true).children([
+                        TreeItem::new(
+                            "extent-size",
+                            format!(
+                                "{:.1} \u{00d7} {:.1} mm",
+                                self.extent[0] / mm,
+                                self.extent[1] / mm
                             ),
-                            TreeItem::new(
-                                "extent-origin",
-                                format!(
-                                    "origin {:.1}, {:.1} mm",
-                                    self.origin[0] / mm,
-                                    self.origin[1] / mm
-                                ),
+                        ),
+                        TreeItem::new(
+                            "extent-origin",
+                            format!(
+                                "origin {:.1}, {:.1} mm",
+                                self.origin[0] / mm,
+                                self.origin[1] / mm
                             ),
-                        ]),
+                        ),
+                    ]),
                 ]),
         ]
     }
@@ -287,14 +285,8 @@ impl DesignState {
             Property::new("Group commands", self.facts.group_commands.to_string()),
             Property::new("Frame commands", self.facts.frame_commands.to_string()),
             Property::new("Images", self.facts.images.to_string()),
-            Property::new(
-                "Width",
-                format!("{:.3} mm", self.extent[0] / mm),
-            ),
-            Property::new(
-                "Height",
-                format!("{:.3} mm", self.extent[1] / mm),
-            ),
+            Property::new("Width", format!("{:.3} mm", self.extent[0] / mm)),
+            Property::new("Height", format!("{:.3} mm", self.extent[1] / mm)),
             Property::new(
                 "Origin",
                 format!("{:.3}, {:.3} mm", self.origin[0] / mm, self.origin[1] / mm),
@@ -409,35 +401,38 @@ impl Render for HierarchyPanel {
                     .test_support()
                     .flex_1()
                     .min_h(px(120.))
-                    .child(tree(&self.tree, move |_ix, entry, selected, _window, _cx| {
-                        let item = entry.item();
-                        let id = item.id.clone();
-                        let label = item.label.clone();
-                        let design = design.clone();
-                        let icon = if item.is_folder() {
-                            IconName::Folder
-                        } else if connected {
-                            IconName::Component
-                        } else {
-                            IconName::Dash
-                        };
-                        ListItem::new(item.id.clone())
-                            .selected(selected)
-                            .child(
-                                div()
-                                    .h_flex()
-                                    .gap_2()
-                                    .items_center()
-                                    .child(Icon::new(icon).size_3p5())
-                                    .child(item.label.clone()),
-                            )
-                            .on_click(move |_event, _window, cx| {
-                                design.update(cx, |design, cx| {
-                                    design.select(id.clone(), label.clone());
-                                    cx.notify();
-                                });
-                            })
-                    })),
+                    .child(tree(
+                        &self.tree,
+                        move |_ix, entry, selected, _window, _cx| {
+                            let item = entry.item();
+                            let id = item.id.clone();
+                            let label = item.label.clone();
+                            let design = design.clone();
+                            let icon = if item.is_folder() {
+                                IconName::Folder
+                            } else if connected {
+                                IconName::Component
+                            } else {
+                                IconName::Dash
+                            };
+                            ListItem::new(item.id.clone())
+                                .selected(selected)
+                                .child(
+                                    div()
+                                        .h_flex()
+                                        .gap_2()
+                                        .items_center()
+                                        .child(Icon::new(icon).size_3p5())
+                                        .child(item.label.clone()),
+                                )
+                                .on_click(move |_event, _window, cx| {
+                                    design.update(cx, |design, cx| {
+                                        design.select(id.clone(), label.clone());
+                                        cx.notify();
+                                    });
+                                })
+                        },
+                    )),
             )
     }
 }
@@ -509,12 +504,7 @@ impl Render for PropertiesPanel {
                     .py_2()
                     .border_b_1()
                     .border_color(border)
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(muted)
-                            .child(kind.to_uppercase()),
-                    )
+                    .child(div().text_xs().text_color(muted).child(kind.to_uppercase()))
                     .child(div().text_sm().font_semibold().child(label)),
             )
             .child(
@@ -535,7 +525,13 @@ impl Render for PropertiesPanel {
                             .py_1()
                             .text_xs()
                             .child(div().flex_shrink_0().text_color(muted).child(property.name))
-                            .child(div().text_right().child(property.value))
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .text_right()
+                                    .truncate()
+                                    .child(property.value),
+                            )
                     })),
             )
             .when(!connected, |this| {
@@ -613,13 +609,16 @@ mod tests {
         let root = &design.hierarchy()[0];
         assert_eq!(root.label.as_ref(), "ecc83-pp_v2.kicad_sch");
         let labels = all_labels(design.hierarchy());
-        assert!(labels.iter().any(|l| l == "336 retained groups"), "{labels:?}");
-        assert!(labels.iter().any(|l| l == "795 frame commands"), "{labels:?}");
-        // 1 660 271 internal units at 100 nm each is 166.0 mm.
         assert!(
-            labels.iter().any(|l| l.contains("166.0")),
+            labels.iter().any(|l| l == "336 retained groups"),
             "{labels:?}"
         );
+        assert!(
+            labels.iter().any(|l| l == "795 frame commands"),
+            "{labels:?}"
+        );
+        // 1 660 271 internal units at 100 nm each is 166.0 mm.
+        assert!(labels.iter().any(|l| l.contains("166.0")), "{labels:?}");
     }
 
     #[test]

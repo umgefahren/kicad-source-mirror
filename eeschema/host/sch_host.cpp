@@ -23,6 +23,7 @@
 #include <drawing_sheet/ds_data_model.h>
 #include <drawing_sheet/ds_proxy_view_item.h>
 #include <eeschema_helpers.h>
+#include <pgm_base.h>
 #include <project.h>
 #include <settings/color_settings.h>
 #include <settings/settings_manager.h>
@@ -142,6 +143,17 @@ bool SCH_HOST::LoadFile( const wxString& aFileName )
         m_lastError = wxString::Format( wxT( "Schematic file '%s' does not exist." ), aFileName );
         return false;
     }
+
+    // A schematic with no sibling .kicad_pro falls back to SETTINGS_MANAGER::Prj(), and with
+    // no project loaded at all that returns a static PROJECT whose PROJECT_FILE is null.
+    // SCHEMATIC::Settings() dereferences that file unconditionally, so loading such a file
+    // into a bare process is a null dereference rather than an error. Standing up the empty
+    // project first gives the fallback something real behind it. The GUI never hits this
+    // because a frame always has a project open; a headless host has to arrange it.
+    SETTINGS_MANAGER& settingsManager = Pgm().GetSettingsManager();
+
+    if( !settingsManager.IsProjectOpen() )
+        settingsManager.LoadProject( wxEmptyString );
 
     // The reader throws IO_ERROR (and, on a corrupt file, can surface a parse error as any
     // number of exception types), so nothing below may escape into a C caller.

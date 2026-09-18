@@ -100,7 +100,16 @@ pub struct CanvasState {
     /// provides one. The shell fits the document while building the window,
     /// which is necessarily before the first layout.
     fit_pending: bool,
+    /// Zoom steps to apply once the deferred fit has run, so that a startup
+    /// zoom is not undone by it.
+    zoom_after_fit: i32,
     last_frame: FrameStats,
+    /// What the last call into the renderer cost on the CPU.
+    ///
+    /// Worth separating from the frame interval: under the software rasteriser
+    /// the screenshots are taken on, the frame interval is dominated by
+    /// llvmpipe and says nothing about this crate or the renderer.
+    last_paint: std::time::Duration,
 }
 
 impl CanvasState {
@@ -125,7 +134,9 @@ impl CanvasState {
             },
             viewport_dirty: true,
             fit_pending: true,
+            zoom_after_fit: 0,
             last_frame: FrameStats::default(),
+            last_paint: std::time::Duration::ZERO,
         }
     }
 
@@ -197,6 +208,19 @@ impl CanvasState {
     /// What the last painted frame cost, for the status bar.
     pub fn last_frame(&self) -> FrameStats {
         self.last_frame
+    }
+
+    /// CPU time in the renderer for the last frame.
+    pub fn last_paint(&self) -> std::time::Duration {
+        self.last_paint
+    }
+
+    /// Zoom by `steps` once the canvas has been laid out and fitted.
+    ///
+    /// A zoom applied before the first layout would be undone by the pending
+    /// fit, which is why this is queued rather than done now.
+    pub fn zoom_after_fit(&mut self, steps: i32) {
+        self.zoom_after_fit = steps;
     }
 
     /// Zoom as a fraction of 1:1 on a nominal 96 dpi display.
@@ -431,6 +455,14 @@ impl Element for CanvasElement {
             }
             if state.fit_pending && state.has_a_usable_viewport() {
                 state.zoom_to_fit();
+                let steps = std::mem::take(&mut state.zoom_after_fit);
+                for _ in 0..steps.abs() {
+                    if steps > 0 {
+                        state.zoom_in();
+                    } else {
+                        state.zoom_out();
+                    }
+                }
             }
         });
         CanvasPrepaint {
@@ -473,7 +505,9 @@ impl Element for CanvasElement {
             window.paint_quad(gpui_kit::fill(bounds, palette.background));
             paint_grid(bounds, &camera, &grid, &palette, window);
 
+            let started = std::time::Instant::now();
             let stats = renderer.borrow_mut().paint_frame(bounds, window);
+            let elapsed = started.elapsed();
 
             if crosshair {
                 if let Some(position) = pointer {
@@ -485,10 +519,14 @@ impl Element for CanvasElement {
                     paint_selection_band(press.origin, press.last, palette.selection, window);
                 }
             }
-            stats
+            (stats, elapsed)
         });
 
-        self.state.update(cx, |state, _| state.last_frame = stats);
+        self.state.update(cx, |state, _| {
+            let (stats, elapsed) = stats;
+            state.last_frame = stats;
+            state.last_paint = elapsed;
+        });
 
         window.set_cursor_style(tool.spec().cursor, &hitbox);
         install_mouse_handlers(&self.state, &hitbox, window);
@@ -772,7 +810,11 @@ fn paint_grid(
     for ix in first_x..=last_x {
         for iy in first_y..=last_y {
             let major = ix.rem_euclid(major_every) == 0 && iy.rem_euclid(major_every) == 0;
-            let color = if major { palette.grid_major } else { palette.grid };
+            let color = if major {
+                palette.grid_major
+            } else {
+                palette.grid
+            };
             let radius = if major { dot + 0.5 } else { dot };
             let screen = camera.world_to_screen([ix as f64 * spacing, iy as f64 * spacing]);
             let center = point(origin.x + px(screen[0]), origin.y + px(screen[1]));

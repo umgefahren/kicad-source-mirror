@@ -184,10 +184,11 @@ headless compositor are set up.
 * Removing wxBase. wxWidgets' *GUI* layer leaves the schematic editor's
   presentation path; `wxString` and friends remain as utility types throughout
   the C++ core and are a separate, later migration.
-* Feeding input into `TOOL_MANAGER`. `TOOLS_HOLDER::GetToolCanvas()` returns a
-  `wxWindow*` and is a genuine blocker that needs real refactoring rather than a
-  shim. It is the next milestone, and `docs/rust-migration/04-host-seam.md`
-  records what it would take.
+* Feeding input into `TOOL_MANAGER`. This is the next milestone rather than a
+  structural obstacle: `TOOL_MANAGER` has no wx dependency, `TOOL_EVENT` is a
+  plain value type, and only `TOOL_DISPATCHER` is bound to wx. What is needed is
+  a dispatcher that builds `TOOL_EVENT`s from gpui input.
+  `docs/rust-migration/04-host-seam.md` records what it would take.
 
 ## Related documents
 

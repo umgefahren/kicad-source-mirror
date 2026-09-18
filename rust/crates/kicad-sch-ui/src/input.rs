@@ -493,7 +493,10 @@ mod tests {
         sink.handle(ShellEvent::ActionInvoked(ActionId::from("a")));
         sink.handle(ShellEvent::ToolActivated(ToolId("t")));
         sink.handle(ShellEvent::ActionInvoked(ActionId::from("b")));
-        assert_eq!(sink.invoked_actions(), vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(
+            sink.invoked_actions(),
+            vec!["a".to_string(), "b".to_string()]
+        );
         assert_eq!(sink.activated_tools(), vec![ToolId("t")]);
         sink.clear();
         assert!(sink.is_empty());

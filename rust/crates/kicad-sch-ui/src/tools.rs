@@ -411,7 +411,11 @@ mod tests {
         let mut ids = HashSet::new();
         let mut keys = HashSet::new();
         for spec in TOOLS {
-            assert!(buttons.insert(spec.button_id), "duplicate {}", spec.button_id);
+            assert!(
+                buttons.insert(spec.button_id),
+                "duplicate {}",
+                spec.button_id
+            );
             assert!(ids.insert(spec.id), "duplicate {}", spec.id);
             if let Some(key) = spec.shortcut {
                 assert!(keys.insert(key), "duplicate shortcut {key}");

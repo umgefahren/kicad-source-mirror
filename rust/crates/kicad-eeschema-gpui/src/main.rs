@@ -34,6 +34,11 @@ struct Options {
     /// Window size in logical pixels.
     width: f32,
     height: f32,
+    /// Open the command palette at startup. For the screenshot harness, whose
+    /// compositor cannot type at the window.
+    open_palette: bool,
+    /// Zoom steps to apply at startup, positive in. Same reason.
+    zoom_steps: i32,
     /// A recorded draw stream to open, such as one of the fixtures in
     /// `qa/data/draw_streams/`. Without one the built-in demonstration stream
     /// is shown.
@@ -48,6 +53,8 @@ impl Default for Options {
             run_for: None,
             width: 1600.,
             height: 1000.,
+            open_palette: false,
+            zoom_steps: 0,
             stream: None,
         }
     }
@@ -66,7 +73,9 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Options, String> {
             "--light" => options.light = true,
             "--frame-stats" => options.frame_stats = true,
             "--run-for" => {
-                let value = args.next().ok_or_else(|| "--run-for needs a number".to_string())?;
+                let value = args
+                    .next()
+                    .ok_or_else(|| "--run-for needs a number".to_string())?;
                 let seconds: f64 = value
                     .parse()
                     .map_err(|_| format!("--run-for: {value} is not a number"))?;
@@ -76,7 +85,9 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Options, String> {
                 options.run_for = Some(Duration::from_secs_f64(seconds));
             }
             "--size" => {
-                let value = args.next().ok_or_else(|| "--size needs WIDTHxHEIGHT".to_string())?;
+                let value = args
+                    .next()
+                    .ok_or_else(|| "--size needs WIDTHxHEIGHT".to_string())?;
                 let (width, height) = value
                     .split_once(['x', 'X'])
                     .ok_or_else(|| format!("--size: {value} is not WIDTHxHEIGHT"))?;
@@ -86,6 +97,15 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Options, String> {
                 options.height = height
                     .parse()
                     .map_err(|_| format!("--size: {height} is not a number"))?;
+            }
+            "--open-palette" => options.open_palette = true,
+            "--zoom-in" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "--zoom-in needs a count".to_string())?;
+                options.zoom_steps = value
+                    .parse()
+                    .map_err(|_| format!("--zoom-in: {value} is not a whole number"))?;
             }
             "--stream" => {
                 let value = args
@@ -141,7 +161,10 @@ fn main() {
                             .file_name()
                             .map(|name| name.to_string_lossy().into_owned())
                             .unwrap_or_else(|| path.display().to_string());
-                        Some((renderer, DocumentSource::RecordedStream { file: file.into() }))
+                        Some((
+                            renderer,
+                            DocumentSource::RecordedStream { file: file.into() },
+                        ))
                     }
                     Err(error) => {
                         eprintln!("could not read {}: {error}", path.display());
@@ -156,6 +179,8 @@ fn main() {
                 size: size(px(options.width), px(options.height)),
             };
             let frame_stats = options.frame_stats;
+            let open_palette = options.open_palette;
+            let zoom_steps = options.zoom_steps;
             cx.spawn(async move |cx| {
                 let opened = cx.open_window(
                     WindowOptions {
@@ -176,9 +201,7 @@ fn main() {
                                 Some((renderer, source)) => SchematicShell::new_with_document(
                                     std::rc::Rc::new(std::cell::RefCell::new(renderer)),
                                     source,
-                                    kicad_sch_ui::input::shared_sink(
-                                        kicad_sch_ui::input::NullSink,
-                                    ),
+                                    kicad_sch_ui::input::shared_sink(kicad_sch_ui::input::NullSink),
                                     window,
                                     cx,
                                 ),
@@ -186,6 +209,12 @@ fn main() {
                             };
                             if frame_stats {
                                 shell.set_frame_stats_enabled(true);
+                            }
+                            if zoom_steps != 0 {
+                                shell.zoom_steps(zoom_steps, cx);
+                            }
+                            if open_palette {
+                                shell.open_palette(window, cx);
                             }
                             shell
                         });
@@ -228,11 +257,18 @@ mod tests {
             "800x600",
             "--stream",
             "qa/data/draw_streams/ecc83_pp_v2.kgds",
+            "--open-palette",
+            "--zoom-in",
+            "3",
         ])
         .expect("valid arguments");
+        assert!(options.open_palette);
+        assert_eq!(options.zoom_steps, 3);
         assert_eq!(
             options.stream.as_deref(),
-            Some(std::path::Path::new("qa/data/draw_streams/ecc83_pp_v2.kgds"))
+            Some(std::path::Path::new(
+                "qa/data/draw_streams/ecc83_pp_v2.kgds"
+            ))
         );
         assert!(options.light);
         assert!(options.frame_stats);
@@ -248,5 +284,6 @@ mod tests {
         assert!(parse(&["--run-for", "-1"]).is_err());
         assert!(parse(&["--size", "wide"]).is_err());
         assert!(parse(&["--stream"]).is_err());
+        assert!(parse(&["--zoom-in", "lots"]).is_err());
     }
 }

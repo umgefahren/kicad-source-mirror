@@ -38,8 +38,25 @@ and it is the C++ one.
 ## Honest status
 
 This step delivers the rendering and presentation seam, not a finished editor.
-In particular, **input is not yet wired into `TOOL_MANAGER`**:
-`TOOLS_HOLDER::GetToolCanvas()` returns a `wxWindow*` and is a genuine blocker
-that needs real refactoring rather than a shim. `04-host-seam.md` records what
-that would take. What is not done is stated in each document rather than left
-for a reader to discover.
+**Input is not yet wired into `TOOL_MANAGER`** — that is the next milestone, and
+`04-host-seam.md` records what it would take. What is not done is stated in each
+document rather than left for a reader to discover.
+
+What *is* verified, on this branch, in this container:
+
+* The C++ tree configures and builds — `kicommon` 15m, `common` 13m,
+  `eeschema_kiface` 63m on four cores.
+* `kicad-sch-dump` renders real schematics through
+  `SCHEMATIC` → `VIEW` → `SCH_PAINTER` → `RECORDING_GAL` into a draw stream,
+  with retained geometry reused across repeated frames rather than regrown.
+* The recording backend's 30 tests pass inside KiCad's own `qa_common`.
+* `kicad-gal` is 56 tests green, `kicad-sch-render` 89, and the Rust shell
+  renders those streams in a real gpui window.
+* The wider QA suite is **1351/1353**. Of the two failures, one
+  (`ConnectivityExport/AllegroUsesPublishedNetsAndPreservesDeviceFiles`) is
+  pre-existing on this branch and untouched by this work — nothing here modifies
+  `eeschema/netlist_exporters/` or `eeschema/connectivity/`. The other
+  (`SchHost/LoadAndRenderProducesGeometry`) is ours: the test harness's mock
+  `PGM_BASE` does not initialise the font system, so `SCH_PAINTER` faults
+  drawing text. The same code path works in `kicad-sch-dump`, which sets up a
+  real program object.

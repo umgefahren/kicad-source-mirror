@@ -38,6 +38,7 @@ use kicad_sch_render::SchematicRenderer;
 use kicad_sch_ui::commands;
 use kicad_sch_ui::demo::demo_stream;
 use kicad_sch_ui::input::{PointerButton, RecordingSink, ShellEvent, shared_sink};
+use kicad_sch_ui::panels::DocumentSource;
 use kicad_sch_ui::shell::{self, SchematicShell};
 use kicad_sch_ui::tools::Tool;
 
@@ -64,7 +65,15 @@ fn open(cx: &mut TestAppContext) -> Harness {
         let mut renderer = SchematicRenderer::new();
         renderer.set_stream(demo_stream());
         let renderer = std::rc::Rc::new(std::cell::RefCell::new(renderer));
-        let view = cx.new(|cx| SchematicShell::new_with_renderer(renderer, shared, window, cx));
+        let view = cx.new(|cx| {
+            SchematicShell::new_with_document(
+                renderer,
+                DocumentSource::Demonstration,
+                shared,
+                window,
+                cx,
+            )
+        });
         *slot.borrow_mut() = Some(view.clone());
         Root::new(view, window, cx)
     });
@@ -106,10 +115,8 @@ fn click(cx: &mut TestAppContext, harness: &Harness, id: impl Into<ElementId>) {
 /// Press a key, then settle.
 fn press(cx: &mut TestAppContext, harness: &Harness, key: &str) {
     let key = key.to_string();
-    cx.update_window(harness.window, move |_, window, cx| {
-        window.press(&key, cx)
-    })
-    .expect("window is live");
+    cx.update_window(harness.window, move |_, window, cx| window.press(&key, cx))
+        .expect("window is live");
     cx.run_until_parked();
     frame(cx, harness);
 }
@@ -151,10 +158,7 @@ fn the_shell_renders_every_region(cx: &mut TestAppContext) {
         ] {
             let found = window.find(id);
             assert!(found.visible(), "{id} is not visible");
-            assert!(
-                found.bounds().size.width > px(0.),
-                "{id} has no width"
-            );
+            assert!(found.bounds().size.width > px(0.), "{id} has no width");
         }
         // The canvas actually painted: the background, the grid dots and the
         // stub geometry all land in the scene.
@@ -286,7 +290,10 @@ fn the_zoom_controls_move_the_camera_and_report_it(cx: &mut TestAppContext) {
     harness.sink.clear();
     click(cx, &harness, "tb-zoom-fit");
     let fitted = zoom(cx, &harness);
-    assert!((fitted - start).abs() < start * 0.01, "fit should return to the opening view");
+    assert!(
+        (fitted - start).abs() < start * 0.01,
+        "fit should return to the opening view"
+    );
 
     // The status bar carries the zoom, so it has to agree with the camera.
     cx.update_window(harness.window, |_, window, cx| {
@@ -422,7 +429,10 @@ fn scrolling_the_canvas_zooms_about_the_pointer(cx: &mut TestAppContext) {
     cx.run_until_parked();
 
     let after = zoom(cx, &harness);
-    assert!(after > before, "scrolling up should zoom in: {before} -> {after}");
+    assert!(
+        after > before,
+        "scrolling up should zoom in: {before} -> {after}"
+    );
     assert!(
         harness
             .sink
@@ -445,12 +455,7 @@ fn the_status_bar_follows_the_pointer(cx: &mut TestAppContext) {
 
     let position = cx
         .update_window(harness.window, |_, _, cx| {
-            harness
-                .shell
-                .read(cx)
-                .canvas()
-                .read(cx)
-                .cursor_world()
+            harness.shell.read(cx).canvas().read(cx).cursor_world()
         })
         .expect("window is live");
     let position = position.expect("hovering the canvas gives a cursor position");
@@ -564,10 +569,28 @@ fn dragging_the_dock_handle_resizes_the_panel(cx: &mut TestAppContext) {
     );
 }
 
+/// The hierarchy panel drives the properties panel. Until the C++ document
+/// model is connected the tree summarises the loaded draw stream, so the row
+/// clicked here is one of those rows rather than a symbol — which is the point:
+/// the panels show what the shell can actually know.
 #[gpui_kit::test]
-fn picking_a_sheet_in_the_hierarchy_changes_the_properties_panel(cx: &mut TestAppContext) {
+fn picking_a_row_in_the_hierarchy_changes_the_properties_panel(cx: &mut TestAppContext) {
     let harness = open(cx);
-    let before = cx
+    let (connected, before) = cx
+        .update_window(harness.window, |_, _, cx| {
+            let design = harness.shell.read(cx).design().read(cx);
+            (design.is_connected(), design.selected_label().to_string())
+        })
+        .expect("window is live");
+    assert!(
+        !connected,
+        "the shell must not claim a document model it has no link to"
+    );
+    assert_eq!(before, "demonstration stream");
+
+    click(cx, &harness, "stream-groups");
+
+    let after = cx
         .update_window(harness.window, |_, _, cx| {
             harness
                 .shell
@@ -578,21 +601,23 @@ fn picking_a_sheet_in_the_hierarchy_changes_the_properties_panel(cx: &mut TestAp
                 .to_string()
         })
         .expect("window is live");
-    assert_eq!(before, "Root Sheet");
+    assert!(
+        after.contains("retained groups"),
+        "the properties panel should follow the tree: {after}"
+    );
+}
 
-    click(cx, &harness, "sym-u1");
-
-    let after = cx
-        .update_window(harness.window, |_, _, cx| {
-            let design = harness.shell.read(cx).design().read(cx);
-            (
-                design.selected_label().to_string(),
-                design.selected_kind().to_string(),
-            )
-        })
-        .expect("window is live");
-    assert_eq!(after.0, "U1  MCU-48");
-    assert_eq!(after.1, "Symbol");
+/// Nothing in the panels may be invented while the document model is absent.
+#[gpui_kit::test]
+fn the_panels_say_they_are_not_connected_to_a_document_model(cx: &mut TestAppContext) {
+    let harness = open(cx);
+    cx.update_window(harness.window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("hierarchy-note").visible());
+        assert!(window.find("properties-note").visible());
+        assert!(window.find("document-name").visible());
+    })
+    .expect("window is live");
 }
 
 #[gpui_kit::test]
@@ -744,7 +769,8 @@ async fn the_command_palette_filters_and_runs_a_command(cx: &mut TestAppContext)
             state.matched_count(),
             state.selected_index()
         );
-    }).expect("live");
+    })
+    .expect("live");
 
     cx.update_window(harness.window, |_, window, cx| {
         window.press("enter", cx);
@@ -796,28 +822,14 @@ fn the_grid_and_unit_controls_change_what_the_status_bar_shows(cx: &mut TestAppC
     let harness = open(cx);
     let grid_before = cx
         .update_window(harness.window, |_, _, cx| {
-            harness
-                .shell
-                .read(cx)
-                .canvas()
-                .read(cx)
-                .grid()
-                .size()
-                .label
+            harness.shell.read(cx).canvas().read(cx).grid().size().label
         })
         .expect("window is live");
 
     click(cx, &harness, "tb-grid");
     let grid_after = cx
         .update_window(harness.window, |_, _, cx| {
-            harness
-                .shell
-                .read(cx)
-                .canvas()
-                .read(cx)
-                .grid()
-                .size()
-                .label
+            harness.shell.read(cx).canvas().read(cx).grid().size().label
         })
         .expect("window is live");
     assert_ne!(grid_before, grid_after);

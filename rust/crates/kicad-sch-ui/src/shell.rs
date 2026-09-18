@@ -10,8 +10,10 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use gpui_kit::TestSupportExt;
 use gpui_kit::assets::IconName;
 use gpui_kit::base::GlobalState;
+use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::command::{Command, CommandGroup, CommandItem, CommandState};
 use gpui_kit::component::dock::{
     DockArea, DockLayout, DockPlacement, DockSkin, Panel, PanelEvent, panel_handle,
@@ -20,9 +22,7 @@ use gpui_kit::component::menu::{AppMenuBar, ContextMenuExt, PopupMenu};
 use gpui_kit::component::status_bar::StatusBar;
 use gpui_kit::component::theme::{Theme, ThemeMode};
 use gpui_kit::component::{ActiveTheme, Icon, Selectable, Sizable, StyledExt};
-use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::prelude::*;
-use gpui_kit::TestSupportExt;
 use gpui_kit::{
     Action, App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, KeyDownEvent,
     KeyUpEvent, SharedString, Window, div, px,
@@ -39,8 +39,8 @@ use crate::input::{Modifiers, SharedSink, ShellEvent, shared_sink};
 use crate::panels::{DesignState, DocumentSource, HierarchyPanel, PropertiesPanel, StreamFacts};
 use crate::stats::FrameStats;
 use crate::theme::{self, CanvasPalette};
-use kicad_sch_render::SchematicRenderer;
 use crate::tools::TOOLS;
+use kicad_sch_render::SchematicRenderer;
 
 /// Initialise gpui-kit, the theme, the key map and the menu bar.
 ///
@@ -84,7 +84,11 @@ pub struct CanvasPanel {
 
 impl CanvasPanel {
     /// Wrap `state` as the centre panel, captioned `title`.
-    pub fn new(state: Entity<CanvasState>, title: impl Into<SharedString>, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        state: Entity<CanvasState>,
+        title: impl Into<SharedString>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         Self {
             focus_handle: cx.focus_handle(),
             state,
@@ -180,7 +184,10 @@ impl Render for CanvasPanel {
             .context_menu(|menu: PopupMenu, _window, _cx| {
                 menu.menu("Cut", Box::new(RunAction::new("common.Interactive.cut")))
                     .menu("Copy", Box::new(RunAction::new("common.Interactive.copy")))
-                    .menu("Paste", Box::new(RunAction::new("common.Interactive.paste")))
+                    .menu(
+                        "Paste",
+                        Box::new(RunAction::new("common.Interactive.paste")),
+                    )
                     .separator()
                     .menu(
                         "Properties...",
@@ -403,6 +410,28 @@ impl SchematicShell {
         self.stats.set_enabled(enabled);
     }
 
+    /// Open the command palette without a keystroke.
+    ///
+    /// The headless compositor the screenshots are taken under has a seat with
+    /// no input devices, so nothing can be typed at the window; this drives the
+    /// same state the `ctrl-shift-p` binding does so that the palette can be
+    /// photographed.
+    pub fn open_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.on_open_palette(&OpenCommandPalette, window, cx);
+    }
+
+    /// Apply `steps` zoom steps, positive in, negative out. Same reason.
+    ///
+    /// Queued behind the opening fit rather than applied now, because the fit
+    /// itself has to wait for the first layout.
+    pub fn zoom_steps(&mut self, steps: i32, cx: &mut Context<Self>) {
+        self.canvas.update(cx, |canvas, cx| {
+            canvas.zoom_after_fit(steps);
+            cx.notify();
+        });
+        cx.notify();
+    }
+
     /// Whether the window redraws every display frame. On by default so the
     /// frame-time readout is meaningful; a host that would rather idle can
     /// turn it off.
@@ -429,10 +458,7 @@ impl SchematicShell {
     }
 
     fn report(&self, command: commands::ShellCommand, cx: &App) {
-        self.emit(
-            ShellEvent::ActionInvoked(command.reported_id().into()),
-            cx,
-        );
+        self.emit(ShellEvent::ActionInvoked(command.reported_id().into()), cx);
     }
 
     // --- action handlers -------------------------------------------------
@@ -656,11 +682,7 @@ impl SchematicShell {
                     .gap_1p5()
                     .pl_1()
                     .pr_2()
-                    .child(
-                        Icon::new(IconName::Cpu)
-                            .size_4()
-                            .text_color(theme.primary),
-                    )
+                    .child(Icon::new(IconName::Cpu).size_4().text_color(theme.primary))
                     .child(
                         div()
                             .text_xs()
@@ -855,13 +877,7 @@ impl SchematicShell {
                     .v_flex()
                     .items_center()
                     .when(spec.group_break, |this| {
-                        this.child(
-                            div()
-                                .my_1()
-                                .w(px(22.))
-                                .h(px(1.))
-                                .bg(theme.sidebar_border),
-                        )
+                        this.child(div().my_1().w(px(22.)).h(px(1.)).bg(theme.sidebar_border))
                     })
                     .child(
                         Button::new(spec.button_id)
@@ -975,8 +991,11 @@ impl SchematicShell {
                             .font_family("monospace")
                             .text_color(theme.muted_foreground)
                             .child(format!(
-                                "{} drawn  {} culled  {} paths",
-                                frame.groups_drawn, frame.groups_culled, frame.paths
+                                "{} drawn  {} culled  {} paths  canvas {:.2} ms",
+                                frame.groups_drawn,
+                                frame.groups_culled,
+                                frame.paths,
+                                canvas.last_paint().as_secs_f64() * 1000.0
                             )),
                     )
                     .right(status_divider(cx))
@@ -1127,7 +1146,9 @@ impl Render for SchematicShell {
                     .child(div().flex_1().size_full().child(self.dock.clone())),
             )
             .child(self.render_status_bar(cx))
-            .when(self.palette_open, |this| this.child(self.render_palette(cx)))
+            .when(self.palette_open, |this| {
+                this.child(self.render_palette(cx))
+            })
     }
 }
 
@@ -1164,18 +1185,11 @@ fn dispatch(action: Box<dyn Action>) -> impl Fn(&ClickEvent, &mut Window, &mut A
 }
 
 fn toolbar_separator(cx: &App) -> impl IntoElement {
-    div()
-        .w(px(1.))
-        .h(px(18.))
-        .mx_1()
-        .bg(cx.theme().border)
+    div().w(px(1.)).h(px(18.)).mx_1().bg(cx.theme().border)
 }
 
 fn status_divider(cx: &App) -> impl IntoElement {
-    div()
-        .w(px(1.))
-        .h(px(12.))
-        .bg(cx.theme().border)
+    div().w(px(1.)).h(px(12.)).bg(cx.theme().border)
 }
 
 /// Render a gpui keystroke string the way a menu would.

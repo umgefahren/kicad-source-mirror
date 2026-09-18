@@ -53,6 +53,12 @@ recorded or is a non-virtual getter answered from base-class state:
 * `DrawEllipse` / `DrawEllipseArc` — recorded
 * `EnableDepthTest` — recorded
 
+Two further pieces of evidence that a partial backend is a supported thing to
+write, rather than something we got away with: **none of `KIGFX::GAL`'s 79
+virtuals is pure**, and `CALLBACK_GAL` (`include/callback_gal.h`) is an existing
+headless backend that overrides **exactly one** of them. `OPENGL_GAL` and
+`CAIRO_GAL` override 68 each; `RECORDING_GAL` overrides 64.
+
 So you should not need to touch the ABI. If you do, it is versioned
 (`KGDS_VERSION`) and both sides assert their layout at compile time, and
 `rust/crates/kicad-gal/tests/header_sync.rs` parses the C header as text and
@@ -248,20 +254,37 @@ Do not reach for gpui's text API for board text. You do not need it.
 * **Cull before tessellating.** gpui culls primitives against the content mask,
   but by then you have already paid the CPU tessellation cost.
 
-### 4.8 `GetToolCanvas()` is the real blocker, and it is still there
+### 4.8 `GetToolCanvas()` is smaller than it looks
 
-`TOOLS_HOLDER::GetToolCanvas()` returns a `wxWindow*`. It is the one genuine
-structural blocker to feeding `TOOL_MANAGER` from a non-wx host, and **we did not
-solve it** — input is not wired up in the schematic port either. See
-`04-host-seam.md`.
+`TOOLS_HOLDER::GetToolCanvas()` is pure virtual and returns a `wxWindow*`, which
+makes it look like a hard structural blocker to feeding `TOOL_MANAGER` from a
+non-wx host. On closer inspection it mostly is not, and this is worth knowing
+before you plan a refactor around it:
 
-If you are porting pcbnew, this is almost certainly your critical path, not
-rendering. Consider fixing it *first*, in a commit of its own that benefits both
-editors, rather than discovering it half way through. The survey found that
-roughly 470 of ~600 `m_frame->` call sites in eeschema's tools are plain model
-and settings access that could be hoisted to a host object independently of any
-Rust work — that refactor is useful on its own merits and is the highest-value
-preparation available.
+* `TOOL_MANAGER` has **zero** wx references in its header. `TOOL_EVENT` is a
+  plain value type with wx-free enums.
+* Only `TOOL_DISPATCHER` is bound to wx (it derives from `wxEvtHandler`), and it
+  is a thin translator. Its drag-threshold and auto-repeat helpers are `static`
+  pure functions, reusable as they stand.
+* The dispatcher's `GetToolCanvas()` call sites **null-guard it**
+  (`common/tool/tool_dispatcher.cpp:590-598`), so returning `nullptr` is viable
+  there.
+* **eeschema has no `GetToolCanvas()` call sites at all** outside the new host.
+  The fourteen in the tree are in `tool_dispatcher.cpp`, `eda_base_frame.cpp`,
+  `dialog_shim.cpp`, and the other applications — pcbnew, the 3D viewer,
+  bitmap2component, pcb_calculator.
+
+**Audit that last point for pcbnew before relying on it.** `pcb_edit_frame.cpp`
+is in the list, so a board editor host may have call sites a schematic host does
+not, and whether each is guarded is the thing to check.
+
+What remains is real but bounded: write a dispatcher that builds `TOOL_EVENT`s
+from gpui input instead of wx events, and feed `TOOL_MANAGER::ProcessEvent` /
+`PostEvent` / `DispatchHotKey` directly. Survey §6 has the exact event
+constructions, the `BUT_*`/`MD_*` bit values, and the constraint that hotkeys are
+`WXK_*` integers — so gpui key codes must map onto the same numbers.
+
+Input is **not** wired up in the schematic port; see §7.
 
 ### 4.9 Toolchain and environment
 
@@ -324,7 +347,9 @@ Before claiming the renderer is right:
 
 Stated plainly so you do not assume it exists:
 
-* **Input into `TOOL_MANAGER`** (§4.8). The single biggest remaining piece.
+* **Input into `TOOL_MANAGER`** (§4.8). The single biggest remaining piece,
+  though smaller than first assessed: the obstacle is writing a non-wx
+  dispatcher, not refactoring `GetToolCanvas()`.
 * **Dialogs.** All 124 of eeschema's are still wxWidgets; pcbnew has 224.
   `00-architecture-survey.md` §7.4 discusses keeping them, bridging them
   asynchronously through the existing tool coroutines, or rewriting them, and

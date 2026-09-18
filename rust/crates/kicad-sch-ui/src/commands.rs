@@ -28,7 +28,6 @@ use std::rc::Rc;
 use gpui_kit::assets::IconName;
 use gpui_kit::{Action, KeyBinding, KeyBindingContextPredicate, Menu, MenuItem, SharedString};
 
-
 use crate::tools::{TOOLS, Tool};
 
 // The commands the shell answers without involving the document: view
@@ -241,11 +240,7 @@ pub struct MenuDef {
 }
 
 /// Shorthand for a command that forwards a KiCad action name.
-const fn kicad(
-    label: &'static str,
-    id: &'static str,
-    key: Option<&'static str>,
-) -> MenuEntry {
+const fn kicad(label: &'static str, id: &'static str, key: Option<&'static str>) -> MenuEntry {
     MenuEntry::Command(CommandSpec {
         label,
         kind: CommandKind::Kicad(id),
@@ -255,11 +250,7 @@ const fn kicad(
 }
 
 /// Shorthand for a command the shell answers itself.
-const fn shell(
-    label: &'static str,
-    command: ShellCommand,
-    key: Option<&'static str>,
-) -> MenuEntry {
+const fn shell(label: &'static str, command: ShellCommand, key: Option<&'static str>) -> MenuEntry {
     MenuEntry::Command(CommandSpec {
         label,
         kind: CommandKind::Shell(command),
@@ -283,7 +274,11 @@ const SEP: MenuEntry = MenuEntry::Separator;
 
 static FILE_EXPORT: &[MenuEntry] = &[
     kicad("Netlist...", "eeschema.EditorControl.exportNetlist", None),
-    kicad("Bill of Materials...", "eeschema.EditorControl.generateBOM", None),
+    kicad(
+        "Bill of Materials...",
+        "eeschema.EditorControl.generateBOM",
+        None,
+    ),
     kicad(
         "Symbols to Library...",
         "eeschema.EditorControl.exportSymbolsToLibrary",
@@ -378,7 +373,11 @@ static VIEW_ITEMS: &[MenuEntry] = &[
         None,
     ),
     SEP,
-    shell("Hierarchy Panel", ShellCommand::ToggleLeftPanel, Some("ctrl-b")),
+    shell(
+        "Hierarchy Panel",
+        ShellCommand::ToggleLeftPanel,
+        Some("ctrl-b"),
+    ),
     shell(
         "Properties Panel",
         ShellCommand::ToggleRightPanel,
@@ -428,7 +427,11 @@ static PLACE_ITEMS: &[MenuEntry] = &[
     ),
     SEP,
     tool(Tool::PlaceText),
-    kicad("Draw Text Box", "eeschema.InteractiveDrawing.drawTextBox", None),
+    kicad(
+        "Draw Text Box",
+        "eeschema.InteractiveDrawing.drawTextBox",
+        None,
+    ),
     MenuEntry::Submenu {
         label: "Graphics",
         items: PLACE_GRAPHICS,
@@ -475,7 +478,11 @@ static TOOLS_ITEMS: &[MenuEntry] = &[
         None,
     ),
     SEP,
-    kicad("Annotate Schematic...", "eeschema.EditorControl.annotate", None),
+    kicad(
+        "Annotate Schematic...",
+        "eeschema.EditorControl.annotate",
+        None,
+    ),
     kicad(
         "Assign Footprints...",
         "eeschema.EditorControl.assignFootprints",
@@ -526,14 +533,22 @@ static PREFERENCES_ITEMS: &[MenuEntry] = &[
         "common.SuiteControl.showSymbolLibTable",
         None,
     ),
-    kicad("Configure Paths...", "common.SuiteControl.configurePaths", None),
+    kicad(
+        "Configure Paths...",
+        "common.SuiteControl.configurePaths",
+        None,
+    ),
     SEP,
     kicad("Hotkeys...", "common.SuiteControl.listHotKeys", None),
 ];
 
 static HELP_ITEMS: &[MenuEntry] = &[
     kicad("KiCad Manual", "common.SuiteControl.help", Some("f1")),
-    kicad("Getting Started", "common.SuiteControl.gettingStarted", None),
+    kicad(
+        "Getting Started",
+        "common.SuiteControl.gettingStarted",
+        None,
+    ),
     kicad("Hotkey Reference", "common.SuiteControl.listHotKeys", None),
     SEP,
     kicad("Report a Bug", "common.SuiteControl.reportBug", None),
@@ -733,7 +748,9 @@ fn context_for(keys: &str) -> Option<Rc<KeyBindingContextPredicate>> {
     if modified {
         return None;
     }
-    KeyBindingContextPredicate::parse("!Input").ok().map(Rc::new)
+    KeyBindingContextPredicate::parse("!Input")
+        .ok()
+        .map(Rc::new)
 }
 
 /// The tool a KiCad action name activates, if it names a tool.
@@ -795,8 +812,7 @@ mod tests {
         let escape: Vec<_> = bindings
             .iter()
             .filter(|binding| {
-                binding.keystrokes().len() == 1
-                    && binding.keystrokes()[0].inner().key == "escape"
+                binding.keystrokes().len() == 1 && binding.keystrokes()[0].inner().key == "escape"
             })
             .collect();
         assert_eq!(escape.len(), 1, "escape bound {} times", escape.len());

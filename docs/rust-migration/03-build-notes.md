@@ -292,6 +292,47 @@ compiled-in path, so run it from the build tree rather than copying it elsewhere
 harness for exercising the C++ document model from a test without standing up the GUI —
 which makes it the natural place to validate the Rust-side FFI boundary later.
 
+### Baseline results on this branch
+
+Build time for `qa_eeschema`: **29m 21s** (272 edges, on top of the main build).
+Full run takes about **83 seconds**.
+
+```
+1351 test cases out of 1353 passed
+2 test cases out of 1353 failed
+2 test cases out of 1353 aborted
+997290 assertions out of 997292 passed
+```
+
+Exit code is **201** (Boost.Test's "failures occurred"), so treat any CI wrapper
+accordingly. The two failures are **pre-existing defects in this branch's own
+in-flight migration code**, not build or environment problems:
+
+1. **`SchHost/LoadAndRenderProducesGeometry`** — `qa/tests/eeschema/test_sch_host.cpp:139`.
+   Segfaults (`memory access violation at address: 0x508`) inside `SCH_HOST::Render()`,
+   last checkpoint at line 148. `SCH_HOST` (`eeschema/host/sch_host.cpp:66`) builds a
+   `KIGFX::RECORDING_GAL` and renders through it. This is the new headless render path
+   and it is genuinely broken — see `04-*` notes / the GAL analysis.
+2. **`ConnectivityExport/AllegroUsesPublishedNetsAndPreservesDeviceFiles`** —
+   `qa/tests/eeschema/test_connectivity_export.cpp:258`.
+   `NETLIST_EXPORTER_ALLEGRO::WriteNetlist()` returns false with the **legacy**
+   connectivity engine forced on (`m_ConnectivityEngine = false`). Related to the
+   branch's "Enable new connectivity engine by default" change.
+
+Neither failure is caused by the configure options in this document. A green baseline
+for everything else means the toolchain and dependency set here are sound.
+
+To reproduce just these two:
+
+```bash
+./qa/tests/eeschema/qa_eeschema --run_test=SchHost --log_level=all
+./qa/tests/eeschema/qa_eeschema --run_test=ConnectivityExport --log_level=all
+```
+
+There are also dedicated tests for the recording backend in the `qa_common` binary
+(`qa/tests/common/gal/test_recording_gal.cpp`, `test_draw_stream.cpp`), which were
+not built or run in this pass — build `qa_common` if you need that baseline too.
+
 ---
 
 ## 5. Quick reproduction (copy/paste)
