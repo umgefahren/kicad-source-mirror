@@ -5,7 +5,13 @@ wxWidgets and OpenGL, onto [gpui-kit](https://crates.io/crates/gpui-kit) and
 wgpu — while leaving the C++ document model, file I/O, connectivity engine, ERC
 and tools exactly where they are.
 
-Start with **`01-plan.md`**. Everything else is supporting detail.
+**If you are evaluating what this actually delivers, read
+[`06-what-is-missing.md`](06-what-is-missing.md) first.** What exists is a
+schematic *viewer* for pre-recorded draw streams, plus a tested seam. It is not
+a schematic editor, and wxWidgets has not been removed from anything. That
+document says exactly where it stops and what the remaining stages are.
+
+For the design, start with **`01-plan.md`**.
 
 | Document | What it is | Who it is for |
 |---|---|---|
@@ -15,6 +21,7 @@ Start with **`01-plan.md`**. Everything else is supporting detail.
 | `03-build-notes.md` | Configuring and building the C++ tree, with the exact dependency list and timings | Anyone building |
 | `04-host-seam.md` | The C++ host that owns a schematic session without a `wxFrame`, the C ABI, and what feeding `TOOL_MANAGER` from Rust would still take | Anyone continuing the migration |
 | `05-porting-guide.md` | **How to do this again for pcbnew.** What is reusable unchanged, what is genuinely different about a board editor, and the traps — including the two designs we got wrong and had to redo | Read before starting the next editor |
+| `06-what-is-missing.md` | **What this is not, and what an editor still needs.** The two unjoined ends of the C++ bridge, and the staged work to close them | Read first if you are judging scope |
 
 Two more places hold the parts that are code rather than prose:
 
@@ -52,6 +59,9 @@ and it is the C++ one.
 ## Honest status
 
 This step delivers the rendering and presentation seam, not a finished editor.
+Concretely: the Rust application cannot open a `.kicad_sch`, its input goes to a
+null sink, and no Rust code links the C ABI. `06-what-is-missing.md` covers this
+properly.
 **Input is not yet wired into `TOOL_MANAGER`** — that is the next milestone, and
 `04-host-seam.md` records what it would take. Its prerequisite is not the one it
 appears to be: `GetToolCanvas()` is largely a red herring, while eight unchecked
