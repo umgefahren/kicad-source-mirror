@@ -115,6 +115,10 @@ jobs:
       # context or wxFrame dependency, which is what lets them be compiled and
       # exercised on their own here rather than needing a full KiCad build.
       # If that ever stops being true, this job is what will notice.
+      # nlohmann_json and clipper2 are taken from thirdparty/ rather than from
+      # distro packages, so this job compiles against the same headers the real
+      # build does instead of whatever the runner image happens to ship.
+      #
       # config.h is normally produced by a full CMake configure. The draw
       # stream only needs it transitively, through kimath's math/util.h, so a
       # default-valued one is generated here instead of configuring the whole
@@ -133,6 +137,7 @@ jobs:
             -DBOOST_TEST_DYN_LINK -DBOOST_TEST_MODULE=draw_stream \
             -I /tmp/kicad-gen \
             -I include -I libs/kimath/include -I libs/core/include \
+            -I thirdparty/nlohmann_json \
             -I thirdparty/clipper2/Clipper2Lib/include \
             $(wx-config --cxxflags) \
             qa/tests/common/gal/test_draw_stream.cpp \
