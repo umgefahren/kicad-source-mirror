@@ -18,6 +18,7 @@ use gpui_kit::component::Root;
 use gpui_kit::component::theme::ThemeMode;
 use gpui_kit::{App, AppContext as _, Bounds, WindowBounds, WindowOptions, point, px, size};
 use kicad_sch_render::SchematicRenderer;
+use kicad_sch_ui::panels::DocumentSource;
 use kicad_sch_ui::shell::{self, SchematicShell};
 
 /// Command-line options. Hand-parsed: three flags do not justify a dependency
@@ -129,12 +130,18 @@ fn main() {
 
             // The stream is read before the window opens, so a bad path is a
             // clear message on the terminal rather than an empty canvas.
-            let renderer = match options.stream.as_deref() {
+            let document = match options.stream.as_deref() {
                 Some(path) => match kicad_sch_ui::demo::load_stream(path) {
                     Ok(stream) => {
                         let mut renderer = SchematicRenderer::new();
                         renderer.set_stream(stream);
-                        Some(renderer)
+                        // The window is captioned with the file it is actually
+                        // showing, so a screenshot cannot misrepresent itself.
+                        let file = path
+                            .file_name()
+                            .map(|name| name.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| path.display().to_string());
+                        Some((renderer, DocumentSource::RecordedStream { file: file.into() }))
                     }
                     Err(error) => {
                         eprintln!("could not read {}: {error}", path.display());
@@ -165,9 +172,10 @@ fn main() {
                     },
                     move |window, cx| {
                         let view = cx.new(|cx| {
-                            let mut shell = match renderer {
-                                Some(renderer) => SchematicShell::new_with_renderer(
+                            let mut shell = match document {
+                                Some((renderer, source)) => SchematicShell::new_with_document(
                                     std::rc::Rc::new(std::cell::RefCell::new(renderer)),
+                                    source,
                                     kicad_sch_ui::input::shared_sink(
                                         kicad_sch_ui::input::NullSink,
                                     ),
