@@ -34,6 +34,7 @@
  */
 
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <map>
 #include <set>
@@ -373,6 +374,72 @@ BOOST_AUTO_TEST_CASE( StreamSerializesAndReloads )
     BOOST_CHECK_EQUAL( restored.frame_cmd_count, original.frame_cmd_count );
     BOOST_CHECK_EQUAL( restored.group_coord_count, original.group_coord_count );
     BOOST_CHECK_EQUAL( restored.frame_coord_count, original.frame_coord_count );
+}
+
+
+/**
+ * The checked-in golden streams must still decode.
+ *
+ * `qa/data/draw_streams/` exists so that the Rust renderer can be developed
+ * against real schematic output with no C++ linked. That only works for as long
+ * as the files remain readable by the current `DRAW_STREAM`, so this is the
+ * guard: if the wire format changes without the fixtures being regenerated,
+ * this fails rather than the Rust side failing later for reasons that look
+ * unrelated.
+ */
+BOOST_AUTO_TEST_CASE( GoldenStreamsStillDecode )
+{
+    const std::filesystem::path dir =
+            std::filesystem::path( KI_TEST::GetTestDataRootDir() ) / "draw_streams";
+
+    BOOST_REQUIRE_MESSAGE( std::filesystem::is_directory( dir ),
+                           "missing fixture directory: " << dir.string() );
+
+    std::size_t checked = 0;
+
+    for( const std::filesystem::directory_entry& entry :
+         std::filesystem::directory_iterator( dir ) )
+    {
+        if( entry.path().extension() != ".kgds" )
+            continue;
+
+        BOOST_TEST_CONTEXT( entry.path().filename().string() )
+        {
+            std::ifstream in( entry.path(), std::ios::binary );
+            BOOST_REQUIRE( in.is_open() );
+
+            KIGFX::DRAW_STREAM stream;
+            BOOST_REQUIRE( stream.Deserialize( in ) );
+
+            const kgds_stream_view view = stream.Publish();
+
+            BOOST_CHECK_EQUAL( view.version, KGDS_VERSION );
+
+            // A golden recorded from a real schematic has retained geometry in it;
+            // one that does not is a fixture that stopped being useful.
+            BOOST_CHECK_GT( view.group_count, 0u );
+            BOOST_CHECK_GT( view.group_cmd_count, 0u );
+            BOOST_CHECK_GT( view.frame_cmd_count, 0u );
+            BOOST_CHECK_GT( view.group_coord_count, 0u );
+
+            BOOST_CHECK( coordIndicesInRange( view ) );
+
+            // Every group a frame replays must exist, or the renderer would look up
+            // a buffer that was never uploaded.
+            for( std::size_t ii = 0; ii < view.frame_cmd_count; ++ii )
+            {
+                if( view.frame_cmds[ii].op != KGDS_OP_DRAW_GROUP )
+                    continue;
+
+                BOOST_CHECK( stream.HasGroup(
+                        static_cast<int>( view.frame_cmds[ii].arg0 ) ) );
+            }
+
+            ++checked;
+        }
+    }
+
+    BOOST_CHECK_GT( checked, 0u );
 }
 
 

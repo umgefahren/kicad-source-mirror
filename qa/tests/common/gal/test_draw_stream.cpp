@@ -36,6 +36,7 @@
 
 #include <gal/recording/draw_stream.h>
 
+#include <cstring>
 #include <sstream>
 
 using namespace KIGFX;
@@ -314,6 +315,72 @@ BOOST_AUTO_TEST_CASE( CompactionRelocatesNonArg0Indices )
             BOOST_CHECK_LE( static_cast<std::size_t>( refs[r].start ) + refs[r].count,
                             view.group_coord_count );
         }
+    }
+}
+
+
+/**
+ * A stream whose image table points outside the image arena must be rejected.
+ *
+ * A consumer uploads image_data[data_offset .. data_offset + data_length] to a
+ * texture on the strength of the table alone, so an extent that runs off the end
+ * is an out-of-bounds read on the far side of the FFI boundary. The same goes
+ * for a KGDS_OP_BITMAP whose arg0 indexes past the table: arg0 is an image
+ * index, not a coordinate, so the coordinate bounds check does not cover it.
+ */
+BOOST_AUTO_TEST_CASE( MalformedImageTablesAreRejected )
+{
+    const std::uint8_t pixel[4] = { 255, 255, 255, 255 };
+
+    // A well-formed stream with one image, to serve as the baseline.
+    DRAW_STREAM good;
+    const std::uint32_t image = good.PushImage( 1, 1, pixel, 4 );
+    good.BeginGroup();
+    const double transform[6] = { 1, 0, 0, 1, 0, 0 };
+    good.Emit( KGDS_OP_BITMAP, 0, image, good.PushCoords( transform, 6 ),
+               good.PushCoord( 1.0 ) );
+    good.EndGroup();
+
+    std::ostringstream out( std::ios::binary );
+    BOOST_REQUIRE( good.Serialize( out ) );
+
+    const std::string blob = out.str();
+
+    {
+        DRAW_STREAM reloaded;
+        std::istringstream in( blob, std::ios::binary );
+        BOOST_REQUIRE( reloaded.Deserialize( in ) );
+    }
+
+    // Now corrupt the image table's data_length. The table is the seventh
+    // section, so rather than compute its offset, find the record by its known
+    // contents: width 1, height 1, format 0, offset 0, length 4.
+    const kgds_image original = { 1, 1, KGDS_IMAGE_RGBA8, 0, 0, 4 };
+    const std::string needle( reinterpret_cast<const char*>( &original ), sizeof( original ) );
+    const std::size_t at = blob.find( needle );
+
+    BOOST_REQUIRE( at != std::string::npos );
+
+    {
+        std::string damaged = blob;
+        kgds_image  bad = original;
+        bad.data_length = 1024;                 // far beyond the 4 bytes present
+        std::memcpy( &damaged[at], &bad, sizeof( bad ) );
+
+        DRAW_STREAM reloaded;
+        std::istringstream in( damaged, std::ios::binary );
+        BOOST_CHECK( !reloaded.Deserialize( in ) );
+    }
+
+    {
+        std::string damaged = blob;
+        kgds_image  bad = original;
+        bad.data_offset = 4096;                 // starts past the end of the arena
+        std::memcpy( &damaged[at], &bad, sizeof( bad ) );
+
+        DRAW_STREAM reloaded;
+        std::istringstream in( damaged, std::ios::binary );
+        BOOST_CHECK( !reloaded.Deserialize( in ) );
     }
 }
 

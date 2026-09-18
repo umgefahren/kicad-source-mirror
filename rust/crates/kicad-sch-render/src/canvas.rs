@@ -274,8 +274,8 @@ impl SchematicRenderer {
         // depth buffer, so ordering can only come from the order things are
         // painted in.
         let flush = |items: &mut Vec<PreparedItem>,
-                         groups: &mut Vec<PreparedItem>,
-                         depths: &mut Vec<f64>| {
+                     groups: &mut Vec<PreparedItem>,
+                     depths: &mut Vec<f64>| {
             if groups.is_empty() {
                 return;
             }
@@ -364,7 +364,7 @@ impl SchematicRenderer {
                         .count();
 
                     let anchor = proj.point(cached.anchor);
-                    let depth = depth_override.unwrap_or(cached.min_depth);
+                    let depth = (*depth_override).unwrap_or(cached.min_depth);
                     pending_depths.push(depth);
                     pending_groups.push(PreparedItem::Group {
                         cached,
@@ -372,7 +372,7 @@ impl SchematicRenderer {
                             scale: residual,
                             offset: anchor,
                         },
-                        override_color: color_override.map(|c| c.to_packed()),
+                        override_color: color_override.as_ref().map(|c| c.to_packed()),
                     });
                 }
             }

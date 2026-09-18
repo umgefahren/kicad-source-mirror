@@ -27,6 +27,8 @@ gpui = { version = "0.3.5", package = "gpui-pre" }
 lyon_tessellation = "1.0.22"
 
 [dev-dependencies]
+# `Window::painted_quads` and the `#[gpui::test]` harness are behind this.
+gpui = { version = "0.3.5", package = "gpui-pre", features = ["test-support"] }
 criterion = { version = "0.7", default-features = false, features = ["cargo_bench_support"] }
 
 [[bench]]

@@ -174,6 +174,11 @@ impl Emitter {
         out
     }
 
+    /// True when nothing has been emitted into this scope yet.
+    fn is_empty(&self) -> bool {
+        self.pending.is_empty()
+    }
+
     fn push(&mut self, depth: f64, prim: Prim) {
         self.stats.primitives += 1;
         if depth < self.min_depth {
@@ -1057,12 +1062,16 @@ pub fn translate_frame(
         } = inst.command
         {
             // Close the run of direct geometry so that the group lands between
-            // the commands that surround it, not after all of them.
-            let (geometry, _, stats, _) =
-                std::mem::replace(&mut em, Emitter::new(proj)).finish(false);
-            frame.stats.add(&stats);
-            if !geometry.is_empty() {
-                frame.items.push(FrameItem::Geometry(geometry));
+            // the commands that surround it, not after all of them. A frame
+            // body is mostly a long run of group replays, so the common case is
+            // that there is nothing to close and the emitter is left alone.
+            if !em.is_empty() {
+                let (geometry, _, stats, _) =
+                    std::mem::replace(&mut em, Emitter::new(proj)).finish(false);
+                frame.stats.add(&stats);
+                if !geometry.is_empty() {
+                    frame.items.push(FrameItem::Geometry(geometry));
+                }
             }
             frame.items.push(FrameItem::Group {
                 id,

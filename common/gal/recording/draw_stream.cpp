@@ -652,6 +652,20 @@ bool DRAW_STREAM::Deserialize( std::istream& aIn )
         m_nextGroupId = std::max( m_nextGroupId, id + 1 );
     }
 
+    // An image's pixels must lie inside the image arena. A consumer uploads
+    // image_data[data_offset .. data_offset + data_length] to a texture without
+    // looking further, so an out-of-range extent here is an out-of-bounds read
+    // there.
+    for( const kgds_image& image : m_images )
+    {
+        if( image.data_offset + image.data_length > m_imageData.size()
+            || image.data_offset > m_imageData.size() )
+        {
+            Clear();
+            return false;
+        }
+    }
+
     // Every coordinate index in the file must be in range before any consumer
     // is allowed to dereference it.
     const auto checkArena = [&]( const std::vector<kgds_cmd>& aCmds,
@@ -660,6 +674,11 @@ bool DRAW_STREAM::Deserialize( std::istream& aIn )
         for( const kgds_cmd& cmd : aCmds )
         {
             if( cmd.op >= KGDS_OP_MAX )
+                return false;
+
+            // KGDS_OP_BITMAP's arg0 is an image-table index rather than a
+            // coordinate, so kgds_coord_refs() does not cover it.
+            if( cmd.op == KGDS_OP_BITMAP && cmd.arg0 >= m_images.size() )
                 return false;
 
             kgds_coord_ref refs[KGDS_MAX_COORD_REFS];

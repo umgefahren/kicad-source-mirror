@@ -430,6 +430,29 @@ Regression coverage is in
 which checks `KGDS_OP_BITMAP` and `KGDS_OP_SEGMENT_CHAIN` through a compaction
 and then asserts the in-range invariant across the whole compacted stream.
 
+### 7.1 A second, smaller gap in the same file
+
+`DRAW_STREAM::Deserialize()` validates the untrusted input it is given — every
+coordinate index in range, every opcode known, every group body inside the
+command array — but it did not check two things that a consumer dereferences
+just as directly:
+
+* a `kgds_image`'s `data_offset + data_length` against the image arena. A
+  renderer uploads exactly that range to a texture on the strength of the table
+  alone.
+* `KGDS_OP_BITMAP`'s `arg0` against the image table. It is an image index rather
+  than a coordinate, so `kgds_coord_refs()` does not report it and the
+  coordinate bounds check never sees it.
+
+Both are now checked. Confirmed against the pre-fix code:
+
+```
+old:    baseline decodes: yes   oversized length rejected: NO    bad offset rejected: NO
+fixed:  baseline decodes: yes   oversized length rejected: yes   bad offset rejected: yes
+```
+
+Covered by `test_draw_stream.cpp::MalformedImageTablesAreRejected`.
+
 ---
 
 ## 8. Other known issues found while doing this
