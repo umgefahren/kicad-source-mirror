@@ -51,6 +51,11 @@ set( GAL_SRCS
     cairo/cairo_gal.cpp
     cairo/cairo_compositor.cpp
     cairo/cairo_print.cpp
+
+    # Recording GAL: captures draw calls into a flat, device-independent
+    # stream instead of rasterising them. Needs no window and no GL context.
+    recording/draw_stream.cpp
+    recording/recording_gal.cpp
     )
 
 add_library( gal SHARED ${GAL_SRCS} )

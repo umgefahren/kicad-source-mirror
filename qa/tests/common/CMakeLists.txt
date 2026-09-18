@@ -164,6 +164,10 @@ set( QA_COMMON_SRCS
     test_gal_xor_mode.cpp
     test_gal_resize_strategy.cpp
 
+    # Recording GAL backend and the draw stream it produces.
+    gal/test_draw_stream.cpp
+    gal/test_recording_gal.cpp
+
     # Preview item / drawing utility tests
     test_construction_geom.cpp
     test_dashed_line.cpp
