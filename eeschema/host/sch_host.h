@@ -153,12 +153,19 @@ public:
     /**
      * Set the camera.
      *
-     * @param aWidthPx  viewport width in pixels; must be positive.
-     * @param aHeightPx viewport height in pixels; must be positive.
-     * @param aCenter   the world point at the centre of the viewport.
-     * @param aScale    world-to-screen scale; must be positive.
+     * The scale is in pixels per internal unit, which is what the recorded
+     * coordinates and a consumer's own camera are in — and is *not* what
+     * KIGFX::VIEW means by a scale. See PixelsPerIUAtUnitZoom().
+     *
+     * @param aWidthPx     viewport width in pixels; must be positive.
+     * @param aHeightPx    viewport height in pixels; must be positive.
+     * @param aCenter      the world point at the centre of the viewport.
+     * @param aPixelsPerIU pixels per internal unit; must be positive. Clamped to
+     *                     eeschema's zoom limits, so what GetViewScale() reports
+     *                     afterwards is not necessarily what was asked for.
      */
-    void SetViewport( int aWidthPx, int aHeightPx, const VECTOR2D& aCenter, double aScale );
+    void SetViewport( int aWidthPx, int aHeightPx, const VECTOR2D& aCenter,
+                      double aPixelsPerIU );
 
     /// Resize the viewport, keeping the current centre and scale.
     void SetViewportSize( int aWidthPx, int aHeightPx );
@@ -171,7 +178,21 @@ public:
     void ZoomToFit();
 
     VECTOR2D GetViewCenter() const;
-    double   GetViewScale() const;
+
+    /// Pixels per internal unit, matching what SetViewport() takes.
+    double GetViewScale() const;
+
+    /**
+     * Pixels per internal unit at a GAL zoom factor of one.
+     *
+     * The conversion between the ABI's scale and KIGFX::VIEW's, which are not the
+     * same quantity: VIEW's is the GAL zoom factor, and pixels per internal unit
+     * additionally involves the screen DPI, eeschema's world unit length and the
+     * user's zoom-correction factor. Read out of the GAL rather than recomputed,
+     * so that it cannot drift from the GAL's own definition.
+     */
+    double PixelsPerIUAtUnitZoom() const;
+
     VECTOR2I GetViewportSize() const { return m_viewportSize; }
 
     // --------------------------------------------------------------- render

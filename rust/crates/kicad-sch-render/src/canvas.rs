@@ -139,8 +139,23 @@ impl SchematicRenderer {
     /// Copy a borrowed stream in. The view's memory belongs to the producer and
     /// is only valid until its next recording pass, so it cannot simply be
     /// held.
+    ///
+    /// This is the call a live host makes every frame, so it is written to reuse
+    /// what it already has: the buffers are copied over rather than reallocated,
+    /// and the spatial index is rebuilt only when the group table changed —
+    /// which a pan or a zoom does not do, because retained geometry is recorded
+    /// once and replayed. The tessellation cache is keyed on
+    /// `(group id, serial)` and is not touched here at all, so an unchanged
+    /// group survives any number of these.
     pub fn set_stream_view(&mut self, view: &StreamView<'_>) {
-        self.set_stream(view.to_owned_stream());
+        let groups_changed = self.indexed_groups != view.groups();
+        match self.stream.as_mut() {
+            Some(stream) => stream.copy_from_view(view),
+            None => self.stream = Some(view.to_owned_stream()),
+        }
+        if groups_changed {
+            self.rebuild_index();
+        }
     }
 
     /// The stream, if one has been set.

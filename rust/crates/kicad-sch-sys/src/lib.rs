@@ -36,6 +36,22 @@
 //! than by a comment. [`Session::render_owned`] copies out instead, for a caller
 //! that wants to keep the frame.
 //!
+//! # Driving it per frame
+//!
+//! A session is meant to be held open and asked for a frame whenever the view
+//! moves, which is what the gpui shell does. Two properties make that affordable,
+//! and both are checked by `tests/live_session.rs`:
+//!
+//! * Moving the camera re-records the *frame body* — the list of group references
+//!   `KIGFX::VIEW::Redraw` culls to the viewport — and leaves the retained group
+//!   geometry byte-for-byte alone. A consumer caching tessellation against
+//!   `(group id, serial)` therefore keeps all of it across a pan or a zoom.
+//! * [`Session::set_viewport`] takes pixels per internal unit, the same unit the
+//!   recorded coordinates are in, so a consumer's camera needs no conversion.
+//!   It is clamped to eeschema's zoom limits, though, so read it back with
+//!   [`Session::viewport`] and adopt what was granted: the session culls to the
+//!   scale it holds.
+//!
 //! Validation is not this crate's job: `kicad-gal` checks every index, opcode
 //! and group reference before a [`StreamView`] exists, and that pass runs on a
 //! live stream exactly as it does on a recorded one.
@@ -50,9 +66,14 @@
 //!
 //! # Threading
 //!
-//! A [`Session`] is neither [`Send`] nor [`Sync`], which the ABI's "one session
-//! per thread, never shared" reduces to. The process-wide initialisation behind
-//! the first session is done once, under a lock, however many threads ask.
+//! One thread — the one that opened the first session. Not one session per
+//! thread: wx takes that first caller to be its main thread, and eeschema's
+//! connectivity engine asserts `wxThread::IsMain()` on every document load, so a
+//! second thread is not a race to be serialised but simply not allowed. A
+//! [`Session`] is therefore neither [`Send`] nor [`Sync`], and asking for one
+//! from anywhere else is [`Error::WrongThread`] rather than a C++ assertion on
+//! someone else's stack. The process-wide initialisation itself happens once,
+//! under a lock, however many threads ask.
 //!
 //! [abi-header]: https://gitlab.com/kicad/code/kicad/-/blob/master/include/sch_host/sch_host_abi.h
 

@@ -37,6 +37,7 @@ use gpui_kit::{
 use kicad_sch_render::SchematicRenderer;
 use kicad_sch_ui::commands;
 use kicad_sch_ui::demo::demo_stream;
+use kicad_sch_ui::document::{ReplayDocument, SharedDocument};
 use kicad_sch_ui::input::{PointerButton, RecordingSink, ShellEvent, shared_sink};
 use kicad_sch_ui::panels::DocumentSource;
 use kicad_sch_ui::shell::{self, SchematicShell};
@@ -54,6 +55,21 @@ struct Harness {
 }
 
 fn open(cx: &mut TestAppContext) -> Harness {
+    open_with(cx, None)
+}
+
+/// A shell drawing from a live document, plus the document itself so a test can
+/// see what it was asked for.
+///
+/// The `Rc<RefCell<ReplayDocument>>` coerces to the `SharedDocument` the shell
+/// wants, which is how a test keeps a handle on something it has handed over.
+fn open_live(cx: &mut TestAppContext) -> (Harness, Rc<RefCell<ReplayDocument>>) {
+    let document = Rc::new(RefCell::new(ReplayDocument::new(demo_stream())));
+    let harness = open_with(cx, Some(document.clone()));
+    (harness, document)
+}
+
+fn open_with(cx: &mut TestAppContext, document: Option<SharedDocument>) -> Harness {
     cx.update(shell::init);
 
     let sink = RecordingSink::new();
@@ -66,13 +82,17 @@ fn open(cx: &mut TestAppContext) -> Harness {
         renderer.set_stream(demo_stream());
         let renderer = std::rc::Rc::new(std::cell::RefCell::new(renderer));
         let view = cx.new(|cx| {
-            SchematicShell::new_with_document(
+            let mut shell = SchematicShell::new_with_document(
                 renderer,
                 DocumentSource::Demonstration,
                 shared,
                 window,
                 cx,
-            )
+            );
+            if let Some(document) = document {
+                shell.set_document(document, cx);
+            }
+            shell
         });
         *slot.borrow_mut() = Some(view.clone());
         Root::new(view, window, cx)
@@ -923,4 +943,231 @@ fn the_shell_reports_its_viewport_when_the_camera_moves(cx: &mut TestAppContext)
         .expect("zooming has to report a new viewport");
     assert!(reported.width > 100., "{reported:?}");
     assert!(reported.scale > 0., "{reported:?}");
+}
+
+// --- live re-render --------------------------------------------------------
+//
+// The property these are about: a canvas over a live document draws the frame
+// its camera is about to paint, asks for one exactly when the answer could have
+// changed, and does not throw away tessellated geometry when it gets one.
+
+/// How many frames the live document has been asked for.
+fn renders(cx: &mut TestAppContext, harness: &Harness) -> u64 {
+    cx.update_window(harness.window, |_, _, cx| {
+        harness.shell.read(cx).canvas().read(cx).document_renders()
+    })
+    .expect("window is live")
+}
+
+fn cache(cx: &mut TestAppContext, harness: &Harness) -> kicad_sch_render::CacheStats {
+    cx.update_window(harness.window, |_, _, cx| {
+        harness
+            .shell
+            .read(cx)
+            .canvas()
+            .read(cx)
+            .renderer()
+            .borrow()
+            .cache_stats()
+    })
+    .expect("window is live")
+}
+
+#[gpui_kit::test]
+fn opening_asks_the_document_for_one_frame_and_then_stops(cx: &mut TestAppContext) {
+    let (harness, _document) = open_live(cx);
+
+    // One request, for the camera the opening fit settled on — not one per
+    // layout pass on the way there.
+    assert_eq!(renders(cx, &harness), 1);
+
+    // The window free-runs, so the redraws keep coming. Nothing touched the
+    // view, so nothing should be re-recorded: this is the measurement behind
+    // "a redraw of an unchanged document costs nothing".
+    for _ in 0..8 {
+        frame(cx, &harness);
+    }
+    assert_eq!(
+        renders(cx, &harness),
+        1,
+        "a free-running redraw of an untouched view re-recorded the frame"
+    );
+}
+
+#[gpui_kit::test]
+fn panning_and_zooming_re_record_from_the_document(cx: &mut TestAppContext) {
+    let (harness, document) = open_live(cx);
+    let opening = document
+        .borrow()
+        .last_viewport()
+        .expect("the opening frame was asked for");
+
+    click(cx, &harness, "tb-zoom-in");
+    assert_eq!(renders(cx, &harness), 2, "zooming has to re-record");
+
+    let zoomed = document.borrow().last_viewport().expect("a second frame");
+    assert!(
+        zoomed.scale > opening.scale,
+        "the document was told the old scale: {opening:?} -> {zoomed:?}"
+    );
+
+    // And the camera the document was told about is the camera the canvas
+    // painted with. If these drift, the document culls to one view and the
+    // renderer projects for another, which shows as geometry missing at the
+    // edges.
+    let painted = cx
+        .update_window(harness.window, |_, _, cx| {
+            harness.shell.read(cx).canvas().read(cx).camera()
+        })
+        .expect("window is live");
+    assert_eq!(zoomed.scale, painted.scale());
+    assert_eq!(zoomed.center.to_array(), painted.center());
+    assert_eq!([zoomed.width, zoomed.height], painted.viewport());
+
+    // Panning is the other half of the criterion. The test helpers only drag
+    // with the left button, so this drives the same `CanvasState::pan` the
+    // middle-button drag handler calls rather than a parallel path.
+    let before = document.borrow().renders();
+    cx.update_window(harness.window, |_, _, cx| {
+        let canvas = harness.shell.read(cx).canvas().clone();
+        canvas.update(cx, |canvas, cx| {
+            canvas.pan(120.0, 60.0);
+            cx.notify();
+        });
+    })
+    .expect("window is live");
+    frame(cx, &harness);
+
+    let panned = document.borrow().last_viewport().expect("a panned frame");
+    assert!(
+        document.borrow().renders() > before,
+        "panning has to re-record"
+    );
+    assert_ne!(
+        panned.center.to_array(),
+        zoomed.center.to_array(),
+        "the pan did not reach the document"
+    );
+    assert_eq!(
+        panned.scale, zoomed.scale,
+        "a pan is not a zoom: {zoomed:?} -> {panned:?}"
+    );
+}
+
+/// The load-bearing half of Stage 2: re-recording an unchanged document must not
+/// cost the renderer its tessellation. Retained geometry is keyed on
+/// `(group id, serial)` on both sides of the boundary, so a stream that arrives
+/// again with the same groups re-uses every cached one.
+///
+/// The view is deliberately left where it is. Cached tessellation is also keyed
+/// by level of detail, so a *zoom* legitimately re-tessellates once per LOD
+/// bucket it passes through — adding one here would make this assertion fail for
+/// a reason that is not a bug.
+#[gpui_kit::test]
+fn re_recording_unchanged_geometry_re_uploads_nothing(cx: &mut TestAppContext) {
+    let (harness, document) = open_live(cx);
+    let warm = cache(cx, &harness);
+    assert!(warm.misses > 0, "the opening frame has to tessellate");
+    let recorded = document.borrow().renders();
+
+    // Three more frames from the document, all at the same camera.
+    for _ in 0..3 {
+        cx.update_window(harness.window, |_, _, cx| {
+            let canvas = harness.shell.read(cx).canvas().clone();
+            canvas.update(cx, |canvas, cx| {
+                canvas.mark_document_dirty();
+                cx.notify();
+            });
+        })
+        .expect("window is live");
+        frame(cx, &harness);
+    }
+    assert_eq!(document.borrow().renders(), recorded + 3);
+
+    let after = cache(cx, &harness);
+    assert!(after.hits > warm.hits, "the cache was never consulted");
+    assert_eq!(
+        after.misses,
+        warm.misses,
+        "re-recording identical geometry re-tessellated {} groups",
+        after.misses - warm.misses
+    );
+    assert_eq!(
+        after.evictions, warm.evictions,
+        "and it should not have evicted anything either"
+    );
+}
+
+/// A host change the canvas cannot see — an edit, an undo, a sheet switch — is
+/// what `mark_document_dirty` is for. Nothing produces one yet; the path is
+/// tested so that Stage 4 has somewhere to plug in.
+#[gpui_kit::test]
+fn a_document_change_the_canvas_cannot_see_still_re_records(cx: &mut TestAppContext) {
+    let (harness, _document) = open_live(cx);
+    let before = renders(cx, &harness);
+
+    cx.update_window(harness.window, |_, _, cx| {
+        let canvas = harness.shell.read(cx).canvas().clone();
+        canvas.update(cx, |canvas, cx| {
+            canvas.mark_document_dirty();
+            cx.notify();
+        });
+    })
+    .expect("window is live");
+    frame(cx, &harness);
+
+    assert_eq!(renders(cx, &harness), before + 1);
+}
+
+/// A canvas that silently keeps showing the last frame it managed to record is
+/// indistinguishable from one that is working, so the failure has to be visible.
+#[gpui_kit::test]
+fn a_document_that_cannot_record_says_so_in_the_status_bar(cx: &mut TestAppContext) {
+    let document = Rc::new(RefCell::new(ReplayDocument::failing("no document loaded")));
+    let harness = open_with(cx, Some(document.clone()));
+
+    cx.update_window(harness.window, |_, window, cx| {
+        window.render_frame(cx);
+        let shown = window.find("status-document-error");
+        assert!(shown.visible(), "the failure has to be on screen");
+        assert_eq!(
+            harness
+                .shell
+                .read(cx)
+                .canvas()
+                .read(cx)
+                .document_error()
+                .map(|reason| reason.to_string()),
+            Some("no document loaded".to_string())
+        );
+    })
+    .expect("window is live");
+
+    // And it does not retry every frame, which would turn a broken session into
+    // a busy loop.
+    let asked = document.borrow().renders();
+    for _ in 0..4 {
+        frame(cx, &harness);
+    }
+    assert_eq!(document.borrow().renders(), asked);
+}
+
+/// A canvas over a recorded stream has no document to ask, and must not behave
+/// as though it had one.
+#[gpui_kit::test]
+fn a_canvas_over_a_fixed_stream_asks_for_nothing(cx: &mut TestAppContext) {
+    let harness = open(cx);
+    click(cx, &harness, "tb-zoom-in");
+    for _ in 0..4 {
+        frame(cx, &harness);
+    }
+    cx.update_window(harness.window, |_, window, cx| {
+        window.render_frame(cx);
+        let canvas = harness.shell.read(cx).canvas().read(cx);
+        assert!(!canvas.has_live_document());
+        assert_eq!(canvas.document_renders(), 0);
+        assert!(canvas.document_error().is_none());
+        assert!(window.try_find("status-document-error").is_none());
+    })
+    .expect("window is live");
 }

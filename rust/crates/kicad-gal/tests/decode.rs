@@ -892,3 +892,78 @@ fn builder_allows_a_group_to_be_recorded_after_a_frame() {
     let s = b.finish().expect("valid");
     assert_eq!(s.groups().len(), 1);
 }
+
+// ----------------------------------------------------- copying a borrowed view
+
+/// `copy_from_view` is what a live host's frame arrives through, once per frame,
+/// so it has to leave a stream exactly as `to_owned_stream` would — and without
+/// allocating, which is the reason it exists at all.
+#[test]
+fn copying_a_view_into_an_existing_stream_matches_owning_it() {
+    let rich = rich_stream();
+    let empty = StreamBuilder::new().finish().expect("empty is valid");
+
+    // Over an empty stream, over itself, and over a differently shaped one: the
+    // three shapes a per-frame copy meets.
+    for start in [&empty, &rich] {
+        let mut target = start.clone();
+        target.copy_from_view(&rich.view());
+        assert_eq!(target, rich);
+        // And the copy is complete rather than additive: a second one does not
+        // append to what the first left behind.
+        target.copy_from_view(&rich.view());
+        assert_eq!(target, rich);
+
+        target.copy_from_view(&empty.view());
+        assert_eq!(target, empty);
+        assert!(target.is_empty());
+    }
+
+    // Decoding the copy gives the same commands, which is the property a
+    // renderer actually depends on.
+    let mut target = empty.clone();
+    target.copy_from_view(&rich.view());
+    let from_copy: Vec<String> = target
+        .view()
+        .frame()
+        .map(|i| format!("{:?}", i.command))
+        .collect();
+    let from_original: Vec<String> = rich
+        .view()
+        .frame()
+        .map(|i| format!("{:?}", i.command))
+        .collect();
+    assert_eq!(from_copy, from_original);
+    assert!(!from_copy.is_empty());
+}
+
+/// The point of `copy_from_view` over `to_owned_stream`: the buffers are reused.
+///
+/// Asserted through the section addresses, which is both reachable from outside
+/// the crate and the thing actually claimed — a slice whose pointer did not move
+/// is the same allocation. A per-frame copy that reallocates would put megabytes
+/// of allocator churn inside the frame budget on a large sheet.
+#[test]
+fn copying_a_view_reuses_the_buffers_it_already_has() {
+    let rich = rich_stream();
+    let mut target = rich.clone();
+
+    let addresses = |s: &Stream| {
+        (
+            s.group_cmds().as_ptr() as usize,
+            s.group_coords().as_ptr() as usize,
+            s.frame_cmds().as_ptr() as usize,
+            s.groups().as_ptr() as usize,
+        )
+    };
+
+    let before = addresses(&target);
+    assert!(!target.group_cmds().is_empty() && !target.frame_cmds().is_empty());
+
+    for _ in 0..8 {
+        target.copy_from_view(&rich.view());
+    }
+
+    assert_eq!(addresses(&target), before, "a same-sized copy reallocated");
+    assert_eq!(target, rich);
+}

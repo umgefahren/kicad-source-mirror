@@ -377,8 +377,14 @@ KISCH_API ksch_status ksch_session_set_sheet( ksch_session* aSession, uint32_t a
  * The camera.
  *
  * @p scale is the world-to-screen factor: a world distance multiplied by
- * @p scale gives pixels. @p center_x / @p center_y are the world point drawn at
- * the middle of the viewport.
+ * @p scale gives pixels — so for eeschema, pixels per 100 nm. @p center_x /
+ * @p center_y are the world point drawn at the middle of the viewport.
+ *
+ * Note that this is deliberately *not* what `KIGFX::VIEW` calls a scale, which
+ * is the GAL zoom factor and differs from this by the screen DPI times
+ * eeschema's world unit length. A consumer of this ABI holds a camera over the
+ * recorded coordinates, and those are in internal units, so pixels per internal
+ * unit is the quantity that needs no conversion on its side.
  */
 typedef struct ksch_viewport
 {
@@ -391,6 +397,13 @@ typedef struct ksch_viewport
 
 /**
  * Point the camera.
+ *
+ * The scale is clamped to eeschema's own zoom limits — the same ones the wx
+ * editor is bound by — so ::ksch_session_get_viewport afterwards does not
+ * necessarily report what was asked for. A caller driving its own camera should
+ * read it back and adopt it, because the session culls the frame it records to
+ * the scale it is holding: a caller showing a wider view than the session
+ * believes in would find the geometry outside that view missing from the frame.
  *
  * @param aViewport must have positive dimensions and a positive scale;
  *        anything else is ::KSCH_ERR_INVALID_ARG and nothing changes.

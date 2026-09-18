@@ -12,10 +12,11 @@
 //! host are still being built.
 //!
 //! There are two ways to give it something to draw. `--stream FILE.kgds` reads a
-//! frame recorded earlier by `kicad-sch-dump`, which needs no C++ at all.
-//! `--schematic FILE.kicad_sch` opens the real thing through the C++ host and
-//! records a frame in this process — no file in between. The second needs a build
-//! with the host linked; `kicad-sch-sys` says so plainly if there is none.
+//! frame recorded earlier by `kicad-sch-dump`, which is a fixed picture and needs
+//! no C++ at all. `--schematic FILE.kicad_sch` opens the real thing through the
+//! C++ host and keeps the session for the window's lifetime, re-recording the
+//! frame whenever the view moves. The second needs a build with the host linked;
+//! `kicad-sch-sys` says so plainly if there is none.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -25,6 +26,8 @@ use gpui_kit::component::theme::ThemeMode;
 use gpui_kit::{App, AppContext as _, Bounds, WindowBounds, WindowOptions, point, px, size};
 use kicad_sch_render::SchematicRenderer;
 use kicad_sch_sys::{Session, Stream, Viewport};
+use kicad_sch_ui::document::{LiveDocument, SharedDocument, shared_document};
+use kicad_sch_ui::input::ViewportState;
 use kicad_sch_ui::panels::DocumentSource;
 use kicad_sch_ui::shell::{self, SchematicShell};
 
@@ -146,10 +149,82 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Options, String> {
 /// A document loaded before the window opens, so that a bad path is a message on
 /// the terminal rather than an empty canvas.
 struct Loaded {
-    /// The frame to draw.
+    /// The first frame, which is what the window is framed around.
     stream: Stream,
+    /// The session that recorded it, kept so the canvas can ask for more.
+    ///
+    /// `None` for a recorded stream: there is no document behind it, and the
+    /// camera moving over a fixed picture is the whole of what a `.kgds` can
+    /// offer.
+    document: Option<SharedDocument>,
     /// What to caption the window and panels with.
     source: DocumentSource,
+}
+
+/// A live schematic session, as the shell's canvas consumes one.
+///
+/// The whole of what Stage 2 needed on this side: hold the session open, point it
+/// at the camera the canvas is about to paint with, and hand over the frame it
+/// records. `Session::render` lends the stream out of buffers C++ owns and
+/// overwrites on the next pass, and `set_stream_view` is the only thing that ever
+/// sees it — the borrow cannot escape this method, which is why it is the
+/// document's job to install the frame rather than to return it.
+struct SchematicSession {
+    session: Session,
+}
+
+impl LiveDocument for SchematicSession {
+    fn render(
+        &mut self,
+        viewport: ViewportState,
+        renderer: &mut SchematicRenderer,
+    ) -> Result<(), String> {
+        // `KIGFX::VIEW::Redraw` culls to the viewport it is given, so this is not
+        // bookkeeping: the camera the session is told about decides which groups
+        // the frame body references at all.
+        self.session
+            .set_viewport(&Viewport {
+                width_px: viewport.width.max(1.0) as u32,
+                height_px: viewport.height.max(1.0) as u32,
+                center_x: viewport.center.x,
+                center_y: viewport.center.y,
+                scale: viewport.scale,
+            })
+            .map_err(|error| format!("viewport: {error}"))?;
+
+        // The session does not always grant what was asked for: `VIEW::SetScale`
+        // clamps to eeschema's zoom limits and `VIEW::SetCenter` clamps to its pan
+        // boundary, and the wx editor is bound by exactly the same ones. Adopting
+        // what came back matters for more than tidiness — the session culls the
+        // frame to the camera it holds, so a canvas showing a wider view than the
+        // session believes in would be missing the geometry outside the session's
+        // idea of the viewport. A zoom or a pan that runs into a limit therefore
+        // simply stops, as it does in the wx editor.
+        //
+        // This converges rather than oscillating: an unclamped request comes back
+        // unchanged, because both sides carry the centre and the scale as `double`
+        // and nothing rounds on the way through.
+        let granted = self
+            .session
+            .viewport()
+            .map_err(|error| format!("reading the viewport back: {error}"))?;
+
+        if granted.scale != viewport.scale {
+            renderer.camera_mut().set_scale(granted.scale);
+        }
+        if (granted.center_x, granted.center_y) != (viewport.center.x, viewport.center.y) {
+            renderer
+                .camera_mut()
+                .set_center([granted.center_x, granted.center_y]);
+        }
+
+        let frame = self
+            .session
+            .render()
+            .map_err(|error| format!("recording a frame: {error}"))?;
+        renderer.set_stream_view(&frame);
+        Ok(())
+    }
 }
 
 /// Read a recorded draw stream.
@@ -159,24 +234,29 @@ fn load_stream(path: &Path) -> Result<Loaded, String> {
 
     Ok(Loaded {
         stream,
+        document: None,
         source: DocumentSource::RecordedStream {
             file: file_label(path),
         },
     })
 }
 
-/// Open a `.kicad_sch` through the C++ host and record one frame from it.
+/// Open a `.kicad_sch` through the C++ host, record the opening frame, and keep
+/// the session for the window to draw from.
 ///
 /// This happens before gpui starts: the host initialises wxWidgets and takes the
 /// calling thread to be its main thread, which is this one, and a failure here
-/// should be a line on stderr rather than a window that opens empty.
+/// should be a line on stderr rather than a window that opens empty. gpui runs
+/// the window on that same thread, so the session stays where it belongs —
+/// `Session` is `!Send`, which is what makes that a compile-time fact rather than
+/// a convention.
 fn load_schematic(path: &Path, width: u32, height: u32) -> Result<Loaded, String> {
     let mut session = Session::open(path)
         .map_err(|error| format!("could not open {}: {error}", path.display()))?;
 
-    // The viewport only decides what the frame's own header says and how the grid
-    // is spaced; the geometry is recorded in world coordinates. Matching the
-    // window keeps the two consistent for the first frame.
+    // A first frame, so the window has something to frame itself around before
+    // the canvas has been laid out and can ask for one of its own. Matching the
+    // window size keeps the opening view close to what the first paint shows.
     session
         .set_viewport(&Viewport::new(width.max(1), height.max(1)))
         .map_err(|error| format!("viewport: {error}"))?;
@@ -188,12 +268,9 @@ fn load_schematic(path: &Path, width: u32, height: u32) -> Result<Loaded, String
         .render_owned()
         .map_err(|error| format!("rendering {}: {error}", path.display()))?;
 
-    // The session is dropped here, and the frame above is a copy of what it
-    // recorded. Stage 2 is where it stays alive and the canvas re-renders from it
-    // per frame instead; the process-wide wx initialisation behind it persists
-    // either way, so that is a change to this function and nothing else.
     Ok(Loaded {
         stream,
+        document: Some(shared_document(SchematicSession { session })),
         source: DocumentSource::Schematic {
             file: file_label(path),
         },
@@ -264,7 +341,7 @@ fn main() {
             let document = loaded.map(|loaded| {
                 let mut renderer = SchematicRenderer::new();
                 renderer.set_stream(loaded.stream);
-                (renderer, loaded.source)
+                (renderer, loaded.source, loaded.document)
             });
 
             let bounds = Bounds {
@@ -291,13 +368,25 @@ fn main() {
                     move |window, cx| {
                         let view = cx.new(|cx| {
                             let mut shell = match document {
-                                Some((renderer, source)) => SchematicShell::new_with_document(
-                                    std::rc::Rc::new(std::cell::RefCell::new(renderer)),
-                                    source,
-                                    kicad_sch_ui::input::shared_sink(kicad_sch_ui::input::NullSink),
-                                    window,
-                                    cx,
-                                ),
+                                Some((renderer, source, live)) => {
+                                    let mut shell = SchematicShell::new_with_document(
+                                        std::rc::Rc::new(std::cell::RefCell::new(renderer)),
+                                        source,
+                                        kicad_sch_ui::input::shared_sink(
+                                            kicad_sch_ui::input::NullSink,
+                                        ),
+                                        window,
+                                        cx,
+                                    );
+                                    // After construction: the shell frames the
+                                    // opening frame while being built, and this
+                                    // is what makes every frame after it come
+                                    // from the document instead of that copy.
+                                    if let Some(live) = live {
+                                        shell.set_document(live, cx);
+                                    }
+                                    shell
+                                }
                                 None => SchematicShell::new(window, cx),
                             };
                             if frame_stats {
@@ -436,5 +525,67 @@ mod tests {
             bounds.size()[0] > 0.0 && bounds.size()[1] > 0.0,
             "expected a non-empty document, got {bounds:?}"
         );
+
+        // Then the live half: the canvas hands the session a camera and gets the
+        // frame for it. Driven here exactly as `CanvasState::refresh_document`
+        // does, so that what the window relies on is what is checked.
+        let document = loaded.document.expect("a schematic keeps its session");
+        let groups = renderer
+            .stream()
+            .expect("a stream is loaded")
+            .groups()
+            .len();
+
+        renderer.set_viewport([1920.0, 1080.0]);
+        renderer.zoom_to_fit(24.0);
+
+        for step in 0..3 {
+            let camera = *renderer.camera();
+            let state = ViewportState {
+                width: camera.viewport()[0],
+                height: camera.viewport()[1],
+                scale: camera.scale(),
+                center: kicad_sch_ui::input::WorldPoint::from_array(camera.center()),
+            };
+
+            document
+                .borrow_mut()
+                .render(state, &mut renderer)
+                .unwrap_or_else(|error| panic!("frame {step}: {error}"));
+
+            // Retained geometry is recorded once and replayed, so the group table
+            // survives every view change. If it did not, the tessellation cache
+            // would miss on every pan and live re-render would be unaffordable.
+            assert_eq!(
+                renderer
+                    .stream()
+                    .expect("a frame was installed")
+                    .groups()
+                    .len(),
+                groups,
+                "frame {step} re-recorded the retained geometry"
+            );
+
+            let frame = renderer.prepare([0.0, 0.0]);
+            assert!(
+                frame.stats.groups_drawn > 0,
+                "frame {step} drew nothing: {:?}",
+                frame.stats
+            );
+            assert_eq!(
+                frame.stats.cache_misses,
+                if step == 0 {
+                    frame.stats.groups_drawn
+                } else {
+                    0
+                },
+                "frame {step} should tessellate only what it has not seen: {:?}",
+                frame.stats
+            );
+
+            // Pan a quarter of the viewport for the next pass, which is enough to
+            // change what the session culls to.
+            renderer.pan(480.0, 0.0);
+        }
     }
 }

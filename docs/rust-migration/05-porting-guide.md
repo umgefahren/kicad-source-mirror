@@ -221,6 +221,50 @@ For reference, an A0 sheet is 1.19e7 schematic IU — already close enough to th
 `f32` limit for the low bits to matter, which is why the rule holds in both
 editors even though the margin differs.
 
+### 4.4.1 `KIGFX::VIEW`'s "scale" is not pixels per internal unit
+
+The same trap one level up, and the one we actually fell into. A host that hands
+its consumer's camera to `VIEW::SetScale` is passing the wrong quantity:
+
+```
+GAL::computeWorldScale():  worldScale = screenDPI * worldUnitLength * zoomFactor
+```
+
+`VIEW::SetScale` sets the **zoom factor**. Pixels per internal unit is
+`worldScale`. The two differ by `screenDPI * worldUnitLength`, and both halves of
+that vary: `worldUnitLength` is per editor (`SCH_WORLD_UNIT` is `1e-7/0.0254` inch
+per IU; pcbnew has its own) and `screenDPI` is a runtime value. Measured here the
+factor is about 2,800, and there is a user zoom-correction factor folded in on top.
+So do not hard-code it: `SCH_HOST::PixelsPerIUAtUnitZoom()` recovers it from the
+GAL by dividing `GetWorldScale()` by the current zoom, which picks up everything
+`computeWorldScale` puts in without knowing what that is.
+
+What makes this worth a section of its own is **how long it can hide**.
+`VIEW::SetScale` clamps to the editor's zoom limits (`ZOOM_MIN_LIMIT_EESCHEMA` is
+0.01), so a value that is 2,800× off does not blow up — it silently pins the camera
+at the most zoomed-out setting the editor allows. `VIEW::Redraw` then culls to a rectangle tens of metres wide,
+which means *nothing is ever culled*, which means every frame looks right. The
+recorded streams were correct, all 466 of them, and the whole corpus run reported
+`scale 0.01` for every file as though it were a constant. It only became visible
+when a consumer started driving the camera per frame and expected the cull to
+follow — the first thing that actually depended on the number.
+
+Two habits this argues for, both cheap:
+
+* **Give units to the field name or the doc comment, once, in the header the two
+  sides share**, and then make the conversion a named function rather than an
+  inline multiply.
+* **Assert on a derived quantity, not on the number.** The test that would have
+  caught this is "after zoom-to-fit, the page spans the viewport" —
+  `page_extent * scale ≈ viewport_px`. It needs no fixture and no reference
+  image, and it fails loudly for a scale in the wrong space. It is now in
+  `rust/crates/kicad-sch-sys/tests/live_session.rs`.
+
+Also: the clamp does not go away once the units are right, and a consumer with a
+wider zoom range than the editor's must adopt what it was granted rather than
+ignore it. A canvas showing a wider view than the host believes in is missing the
+geometry outside the host's viewport.
+
 ### 4.5 gpui has no GPU escape hatch — do not go looking
 
 We spent real effort establishing this, so you do not have to:
@@ -370,10 +414,18 @@ Whether pcbnew's connectivity has the same constraint is unchecked, but
 5. **`PCB_HOST`**, modelled on `SCH_HOST`, and a `kicad-pcb-sys` modelled on
    `kicad-sch-sys` — the shared-library target, the export list, the runtime call
    and the bindgen build script are all patterns to copy rather than decisions to
-   retake (§2). Mind §4.10 while doing it.
-6. **The shell**: reuse the structure, add the layer widget, the appearance
+   retake (§2). Mind §4.10 and §4.4.1 while doing it, and add the
+   "zoom-to-fit spans the viewport" assertion from §4.4.1 on day one; it costs
+   nothing and catches the scale bug we shipped.
+6. **Live re-render early, not last.** Hold the session open and ask it for the
+   frame the canvas is about to paint, rather than recording once and panning over
+   a copy. It is about a day's work (`06-what-is-missing.md`, Stage 2) and it is
+   what turns latent unit and camera disagreements into test failures. Ours stayed
+   hidden through an entire 466-file corpus run precisely because nothing yet
+   depended on the camera.
+7. **The shell**: reuse the structure, add the layer widget, the appearance
    panel and pcbnew's toolbars.
-7. **Input** — only after `GetToolCanvas()` is dealt with (§4.8).
+8. **Input** — only after `GetToolCanvas()` is dealt with (§4.8).
 
 Steps 1–4 are largely independent of the C++ build and can proceed in parallel
 with it.
@@ -387,6 +439,13 @@ Before claiming the renderer is right:
 - [ ] Every GAL method pcbnew calls is either recorded or a base-class getter
       (§4.1 has the one-liner)
 - [ ] Redrawing an unchanged board grows retained group data by zero bytes
+- [ ] **Panning the host's camera changes the frame body and nothing else** —
+      the group table and every group body byte-identical, the `DRAW_GROUP` list
+      different. If the frame body does *not* change, the camera is not reaching
+      the cull and you have the §4.4.1 bug
+- [ ] **After zoom-to-fit, the page or board extent spans the viewport**
+      (`extent * scale ≈ viewport_px`). The cheapest possible check that the
+      scale is in the unit the ABI claims (§4.4.1)
 - [ ] Selecting an item causes no re-tessellation and no buffer re-upload
 - [ ] A board spanning >1e9 internal units pans without jitter (§4.4)
 - [ ] Zone-heavy boards hold the frame budget; measured, on a real board

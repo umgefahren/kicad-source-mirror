@@ -145,6 +145,40 @@ drawn.
 `SetDepthRange` (survey §5.4 hazard 3) needs no attention here: `GAL`'s own
 constructor already sets it to `[MIN_DEPTH, MAX_DEPTH]`.
 
+### 2.4.1 The viewport is load-bearing, and its scale is not VIEW's
+
+`VIEW::Redraw()` builds its cull rectangle from the GAL's screen size and
+world-screen matrix and queries the R-tree with it, so **the camera decides which
+groups the frame body references**. That is what makes a live consumer's
+per-frame `SetViewport` more than bookkeeping: the geometry is recorded in world
+units and does not depend on the camera, but which of it is *drawn* does.
+
+The scale that goes in is pixels per internal unit, which is deliberately not what
+`KIGFX::VIEW` calls a scale. VIEW's is the GAL zoom factor, and
+
+```
+GAL::computeWorldScale():  worldScale = screenDPI * worldUnitLength * zoomFactor
+eeschema's worldUnitLength = 1e-7 / 0.0254 inch per IU     (SCH_WORLD_UNIT)
+```
+
+so the two differ by about three orders of magnitude.
+`SCH_HOST::PixelsPerIUAtUnitZoom()` converts, and reads the factor out of the GAL
+rather than recomputing that formula, so the user's zoom-correction factor comes
+along without this code knowing it exists.
+
+Passing the ABI's scale straight to `VIEW::SetScale` was the bug this replaced,
+and it was invisible for as long as nothing depended on the camera. Every request
+came out ~2,700× too large, `VIEW::SetScale` clamped it to eeschema's zoom limit,
+and the resulting cull rectangle was 52 metres wide — nothing was ever culled, and
+`ZoomToFit` did not fit. See `06-what-is-missing.md`, Stage 2, for how it surfaced
+and why fixing it changed no recorded output.
+
+One consequence a consumer has to handle: `VIEW::SetScale` clamps to eeschema's
+own zoom limits — the same ones the wx editor is bound by — so
+`ksch_session_get_viewport` does not always report what was asked for. Read it
+back and adopt it. A consumer showing a wider view than the session believes in
+would find the geometry outside the session's viewport missing from the frame.
+
 One hook is deliberately not wired. `SCH_VIEW::SetScale()` calls
 `m_frame->RefreshZoomDependentItems()`, which is a no-op with a null frame. That
 costs nothing today, because the method only re-paints *selected* items — the
@@ -241,6 +275,11 @@ Two lifetimes, stated once in the header and honoured everywhere:
 `double`, in KiCad internal units, matching the draw stream. A bounding box and
 the geometry in a frame are therefore in the same space and need no conversion
 on the Rust side.
+
+`ksch_viewport::scale` follows the same rule and is pixels per internal unit, for
+the same reason: it has to compose with a camera held over those coordinates. It
+is not `KIGFX::VIEW`'s scale — see §2.4.1, which is also where the bug that
+conflated them is recorded.
 
 ---
 
@@ -346,10 +385,11 @@ This is the next milestone and it is **not** started. Survey §6 and §7 name
 worst of it, and the ordering below reflects what the code actually says rather
 than what the survey predicted.
 
-> Since this was written, the ABI is linked and driven from Rust — see
-> `06-what-is-missing.md`, Stage 1 — so "the Rust UI cannot reach the document
-> model" is no longer part of what stands in the way. Everything in this section
-> is about the *input* direction, and none of it has moved.
+> Since this was written, the ABI is linked and driven from Rust, and the session
+> is held open and re-recorded per view change — see `06-what-is-missing.md`,
+> Stages 1 and 2 — so "the Rust UI cannot reach the document model" is no longer
+> part of what stands in the way. Everything in this section is about the *input*
+> direction, and none of it has moved.
 
 ### 6.1 `GetToolCanvas()` is smaller than it looks
 
@@ -445,7 +485,7 @@ program inherits, so it wants its own commit and its own review.
 | `TOOL_DISPATCHER` | `: public wxEvtHandler`, not abstract | Write a replacement. Its output contract is only ~10 distinct `TOOL_EVENT` constructions (survey §6.3), and the two subtle helpers — `IsPastDragThreshold` and `ShouldDropAutoRepeat` — are already `static` and wx-free, deliberately so they can be reused. |
 | Key codes | constraint | The hotkey vocabulary is `WXK_*` integers. Rust must map its keys onto the same numbers or every default and every saved binding breaks. Transcribe once from `wx/defs.h`, test against `KeyNameFromKeyCode`. |
 | `TOOLS_HOLDER` virtuals | straightforward | `GetCurrentSelection()` must be overridden; `PushTool`/`PopTool`/`DisplayToolMsg`/`RegisterUIUpdateHandler` are notification-only and route to the Rust shell. |
-| Zoom-dependent repaint | one line | `SCH_VIEW::SetScale()` routes through `SCH_BASE_FRAME::RefreshZoomDependentItems()`, which needs a frame and a selection tool. Once selection exists, `SCH_HOST` must provide the equivalent or cached text will not switch to its bitmap LOD. |
+| Zoom-dependent repaint | one line | `SCH_VIEW::SetScale()` routes through `SCH_BASE_FRAME::RefreshZoomDependentItems()`, which needs a frame and a selection tool. Once selection exists, `SCH_HOST` must provide the equivalent or cached text will not switch to its bitmap LOD. More pressing than it was: until the §2.4.1 fix the host's scale was pinned at the zoom limit, so no zoom-dependent decision could ever have fired. |
 | `ACTION_MENU : public wxMenu` | rewrite | Context menus. `TOOL_INTERACTIVE::SetContextMenu` is the only coupling point. |
 | Modal dialogs | ~124 files | Do not attempt. Survey §7.4: keep them for bring-up, async-bridge them through `COROUTINE::Yield` later. The coroutine machinery (`include/tool/coroutine.h`, `libcontext`) is wx-free and already supports the suspension this needs. |
 

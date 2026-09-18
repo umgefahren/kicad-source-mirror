@@ -64,6 +64,10 @@ fn main() {
             live::rendering_twice_produces_the_same_frame,
         ),
         (
+            "moving the camera re-records the frame and not the geometry",
+            live::moving_the_camera_re_records_the_frame_and_not_the_geometry,
+        ),
+        (
             "a written stream reads back as the one rendered",
             live::a_written_stream_reads_back_as_rendered,
         ),
@@ -344,6 +348,76 @@ mod live {
         );
     }
 
+    /// The property the live canvas is built on: moving the camera re-records the
+    /// frame and leaves the retained geometry alone.
+    ///
+    /// This is what makes asking the host for a frame per view change affordable.
+    /// The frame body is a list of group references that `KIGFX::VIEW::Redraw`
+    /// culls to the viewport, so it has to change; the group bodies those
+    /// references point at are recorded once and replayed, so they must not. If
+    /// they did, the renderer's `(group id, serial)` cache would miss on every pan
+    /// and the whole design would collapse into re-tessellating the sheet at the
+    /// display rate.
+    pub fn moving_the_camera_re_records_the_frame_and_not_the_geometry() {
+        let (mut session, framed) = record(&tree_root().join("demos/ecc83/ecc83-pp_v2.kicad_sch"));
+
+        let mut viewport = session.viewport().expect("the camera reads back");
+
+        // What the canvas does on a pan: move the centre, ask for a frame. Far
+        // enough that the cull result genuinely differs — a third of the viewport.
+        viewport.center_x += viewport.width_px as f64 / 3.0 / viewport.scale;
+        session
+            .set_viewport(&viewport)
+            .expect("a panned camera is still a valid one");
+
+        let panned = session.render_owned().expect("a frame after the pan");
+
+        same_section("groups after a pan", panned.groups(), framed.groups());
+        same_section(
+            "group commands after a pan",
+            panned.group_cmds(),
+            framed.group_cmds(),
+        );
+        same_coords(
+            "group coordinates after a pan",
+            panned.group_coords(),
+            framed.group_coords(),
+        );
+        assert_ne!(
+            panned.frame_cmds(),
+            framed.frame_cmds(),
+            "panning a third of the viewport has to change what the frame draws"
+        );
+
+        // A zoom is the other half, and the interesting one: scale reaches
+        // SCH_PAINTER, so this is the case where retained bodies could plausibly
+        // have been re-recorded. They are not — eeschema's cached geometry is in
+        // world units.
+        viewport.scale *= 2.0;
+        session
+            .set_viewport(&viewport)
+            .expect("a zoomed camera is still a valid one");
+
+        let zoomed = session.render_owned().expect("a frame after the zoom");
+
+        same_section("groups after a zoom", zoomed.groups(), framed.groups());
+        same_section(
+            "group commands after a zoom",
+            zoomed.group_cmds(),
+            framed.group_cmds(),
+        );
+        same_coords(
+            "group coordinates after a zoom",
+            zoomed.group_coords(),
+            framed.group_coords(),
+        );
+        assert_ne!(
+            zoomed.frame_cmds(),
+            panned.frame_cmds(),
+            "doubling the scale has to change what the frame draws"
+        );
+    }
+
     pub fn a_written_stream_reads_back_as_rendered() {
         let (mut session, rendered) =
             record(&tree_root().join("demos/ecc83/ecc83-pp_v2.kicad_sch"));
@@ -385,6 +459,23 @@ mod live {
         let items = session.bbox(false).expect("and an item box");
 
         assert!(items.width < page.width && items.height < page.height);
+
+        // And the scale is what the header says it is: pixels per internal unit,
+        // so the framed page spans the viewport. It is not `KIGFX::VIEW`'s notion
+        // of a scale, which is the GAL zoom factor and differs from this by the
+        // screen DPI times eeschema's world unit length — some three orders of
+        // magnitude. Reporting that instead was a bug: the number came back
+        // clamped to eeschema's zoom limits, the session's cull rectangle was tens
+        // of metres wide, and nothing it recorded ever depended on the camera.
+        let spanned = page.width.max(page.height) * viewport.scale;
+        let viewport_px = f64::from(viewport.width_px.max(viewport.height_px));
+
+        assert!(
+            spanned > viewport_px * 0.5 && spanned <= viewport_px,
+            "zoom to fit should span the viewport: {spanned:.1} px of {viewport_px} \
+             at scale {}",
+            viewport.scale
+        );
     }
 
     pub fn a_viewport_with_no_area_is_refused() {

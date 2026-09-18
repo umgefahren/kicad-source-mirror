@@ -88,7 +88,13 @@ pub struct StreamFacts {
     pub groups: usize,
     /// Commands across all group bodies.
     pub group_commands: usize,
-    /// Commands in the frame body, mostly `DRAW_GROUP` references.
+    /// Commands in the opening frame's body, mostly `DRAW_GROUP` references.
+    ///
+    /// The opening frame specifically, not the current one. With a live document
+    /// the frame body is re-recorded per view change and `KIGFX::VIEW` culls it to
+    /// the viewport, so this number moves with the camera and is not a property of
+    /// the document. What the current frame costs is in the status bar, where it
+    /// is updated every paint.
     pub frame_commands: usize,
     /// Embedded images.
     pub images: usize,
@@ -272,7 +278,10 @@ impl DesignState {
                             ),
                             TreeItem::new(
                                 "stream-fcmds",
-                                format!("{} frame commands", self.facts.frame_commands),
+                                format!(
+                                    "{} commands in the opening frame",
+                                    self.facts.frame_commands
+                                ),
                             ),
                             TreeItem::new("stream-images", format!("{} images", self.facts.images)),
                         ]),
@@ -305,7 +314,10 @@ impl DesignState {
             Property::new("Source", self.source.description()),
             Property::new("Retained groups", self.facts.groups.to_string()),
             Property::new("Group commands", self.facts.group_commands.to_string()),
-            Property::new("Frame commands", self.facts.frame_commands.to_string()),
+            Property::new(
+                "Opening frame commands",
+                self.facts.frame_commands.to_string(),
+            ),
             Property::new("Images", self.facts.images.to_string()),
             Property::new("Width", format!("{:.3} mm", self.extent[0] / mm)),
             Property::new("Height", format!("{:.3} mm", self.extent[1] / mm)),
@@ -659,7 +671,9 @@ mod tests {
             "{labels:?}"
         );
         assert!(
-            labels.iter().any(|l| l == "795 frame commands"),
+            labels
+                .iter()
+                .any(|l| l == "795 commands in the opening frame"),
             "{labels:?}"
         );
         // 1 660 271 internal units at 100 nm each is 166.0 mm.

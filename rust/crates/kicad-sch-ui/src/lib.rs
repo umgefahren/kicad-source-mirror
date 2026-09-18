@@ -24,6 +24,11 @@
 //!   in the vocabulary of [`input::ShellEvent`]. [`input::RecordingSink`]
 //!   implements it for tests; a queue feeding `TOOL_MANAGER` implements it
 //!   later. No FFI is involved yet on either side.
+//! * **Geometry** is [`document::LiveDocument`], which is the return path: the
+//!   canvas hands a document the camera it is about to paint with and gets back
+//!   the frame for it. [`document::ReplayDocument`] implements it over a recorded
+//!   stream, and the binary implements it over a real `SCH_HOST` session. The
+//!   shell knows nothing about either.
 //!
 //! World coordinates are KiCad internal units — nanometres, as `f64` —
 //! everywhere. Millimetres exist only in [`grid::Units`], which formats a
@@ -55,6 +60,7 @@
 pub mod canvas;
 pub mod commands;
 pub mod demo;
+pub mod document;
 pub mod grid;
 pub mod input;
 pub mod panels;
@@ -65,6 +71,7 @@ pub mod tools;
 
 pub use canvas::{CanvasElement, CanvasState};
 pub use commands::{MENUS, RunAction, ShellCommand};
+pub use document::{LiveDocument, ReplayDocument, SharedDocument, shared_document};
 pub use grid::{GridState, Units};
 pub use input::{
     ActionId, InputSink, Modifiers, PointerButton, RecordingSink, ScreenPoint, ShellEvent, ToolId,

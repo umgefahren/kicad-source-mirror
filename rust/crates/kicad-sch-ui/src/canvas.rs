@@ -31,6 +31,18 @@
 //! So: the shell reads and drives the renderer's camera, and converts to
 //! millimetres in exactly one place — [`crate::grid::Units::format`], on its
 //! way into a string.
+//!
+//! # Where the geometry comes from
+//!
+//! A canvas holds either a fixed stream or a [`crate::document::LiveDocument`].
+//! With a fixed stream — a recorded `.kgds`, the demonstration geometry — the
+//! camera moves over geometry that cannot change, which is a viewer and is
+//! correct as one. With a live document the canvas asks for the frame its camera
+//! is about to paint, *before* painting it, and only when the answer could have
+//! changed: a pan, a zoom, a resize, or [`CanvasState::mark_document_dirty`] for
+//! anything the host did that the canvas cannot see. A free-running redraw of an
+//! untouched view asks for nothing, which is what [`CanvasState::document_renders`]
+//! exists to make checkable.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -39,11 +51,12 @@ use gpui_kit::prelude::*;
 use gpui_kit::{
     App, Bounds, DispatchPhase, Element, ElementId, Entity, GlobalElementId, Hitbox,
     HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollWheelEvent, Size, Style, StyleRefinement,
-    Styled, Window, point, px, size,
+    MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollWheelEvent, SharedString, Size, Style,
+    StyleRefinement, Styled, Window, point, px, size,
 };
 use kicad_sch_render::{Camera, FrameStats, SchematicRenderer, WorldRect};
 
+use crate::document::SharedDocument;
 use crate::grid::GridState;
 use crate::input::{
     Modifiers, PointerButton, ScreenPoint, ScrollDelta, SharedSink, ShellEvent, ViewportState,
@@ -87,6 +100,12 @@ pub struct CanvasState {
     palette: CanvasPalette,
     tool: Tool,
     sink: SharedSink,
+    /// The document to re-record frames from, if this canvas has a live one.
+    ///
+    /// `None` is a canvas over a fixed stream — a recorded `.kgds` or the
+    /// demonstration geometry — which is a viewer and correct as such: the
+    /// camera moves over geometry that cannot change.
+    document: Option<SharedDocument>,
     /// Last pointer position, in window coordinates.
     pointer: Option<Point<Pixels>>,
     press: Option<Press>,
@@ -96,6 +115,19 @@ pub struct CanvasState {
     /// Set whenever the camera changed, so the next paint reports it once
     /// rather than on every mouse move.
     viewport_dirty: bool,
+    /// Set whenever the frame a live document would record could have changed,
+    /// so that the next prepaint asks for a new one.
+    ///
+    /// Separate from `viewport_dirty` because the two are consumed at different
+    /// points of the same frame — this one in prepaint, before anything is
+    /// painted, and that one in paint, on its way to the host — but they are
+    /// always raised together, by [`CanvasState::invalidate_view`].
+    document_dirty: bool,
+    /// How many frames have been asked of the live document. The measurement
+    /// behind "a redraw of an unchanged view costs nothing".
+    document_renders: u64,
+    /// Why the last request for a frame failed, if it did.
+    document_error: Option<SharedString>,
     /// A fit asked for before the canvas had a size, applied as soon as layout
     /// provides one. The shell fits the document while building the window,
     /// which is necessarily before the first layout.
@@ -125,6 +157,7 @@ impl CanvasState {
             palette,
             tool: Tool::Select,
             sink,
+            document: None,
             pointer: None,
             press: None,
             crosshair: true,
@@ -133,6 +166,9 @@ impl CanvasState {
                 size: size(px(1.), px(1.)),
             },
             viewport_dirty: true,
+            document_dirty: true,
+            document_renders: 0,
+            document_error: None,
             fit_pending: true,
             zoom_after_fit: 0,
             last_frame: FrameStats::default(),
@@ -251,6 +287,100 @@ impl CanvasState {
         self.sink = sink;
     }
 
+    /// Draw from `document` from now on, re-recording whenever the view moves.
+    ///
+    /// The renderer keeps whatever stream it already has until the first
+    /// request succeeds, so attaching a document never blanks the canvas.
+    pub fn set_document(&mut self, document: SharedDocument) {
+        self.document = Some(document);
+        self.invalidate_view();
+    }
+
+    /// Whether this canvas draws from a live document rather than a fixed
+    /// stream.
+    pub fn has_live_document(&self) -> bool {
+        self.document.is_some()
+    }
+
+    /// Ask the live document for a fresh frame before the next paint.
+    ///
+    /// The canvas already does this for anything it can see — a pan, a zoom, a
+    /// resize. This is for changes it cannot: an edit, an undo, a sheet change,
+    /// anything the host does to the document behind its back.
+    pub fn mark_document_dirty(&mut self) {
+        self.document_dirty = true;
+    }
+
+    /// How many frames the live document has been asked for.
+    ///
+    /// The number behind the claim that an unchanged view costs nothing: it does
+    /// not move while the window free-runs over a document nobody is touching.
+    pub fn document_renders(&self) -> u64 {
+        self.document_renders
+    }
+
+    /// Why the last attempt to record a frame failed, if it did.
+    ///
+    /// Cleared by the next attempt that succeeds. The shell shows it in the
+    /// status bar: a canvas silently showing the last frame it managed to get is
+    /// indistinguishable from one that is working.
+    pub fn document_error(&self) -> Option<&SharedString> {
+        self.document_error.as_ref()
+    }
+
+    /// Ask the live document for the frame this camera would show.
+    ///
+    /// Called from prepaint, after the viewport and any deferred fit have been
+    /// settled, so that the camera the document is told about is the one the
+    /// frame is painted with. Getting that order wrong shows as geometry missing
+    /// along the edges for one frame, because the document culls to what it was
+    /// told.
+    fn refresh_document(&mut self) {
+        if !self.document_dirty {
+            return;
+        }
+        let Some(document) = self.document.clone() else {
+            // Nothing to ask. Clearing the flag anyway keeps a canvas over a
+            // fixed stream from retrying every frame.
+            self.document_dirty = false;
+            return;
+        };
+        // A document that reached back into the shell would find this borrowed;
+        // dropping the request beats aborting the frame, and the flag stays up
+        // so the next frame tries again.
+        let Ok(mut document) = document.try_borrow_mut() else {
+            return;
+        };
+        self.document_dirty = false;
+        self.document_renders += 1;
+
+        let viewport = self.viewport_state();
+        let mut renderer = self.renderer.borrow_mut();
+        match document.render(viewport, &mut renderer) {
+            Ok(()) => self.document_error = None,
+            Err(reason) => self.document_error = Some(reason.into()),
+        }
+    }
+
+    /// The camera, in the shape the host and the sink are told about.
+    fn viewport_state(&self) -> ViewportState {
+        let camera = self.camera();
+        let viewport = camera.viewport();
+        ViewportState {
+            width: viewport[0],
+            height: viewport[1],
+            scale: camera.scale(),
+            center: WorldPoint::from_array(camera.center()),
+        }
+    }
+
+    /// Note that the camera moved: the host has to be told, and a live document
+    /// has to re-record.
+    fn invalidate_view(&mut self) {
+        self.viewport_dirty = true;
+        self.document_dirty = true;
+    }
+
     /// Post an event to the sink.
     pub fn emit(&self, event: ShellEvent) {
         // A sink that panics would take the frame with it, so the contract on
@@ -280,6 +410,12 @@ impl CanvasState {
         }
     }
 
+    /// Slide the view by a screen-space delta, as a middle-button drag does.
+    pub fn pan(&mut self, dx_px: f64, dy_px: f64) {
+        self.renderer.borrow_mut().pan(dx_px, dy_px);
+        self.invalidate_view();
+    }
+
     /// Zoom in one step about the canvas centre.
     pub fn zoom_in(&mut self) {
         self.zoom_about_centre(ZOOM_STEP);
@@ -295,12 +431,12 @@ impl CanvasState {
         self.renderer
             .borrow_mut()
             .zoom_to_point(factor, [viewport[0] * 0.5, viewport[1] * 0.5]);
-        self.viewport_dirty = true;
+        self.invalidate_view();
     }
 
     /// Frame the whole document. Deferred until the canvas has a size.
     pub fn zoom_to_fit(&mut self) {
-        self.viewport_dirty = true;
+        self.invalidate_view();
         if self.has_a_usable_viewport() {
             self.fit_pending = false;
             self.renderer.borrow_mut().zoom_to_fit(FIT_PADDING_PX);
@@ -324,7 +460,7 @@ impl CanvasState {
             .borrow_mut()
             .camera_mut()
             .set_scale(REFERENCE_SCALE);
-        self.viewport_dirty = true;
+        self.invalidate_view();
     }
 
     /// The extent of the document, in internal units.
@@ -341,14 +477,7 @@ impl CanvasState {
             return;
         }
         self.viewport_dirty = false;
-        let camera = self.camera();
-        let viewport = camera.viewport();
-        self.emit(ShellEvent::ViewportChanged(ViewportState {
-            width: viewport[0],
-            height: viewport[1],
-            scale: camera.scale(),
-            center: WorldPoint::from_array(camera.center()),
-        }));
+        self.emit(ShellEvent::ViewportChanged(self.viewport_state()));
     }
 
     /// A window coordinate as the canvas-local pixels the camera works in.
@@ -451,7 +580,14 @@ impl Element for CanvasElement {
                     .renderer
                     .borrow_mut()
                     .set_viewport([bounds.size.width.to_f64(), bounds.size.height.to_f64()]);
-                state.viewport_dirty = true;
+                state.invalidate_view();
+            }
+            // A live document that has not produced geometry yet leaves nothing
+            // to frame, so in that one case the frame has to be asked for before
+            // the fit rather than after it. Not reachable when a host renders
+            // once before opening the window, which is what the binary does.
+            if state.fit_pending && state.document_bounds().is_empty() {
+                state.refresh_document();
             }
             if state.fit_pending && state.has_a_usable_viewport() {
                 state.zoom_to_fit();
@@ -464,6 +600,12 @@ impl Element for CanvasElement {
                     }
                 }
             }
+
+            // Last, deliberately: everything above can still move the camera,
+            // and a document culls to the camera it is given. Asking before the
+            // fit had run would paint one frame culled to the wrong view, which
+            // shows as geometry missing along the edges.
+            state.refresh_document();
         });
         CanvasPrepaint {
             hitbox: window.insert_hitbox(bounds, HitboxBehavior::Normal),
@@ -633,11 +775,7 @@ fn install_mouse_handlers(state: &Entity<CanvasState>, hitbox: &Hitbox, window: 
                     // The middle button pans the view itself; the host still
                     // hears the drag so a tool can override it.
                     if press.button == PointerButton::Middle {
-                        state
-                            .renderer
-                            .borrow_mut()
-                            .pan(delta.x as f64, delta.y as f64);
-                        state.viewport_dirty = true;
+                        state.pan(delta.x as f64, delta.y as f64);
                     }
                     state.emit(ShellEvent::DragUpdate {
                         button: press.button,
@@ -725,7 +863,7 @@ fn install_mouse_handlers(state: &Entity<CanvasState>, hitbox: &Hitbox, window: 
                         );
                     }
                 }
-                state.viewport_dirty = true;
+                state.invalidate_view();
                 cx.notify();
             });
         });

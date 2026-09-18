@@ -8,7 +8,8 @@ It is **opt-in and off by default**. The existing wxWidgets schematic editor is
 untouched and unaffected; with `-DKICAD_BUILD_RUST_SCH_UI=OFF` (the default)
 cargo is never invoked and the host shared library is not built.
 
-It opens real `.kicad_sch` files — `--schematic` below — and it is a viewer, not
+It opens real `.kicad_sch` files — `--schematic` below — holds the C++ session open
+and re-records the frame from it whenever the view moves. It is still a viewer, not
 an editor: input is collected and discarded. `docs/rust-migration/06-what-is-missing.md`
 is the honest account of the distance from here to an editor.
 
@@ -30,6 +31,15 @@ A stream reaches Rust two ways: from a file recorded earlier by
 linked, and straight out of memory through the host's C ABI, which is how a real
 `.kicad_sch` is opened.
 
+The second is a live connection rather than a one-off. `kicad_sch_ui::document::LiveDocument`
+is the seam: the canvas hands a document the camera it is about to paint with and
+gets back the frame for it. The binary implements that over a `kicad_sch_sys::Session`;
+`ReplayDocument` implements it over a recorded stream, so the whole re-render path
+is testable with no host linked. The canvas asks only when the answer could have
+changed — a pan, a zoom, a resize — because `KIGFX::VIEW` culls the frame body to
+the camera but records retained geometry once, which is what keeps a live re-render
+inside the frame budget.
+
 See `docs/rust-migration/` for the full design:
 
 | Document | Contents |
@@ -38,6 +48,8 @@ See `docs/rust-migration/` for the full design:
 | `00-architecture-survey.md` | Layer map, the GAL interface, wx coupling, fixtures |
 | `02-gpui-kit-cookbook.md` | How to build against gpui-kit, verified against its sources |
 | `03-build-notes.md` | Building the C++ tree |
+| `04-host-seam.md` | The C++ session and the C ABI, including what the viewport scale is and is not |
+| `06-what-is-missing.md` | Stage by stage: what is done, what is not, and what each costs |
 
 ## Crates
 
@@ -111,7 +123,7 @@ CTest and runs alongside the rest of the QA suite.
 
 ```sh
 # A real schematic, through the C++ host: eeschema's reader, eeschema's painter,
-# no file in between.
+# no file in between, and re-recorded from the live session on every pan and zoom.
 build/rust-target/release/eeschema-gpui --schematic demos/video/video.kicad_sch
 
 # A stream recorded earlier by kicad-sch-dump. Works in a build with no host.
@@ -125,8 +137,13 @@ build/rust-target/release/eeschema-gpui --stream qa/data/draw_streams/ecc83_pp_v
 stays tested on a machine that has one.
 
 **Input still goes nowhere.** The window pans, zooms, selects tools and opens
-menus, and none of it reaches the document: the binary installs `NullSink`. See
+menus; the pan and the zoom reach the document's camera, and nothing else reaches
+the document at all — the binary installs `NullSink`. See
 `docs/rust-migration/06-what-is-missing.md`.
+
+`--frame-stats` puts the frame timing and the renderer's own per-frame numbers in
+the status bar, which is where the live path is visible: the groups drawn and
+culled change as you pan, and the paths do not get rebuilt.
 
 ### Tests that need a GPU
 

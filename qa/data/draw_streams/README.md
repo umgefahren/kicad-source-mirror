@@ -25,7 +25,14 @@ mostly consists of `KGDS_OP_DRAW_GROUP` references into them. Coordinates are
 `double`s in KiCad internal units (100 nm for eeschema), in world space.
 
 Each `.kgds` has a `.txt` beside it with the statistics `kicad-sch-dump`
-reported when it was recorded.
+reported when it was recorded. Those reports carry the recording machine's paths
+and timings, so they are not reproducible byte for byte and are documentation
+rather than fixtures. One line in them is now stale on purpose: the
+`viewport ... scale` they print is `KIGFX::VIEW`'s zoom factor, because
+`SCH_HOST` used to report that where the ABI promised pixels per internal unit.
+That was fixed for the live re-render work, and the fix changes nothing else —
+every count and every byte in all four `.kgds` is unchanged, because a
+zoom-to-fit frames the page and nothing on these sheets sits outside it.
 
 ## Regenerating
 

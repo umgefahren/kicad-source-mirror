@@ -421,13 +421,49 @@ bool SCH_HOST::IsModified() const
 }
 
 
-void SCH_HOST::SetViewport( int aWidthPx, int aHeightPx, const VECTOR2D& aCenter, double aScale )
+double SCH_HOST::PixelsPerIUAtUnitZoom() const
+{
+    // KIGFX::VIEW's "scale" is the GAL zoom factor, not pixels per internal unit:
+    // GAL::computeWorldScale() derives the latter as
+    //
+    //     worldScale = screenDPI * worldUnitLength * zoomFactor * zoomCorrection
+    //
+    // and eeschema's worldUnitLength is 1e-7/0.0254 inch per IU (SCH_WORLD_UNIT).
+    // The ABI speaks pixels per IU, because that is what the recorded coordinates
+    // and a consumer's camera are in, so the two have to be converted between.
+    //
+    // The factor is recovered from the GAL rather than recomputed from the formula
+    // above, so that the zoom-correction factor in the common settings — and
+    // anything else that ends up in there later — is included without this code
+    // knowing about it.
+    const double zoom = m_view->GetScale();
+
+    if( zoom > 0.0 )
+        return m_gal->GetWorldScale() / zoom;
+
+    // Unreachable: VIEW starts at a zoom of 1 and SetScale() clamps to
+    // m_minScale, which is positive. The fallback is the formula without the
+    // correction factor, which is the closest thing to right available without a
+    // zoom to divide by, and it beats returning zero into a division.
+    return m_gal->GetScreenDPI() * m_gal->GetWorldUnitLength();
+}
+
+
+void SCH_HOST::SetViewport( int aWidthPx, int aHeightPx, const VECTOR2D& aCenter,
+                            double aPixelsPerIU )
 {
     SetViewportSize( aWidthPx, aHeightPx );
 
-    if( aScale > 0.0 )
-        m_view->SetScale( aScale );
+    if( aPixelsPerIU > 0.0 )
+    {
+        // VIEW::SetScale clamps to eeschema's own zoom limits, so a caller asking
+        // for more than the editor allows gets what the editor allows — which
+        // GetViewScale() then reports back, rather than the request.
+        m_view->SetScale( aPixelsPerIU / PixelsPerIUAtUnitZoom() );
+    }
 
+    // After the scale: VIEW::SetScale keeps its anchor fixed and therefore moves
+    // the centre, so setting the centre first would undo it.
     m_view->SetCenter( aCenter );
 }
 
@@ -451,10 +487,12 @@ void SCH_HOST::ZoomToFit()
     if( !m_schematic || bbox.GetWidth() <= 0 || bbox.GetHeight() <= 0 )
         return;
 
+    // Pixels per internal unit, which is not what VIEW::SetScale wants; see
+    // PixelsPerIUAtUnitZoom().
     double scaleX = static_cast<double>( m_viewportSize.x ) / bbox.GetWidth();
     double scaleY = static_cast<double>( m_viewportSize.y ) / bbox.GetHeight();
 
-    m_view->SetScale( std::min( scaleX, scaleY ) / ZOOM_FIT_MARGIN );
+    m_view->SetScale( std::min( scaleX, scaleY ) / ZOOM_FIT_MARGIN / PixelsPerIUAtUnitZoom() );
     m_view->SetCenter( VECTOR2D( bbox.Centre() ) );
 }
 
@@ -467,7 +505,9 @@ VECTOR2D SCH_HOST::GetViewCenter() const
 
 double SCH_HOST::GetViewScale() const
 {
-    return m_view->GetScale();
+    // Pixels per internal unit, matching what SetViewport() takes. That is exactly
+    // the GAL's world scale, which is where the zoom factor ends up.
+    return m_gal->GetWorldScale();
 }
 
 

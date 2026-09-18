@@ -176,12 +176,19 @@ headless compositor are set up.
 ## Where this actually got to
 
 The milestones above describe the intended shape. What landed is M1, M2 and the
-first half of M3: rendering works end to end on all 466 schematics in the tree,
-and the Rust binary now loads the host library and opens a real `.kicad_sch`
-through it — `--schematic FILE.kicad_sch`. The rest of M3 has not started: the
-frame is recorded once rather than live, and no input reaches `TOOL_MANAGER`.
-**See `06-what-is-missing.md`** for precisely where it stops and what the
-remaining stages are.
+rendering half of M3: rendering works end to end on all 466 schematics in the
+tree, and the Rust binary loads the host library, opens a real `.kicad_sch`
+through it — `--schematic FILE.kicad_sch` — and re-records the frame from that
+live session whenever the view moves. What has not started is the *input* half of
+M3: nothing a user does reaches `TOOL_MANAGER`. **See `06-what-is-missing.md`**
+for precisely where it stops and what the remaining stages are.
+
+One prediction in this document is worth revisiting in the light of that. The
+plan said to call the host "per frame"; the code asks only when the answer could
+have changed — a pan, a zoom, a resize, or an explicit invalidation — because the
+window free-runs at the display rate and re-recording on each of those redraws
+would be waste. The distinction is the same one the retained-group design rests
+on, applied one level up.
 
 ## Explicit non-goals for this step
 
@@ -194,10 +201,10 @@ remaining stages are.
 * Removing wxBase. wxWidgets' *GUI* layer leaves the schematic editor's
   presentation path; `wxString` and friends remain as utility types throughout
   the C++ core and are a separate, later migration.
-* Feeding input into `TOOL_MANAGER`. This is the next milestone rather than a
-  structural obstacle: `TOOL_MANAGER` has no wx dependency, `TOOL_EVENT` is a
-  plain value type, and only `TOOL_DISPATCHER` is bound to wx. What is needed is
-  a dispatcher that builds `TOOL_EVENT`s from gpui input.
+* Feeding input into `TOOL_MANAGER`. This is the next milestone of substance
+  rather than a structural obstacle: `TOOL_MANAGER` has no wx dependency,
+  `TOOL_EVENT` is a plain value type, and only `TOOL_DISPATCHER` is bound to wx.
+  What is needed is a dispatcher that builds `TOOL_EVENT`s from gpui input.
   `docs/rust-migration/04-host-seam.md` records what it would take.
 
 ## Related documents

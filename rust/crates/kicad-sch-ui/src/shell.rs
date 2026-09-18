@@ -34,6 +34,7 @@ use crate::commands::{
     ToggleLeftPanel, ToggleRightPanel, ToggleTheme, ToggleUnits, ZoomActualSize, ZoomIn, ZoomOut,
     ZoomToFit, ZoomToObjects,
 };
+use crate::document::SharedDocument;
 use crate::grid::Units;
 use crate::input::{Modifiers, SharedSink, ShellEvent, shared_sink};
 use crate::panels::{DesignState, DocumentSource, HierarchyPanel, PropertiesPanel, StreamFacts};
@@ -347,6 +348,21 @@ impl SchematicShell {
         };
         shell.canvas.update(cx, |canvas, _| canvas.zoom_to_fit());
         shell
+    }
+
+    /// Draw from a live document from now on.
+    ///
+    /// The one call that turns the shell from a viewer of a recorded frame into
+    /// a window onto a document: from here the canvas re-records whenever the
+    /// view moves rather than panning a camera over a fixed copy. Attach it after
+    /// construction — the shell frames whatever the renderer already holds while
+    /// being built, and a document is free to have produced that first frame.
+    pub fn set_document(&mut self, document: SharedDocument, cx: &mut Context<Self>) {
+        self.canvas.update(cx, |canvas, cx| {
+            canvas.set_document(document);
+            cx.notify();
+        });
+        cx.notify();
     }
 
     /// The canvas state, for tests and for the host.
@@ -953,6 +969,19 @@ impl SchematicShell {
                     .text_color(theme.muted_foreground)
                     .child(self.status.clone()),
             )
+            // A live canvas that quietly keeps showing the last frame it managed
+            // to record is indistinguishable from one that is working, so a
+            // failed frame says so where the user is already looking.
+            .when_some(canvas.document_error().cloned(), |bar, reason| {
+                bar.left(status_divider(cx)).left(
+                    div()
+                        .id("status-document-error")
+                        .test_support()
+                        .text_xs()
+                        .text_color(theme.danger)
+                        .child(format!("Frame not recorded: {reason}")),
+                )
+            })
             .right(
                 div()
                     .id("status-selection")

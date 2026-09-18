@@ -404,6 +404,38 @@ impl Stream {
         self.flags
     }
 
+    /// Overwrite this stream with a borrowed one, reusing the allocations.
+    ///
+    /// The per-frame form of [`StreamView::to_owned_stream`]. A live host hands
+    /// back a fresh view for every frame, and the sections are very nearly the
+    /// same size each time — retained geometry is recorded once and replayed —
+    /// so allocating ten new vectors per frame would put megabytes of churn
+    /// inside the frame budget on a large sheet for no benefit. Copying over the
+    /// existing buffers keeps every capacity.
+    ///
+    /// Revalidation is skipped for the same reason [`StreamView::to_owned_stream`]
+    /// skips it: the view could not exist unvalidated.
+    pub fn copy_from_view(&mut self, view: &StreamView<'_>) {
+        fn overwrite<T: Copy>(dst: &mut Vec<T>, src: &[T]) {
+            dst.clear();
+            dst.extend_from_slice(src);
+        }
+
+        self.version = view.version;
+        self.flags = view.flags;
+        overwrite(&mut self.group_cmds, view.group_cmds);
+        overwrite(&mut self.group_coords, view.group_coords);
+        overwrite(&mut self.groups, view.groups);
+        overwrite(&mut self.frame_cmds, view.frame_cmds);
+        overwrite(&mut self.frame_coords, view.frame_coords);
+        overwrite(&mut self.strings, view.strings);
+        overwrite(&mut self.images, view.images);
+        overwrite(&mut self.image_data, view.image_data);
+        // Almost always `Identity`, which owns nothing; the side table is small
+        // enough that reusing its allocation too would not pay for the branch.
+        self.group_index = view.group_index.to_owned_index();
+    }
+
     /// The retained-geometry command array.
     pub fn group_cmds(&self) -> &[kgds_cmd] {
         &self.group_cmds

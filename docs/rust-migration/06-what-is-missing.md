@@ -3,55 +3,52 @@
 This document exists because the previous ones describe what was built, and a
 reader can finish them with the wrong impression of what that adds up to.
 
-**What exists today is a schematic viewer that opens real `.kicad_sch` files,
-plus a seam an editor can be built on. It is not a schematic editor, and
-wxWidgets has not been removed from anything.** The wx schematic editor is
-untouched and is still the only way to edit a schematic.
+**What exists today is a schematic viewer that opens real `.kicad_sch` files and
+redraws them live from the document, plus a seam an editor can be built on. It is
+not a schematic editor, and wxWidgets has not been removed from anything.** The
+wx schematic editor is untouched and is still the only way to edit a schematic.
 
-> **Stage 1 below is done** (see [Stage 1](#stage-1--link-the-c-abi-from-rust-done)).
+> **Stages 1 and 2 below are done.**
 > `kicad-eeschema-gpui --schematic FILE.kicad_sch` loads the file through
-> eeschema's own reader and draws the frame the C++ painter records, with no file
-> in between. That closes the first of the two missing arrows; everything else in
-> this document still stands, including the one that matters most.
+> eeschema's own reader and keeps the session open for the window's lifetime,
+> asking it for a frame whenever the view moves. The two arrows that used to be
+> missing or drawn-once are both live. What is left is the one that matters most:
+> **nothing the user does reaches the document.**
 
 ## Exactly where it stops
 
-Two facts, each checkable in a minute:
+One fact, checkable in a minute:
 
-1. **Input is discarded.** The shell builds a complete event vocabulary —
-   `PointerDown`, `PointerMove`, `PointerUp`, `DragBegin`, `DragUpdate`,
-   `DragEnd`, `Scroll`, `KeyDown`, `KeyUp`, `ToolCancelled`, with buttons and
-   modifiers — and the binary hands it `NullSink`, whose entire implementation
-   is `fn handle(&mut self, _event: ShellEvent) {}`. Nothing a user does reaches
-   the document.
-2. **Nothing re-renders.** The session records one frame at startup, the Rust
-   side copies it, and the session is dropped. Panning and zooming move a camera
-   over that copy — which is right for a viewer and is not an editor: a document
-   that changed would still be showing its old geometry. That is Stage 2.
+**Input is discarded.** The shell builds a complete event vocabulary —
+`PointerDown`, `PointerMove`, `PointerUp`, `DragBegin`, `DragUpdate`, `DragEnd`,
+`Scroll`, `KeyDown`, `KeyUp`, `ToolCancelled`, with buttons and modifiers — and
+the binary hands it `NullSink`, whose entire implementation is
+`fn handle(&mut self, _event: ShellEvent) {}`. Nothing a user does reaches the
+document.
 
 So the pipeline that works now is:
 
 ```
 .kicad_sch ──► SCH_HOST ──► RECORDING_GAL ──► stream in memory
-                                                   │
-                                             C ABI │  (kicad-sch-sys)
-                                                   ▼
-                                             gpui window            (works, once)
+                   ▲                                    │
+                   │                              C ABI │
+                   └─── viewport ───── gpui window ◄────┘
+                        every view change
 ```
 
-and the pipeline an editor needs is:
+and the pipeline an editor needs adds one arrow, alongside that one:
 
 ```
 .kicad_sch ──► SCH_HOST ──► RECORDING_GAL ──► stream in memory
-                   ▲                               │
-                   │                          C ABI │  ◄── every frame, not once
-            TOOL_MANAGER                            ▼
-                   ▲                          gpui window
-                   └──────── input ───────────────┘  ◄── goes to NullSink
+                   ▲                                    │
+            TOOL_MANAGER                          C ABI │
+                   ▲                                    │
+                   └───── input ────── gpui window ◄────┘
+                          goes to NullSink
 ```
 
-One arrow is missing and one is drawn once instead of continuously. Neither is
-speculative work — both ends of each already exist and are tested.
+That arrow is not speculative work either — both its ends exist and are tested.
+What stands between here and it is Stages 3 and 4.
 
 ## What is already done and does not need redoing
 
@@ -63,11 +60,12 @@ Worth being clear about, because it changes the size of what remains:
 | The draw-stream ABI | Frozen, layout-asserted on both sides, sync-tested |
 | `SCH_HOST` | Loads, renders, enumerates sheets, zooms; 16 tests |
 | The C ABI | 26 entry points, three of them the runtime; implemented, and bound from Rust |
-| `kicad-gal` | Validating decoder, 56 tests |
+| `kicad-gal` | Validating decoder, 58 tests |
 | `kicad-sch-render` | Stream → gpui primitives, 89 tests |
-| `kicad-sch-ui` | Shell, 70 tests, the interaction ones against real hit testing |
+| `kicad-sch-ui` | Shell, 79 tests, the interaction ones against real hit testing |
 | Action registry | 440 actions enumerable headless with icons and hotkeys |
-| `kicad-sch-sys` | The ABI linked from Rust, 10 checks against the live host |
+| `kicad-sch-sys` | The ABI linked from Rust, 11 checks against the live host |
+| Live re-render | The canvas asks the session for the frame it is about to paint |
 
 The rendering half is genuinely finished, on all 466 schematics in the tree.
 
@@ -135,38 +133,141 @@ Two things the code told us that the plan did not:
 ### What Stage 1 deliberately did not do
 
 * Input still goes to `NullSink`. Stage 4.
-* The session is dropped after the first frame and the Rust side keeps a copy, so
-  nothing re-renders from the document. Stage 2, which is where the borrowed
-  `StreamView` the wrapper already returns starts being used per frame.
+* The session was dropped after the first frame, so nothing re-rendered from the
+  document. That was Stage 2, below, and is done.
 * The hierarchy panel still describes the draw stream rather than the sheet tree,
   and says so, even though `ksch_session_sheet_info` could fill it in today.
 
-## Stage 2 — Live re-render
+## Stage 2 — Live re-render (done)
 
-**Effort: about a day. Depends on Stage 1.**
+**Took about a day, as estimated — but not on the part that was predicted. See
+"the part that was not in the plan" below.**
 
-`ksch_session_render` already returns a borrowed `kgds_stream_view` valid until
-the next recording pass. Call it per frame instead of reading a file, drive the
-viewport through `ksch_session_set_viewport`, and let `SchematicRenderer`'s
-`(group id, serial)` cache do its job.
+The session now stays open for the window's lifetime and the canvas asks it for
+the frame it is about to paint. What that took:
 
-Two things to get right:
+| | |
+|---|---|
+| `kicad-sch-ui/src/document.rs` | `LiveDocument`, the seam: "here is my camera, give me the frame" |
+| `kicad-eeschema-gpui/src/main.rs` | The one real implementation, over `kicad_sch_sys::Session` |
+| `CanvasState` | Owns the document, decides when to ask, surfaces a failure |
+| `Stream::copy_from_view` | The per-frame copy, without the per-frame allocation |
+| `SCH_HOST::PixelsPerIUAtUnitZoom` | The unit bug in the next section |
 
-- **Lifetimes.** The view borrows C++-owned buffers that the next `Render()`
-  invalidates. The safe wrapper must make that unrepresentable, not merely
-  documented. *Done in Stage 1:* `Session::render` returns a `StreamView`
-  borrowed from `&mut self`, so holding one and rendering again does not compile.
-  `SchematicRenderer::set_stream_view` already takes exactly that, so the copy
-  Stage 1 makes is one call away from being gone.
-- **Who owns the frame clock.** Today gpui drives it. Once C++ owns the
-  document, a change there has to wake the gpui loop.
-- **Who holds the session.** Stage 1 drops it after the first frame; keeping it
-  for the window's lifetime means the shell owns it, and the shell is
-  `!Send`-friendly but the session is main-thread-only (above), which the gpui
-  main thread satisfies.
+### Where the policy lives, and why it is "when the view moves" rather than "every frame"
 
-**Done when:** panning and zooming re-render from the live document, and the
-group cache still reports no re-upload on an unchanged view.
+The stage description said "call it per frame". That would have been wrong, and
+the code does not: `CanvasState::refresh_document` asks only when the answer could
+have changed — a pan, a zoom, a resize, or `mark_document_dirty()` for anything
+the host did that the canvas cannot see. The window free-runs at the display rate
+so that the frame-time readout measures the display rather than how often
+something happened; re-recording on each of those redraws would have been pure
+waste. `CanvasState::document_renders()` is the counter that makes it checkable,
+and the shell test asserts that eight redraws of an untouched view add nothing to
+it.
+
+The request goes out in prepaint, *after* the deferred fit and any zoom steps have
+settled, because the session culls the frame to the camera it is told about.
+Asking before the fit had run would paint one frame culled for the wrong view,
+which shows as geometry missing along the edges.
+
+### What it costs, measured
+
+A pan on the heaviest sheets in the tree, release build, cache warm:
+
+| Sheet | Groups | Record (C++) | Copy + revalidate | Prepare (cull, cache) | Total |
+|---|---|---|---|---|---|
+| `demos/ecc83/ecc83-pp_v2` | 336 | 0.48 ms | 0.004 ms | 0.02 ms | **0.51 ms** |
+| `demos/video/video` | 1,328 | 0.61 ms | 0.015 ms | 0.08 ms | **0.71 ms** |
+| `demos/tiny_tapeout/tinytapeout-demo` | 5,321 | 2.50 ms | 0.09 ms | 0.72 ms | **3.30 ms** |
+| `demos/jetson-agx-thor-baseboard/dcdc` | 5,849 | 3.73 ms | 0.15 ms | 0.68 ms | **4.56 ms** |
+
+The last row is the densest sheet in the tree, and it leaves 3.7 ms of the 8.3 ms
+budget. The C++ recording pass dominates, which is the right answer — it is the
+part doing real work. Over 60 consecutive panned re-renders the tessellation cache
+misses exactly once per group and never again, on every one of those sheets: the
+geometry is tessellated when first seen and thereafter only replayed.
+
+The copy is small enough to be uninteresting, which took one change to be true.
+`StreamView::to_owned_stream` allocates ten vectors, and doing that per frame put
+megabytes of allocator churn inside the budget on a large sheet.
+`Stream::copy_from_view` overwrites the buffers instead, so `set_stream_view`
+keeps every capacity; `copying_a_view_reuses_the_buffers_it_already_has` asserts
+it by section address.
+
+### The part that was not in the plan
+
+**`SCH_HOST` was reporting and accepting the wrong quantity as a scale, and had
+been since it was written.** `ksch_viewport::scale` is documented as pixels per
+internal unit — which is what the recorded coordinates and a consumer's camera are
+in — but `SetViewport` passed it straight to `KIGFX::VIEW::SetScale`, and VIEW's
+scale is the *GAL zoom factor*. The two differ by a factor the GAL computes:
+
+```
+GAL::computeWorldScale():  worldScale = screenDPI * worldUnitLength * zoomFactor
+eeschema's worldUnitLength = 1e-7 / 0.0254 inch per IU     (SCH_WORLD_UNIT)
+```
+
+which on this machine is 3.58e-4 pixels per internal unit at a zoom factor of one,
+so a correct scale is about **2,800× smaller** than the zoom factor that produces
+it. The consequences were invisible right up to the moment something depended on
+the camera, which is exactly what this stage does:
+
+* Every requested scale, read as a zoom factor, was ~2,800× too small — a
+  zoom-to-fit of an A4 page asks for 4.90e-4, and the zoom factor that means is
+  1.37. `VIEW::SetScale` clamped it *up* to eeschema's minimum zoom
+  (`ZOOM_MIN_LIMIT_EESCHEMA`, 0.01), which is the most zoomed-out view the editor
+  allows, and the session's cull rectangle came out **54 metres wide**. Nothing
+  was ever culled. Panning three viewports away from the sheet changed the
+  recorded frame body not at all.
+* `SCH_HOST::ZoomToFit` computed pixels per internal unit correctly and then fed
+  it to the same method, so the C++ "zoom to fit" did not fit either.
+* `kicad-sch-dump` printed the clamped zoom factor as `scale 0.01` for every file
+  in the corpus, which is why it looked like a constant rather than a measurement.
+  That is the single clue that was visible all along, in checked-in output, and it
+  was not read as one.
+
+`PixelsPerIUAtUnitZoom()` now converts, and recovers the factor *from the GAL*
+rather than recomputing the formula, so that the user's zoom-correction factor —
+and anything else that ends up in `computeWorldScale` later — is included without
+this code knowing about it. `GetViewScale()` returns `GAL::GetWorldScale()`, which
+is the quantity the header always claimed.
+
+Two things worth knowing about the fix:
+
+* **No recorded output changed.** All four checked-in fixtures come back with
+  identical group counts, command counts, coordinate counts and byte sizes. A
+  zoom-to-fit frames the page, and nothing on those sheets sits outside it, so a
+  cull rectangle that is correct and one that is 54 metres wide keep the same
+  items. The only line that moved is the `scale` the dump tool prints. The
+  live-host suite's order-independent fixture comparison passes unchanged, as do
+  `qa_eeschema` (1,699 cases) and `qa_common` (1,477).
+* **The clamp is now visible, and is adopted rather than ignored.** eeschema's
+  zoom limits bind the wx editor too, so a canvas that honours them is behaving
+  correctly rather than being restricted. `SchematicSession::render` reads the
+  viewport back and writes the granted scale into the renderer's camera, because
+  a canvas showing a wider view than the session believes in would be missing the
+  geometry outside the session's idea of the viewport. A zoom that runs into the
+  limit simply stops, as it does in the wx editor.
+
+### What Stage 2 deliberately did not do
+
+* **Nothing wakes the gpui loop from C++.** The stage description asked who owns
+  the frame clock; the answer is still gpui, and that is sufficient while nothing
+  but the shell can change the document. The moment an edit can arrive from
+  elsewhere, `mark_document_dirty()` is the entry point it needs — it exists, is
+  tested, and is called by nothing yet.
+* **Sheet switching is not wired.** `ksch_session_set_sheet` exists and
+  invalidates every retained group, so the renderer would have to drop its cache;
+  the hierarchy panel that would drive it still describes the draw stream.
+* **The docked panels still describe the opening frame**, not the current one.
+  With a live document the frame body is re-recorded per view change and
+  `KIGFX::VIEW` culls it, so the frame-command count moves with the camera and is
+  not a property of the document. The panels now say "the opening frame" where
+  they used to say "frame commands"; the live numbers are in the status bar, where
+  they are updated every paint. Refreshing the tree per pan was the alternative
+  and is worse: `TreeState::set_items` resets selection and expansion, so the
+  hierarchy would collapse while the user panned.
 
 ## Stage 3 — Make a non-frame `TOOLS_HOLDER` safe
 
@@ -249,10 +350,19 @@ genuinely means Stage 5 completed, and that is a long way past where this is.
 
 ## Honest sizing
 
-Stages 1–3 are mechanical and bounded: roughly two to three days, and they turn
-a viewer into something that opens a real schematic and redraws it live. Stage 1
-is done and cost about a day of that, most of it on the two surprises in its own
-section rather than on the bindings.
+Stages 1–3 are mechanical and bounded: roughly two to three days. Stages 1 and 2
+are done and cost about a day each — which turns a viewer of a recorded frame into
+a window onto a document that redraws itself. Stage 3 remains.
+
+Both finished stages spent most of their time on something that was not in the
+plan, and in both cases it was the same kind of thing: a quantity that two layers
+disagreed about and nothing had yet forced them to agree on. Stage 1 found that a
+draw stream's group ordering is not canonical across standard libraries; Stage 2
+found that the host's viewport scale was the GAL zoom factor where the ABI promised
+pixels per internal unit. Neither was a hard problem once seen, and neither was
+visible until a consumer depended on it. That is worth expecting for Stages 3 and 4
+as well, and is an argument for wiring something end to end early rather than
+building each layer to its own satisfaction.
 
 Stage 4 is where a schematic editor actually lives. Selection alone is a
 meaningful milestone; a tool set someone would choose over the wx editor is
@@ -262,6 +372,7 @@ Stage 5 is a separate project.
 
 **The honest summary of this branch is that it finishes the rendering third of
 the problem and leaves the editing two thirds.** That is a real result — the
-rendering third was the part with the most unknowns, and it is now settled and
-tested on every schematic in the tree, and as of Stage 1 it is settled
-*end to end in one process* rather than through a file — but it is a third.
+rendering third was the part with the most unknowns, it is settled and tested on
+every schematic in the tree, and it now runs end to end in one process and redraws
+from the live document rather than from a copy — but it is a third. Nothing a user
+does to the window reaches the schematic.
