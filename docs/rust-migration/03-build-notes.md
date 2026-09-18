@@ -20,6 +20,11 @@ Reference environment (what these notes were verified on):
 > build options that older guides and the KiCad dev docs still mention **do not
 > exist here** — see [Options that do not exist](#options-that-do-not-exist).
 
+> **On a workstation rather than this container**, `devenv.nix` at the repo root
+> provides the same dependency set plus the nightly Rust toolchain, on Linux and
+> macOS, without touching the host — see
+> [§6 The same build from nix](#6-the-same-build-from-nix-devenvnix).
+
 ---
 
 ## 1. Dependencies
@@ -363,3 +368,96 @@ ninja -C /tmp/claude-0/kicad-build/build -j4 eeschema qa_eeschema
 # 4. test
 /tmp/claude-0/kicad-build/build/qa/tests/eeschema/qa_eeschema
 ```
+
+---
+
+## 6. The same build from nix (`devenv.nix`)
+
+The apt list in §1 is not the only way in. `devenv.nix` at the repo root describes
+this environment declaratively and covers **both** halves of the work — the C++
+dependency set and the nightly Rust toolchain the schematic UI needs — on Linux and
+on macOS. The only host prerequisites are nix and [devenv](https://devenv.sh).
+
+```bash
+devenv shell                          # interactive
+devenv shell -- <command>             # or just one command
+
+tools/build/configure-dev.sh          # $KICAD_BUILD_DIR is ./build in the shell
+ninja -C build -j<N> eeschema qa_eeschema
+cd rust && cargo test
+```
+
+`devenv.lock` pins nixpkgs and the Rust overlay, so the next machine gets the same
+compilers and the same library versions. Three consequences worth knowing:
+
+* The toolchain comes from `languages.rust.channel = "nightly"`, i.e. straight from
+  the overlay rather than through rustup. `rust/rust-toolchain.toml` is therefore
+  inert inside the shell — it still documents the requirement for rustup users, and
+  the nightly check in `cmake/KiCadRust.cmake` is satisfied either way because
+  `rustc --version` reports nightly.
+* The Linux half of `devenv.nix` (wxGTK3, GL, X11, libsecret, libspnav, poppler)
+  mirrors §1's apt list and evaluates, but it has not been built from here; macOS
+  is what the section below records.
+* The library versions are nixpkgs-current, not Ubuntu-current, and they are
+  considerably newer than the container's (boost 1.91 against 1.83, for instance).
+  `protobuf` is deliberately pinned to the 29.x series in `devenv.nix`, matching
+  what nixpkgs itself builds KiCad against.
+
+### Verified on macOS
+
+| | |
+|---|---|
+| OS / CPU | macOS 26.6, aarch64 (18 cores) |
+| Compiler | clang 21.1.8 from the nix stdenv — **not** Xcode's |
+| CMake / Ninja | 4.4.2 / 1.13.2 |
+| wxWidgets | 3.2.11, **osx (Cocoa)** port, webview included |
+| Other | boost 1.91, OCC 7.9.3, protobuf 29.6, libngspice 45, nng 1.12.3 |
+| Rust | 1.100.0-nightly (2026-09-17) |
+
+Unlike the container, `-j14` is fine here; the memory-per-job warning in
+[Gotchas](#gotchas) is about that box's 15 GB, not about the build itself.
+
+What was actually run, in that shell, with no extra `-D` flags:
+
+| Step | Result |
+|---|---|
+| `tools/build/configure-dev.sh` | configures in ~5 s |
+| `ninja -j14 kicommon` | clean |
+| `ninja -j14 eeschema qa_eeschema` | clean — `_eeschema.kiface` and `eeschema.app` produced |
+| `ninja -j10 qa_common` | clean |
+| `./qa/tests/eeschema/qa_eeschema` | 1699 cases, **no errors**, exit 0 |
+| `./qa/tests/common/qa_common` | 1477 cases, **no errors** — this includes the recording-GAL and draw-stream suites in `qa/tests/common/gal/`, which §4 records as never having been run |
+| `cd rust && cargo test --workspace` | 214 passed, 1 ignored |
+
+This is a later state of the branch than §4's baseline; the two failures recorded
+there do not reproduce here.
+
+Getting a macOS build to configure and compile needed four fixes in the tree. All of
+them are platform bugs that were simply never exercised, not nix workarounds:
+
+| Where | What |
+|---|---|
+| `CMakeLists.txt` | `-fexperimental-library` was added for *any* clang on Apple. Only Apple's own clang ships `libc++experimental`; an upstream LLVM toolchain has `std::jthread`/`std::stop_token` in the main library and fails to link with `library not found for -lc++experimental`. Now gated on `AppleClang`. |
+| `CMakeLists.txt` | `CMAKE_CXX_SCAN_FOR_MODULES OFF`. Nothing here uses C++20 modules, and `clang-scan-deps` runs as a bare binary that does not see flags a compiler wrapper adds through the environment — it failed on `thirdparty/fmt` with `'algorithm' file not found` while the compiler itself was fine. |
+| `cmake/FindOCC.cmake` | The header search knew only FHS paths. It now also applies the `opencascade` path suffix, so a prefix supplied through `CMAKE_PREFIX_PATH`/`CMAKE_INCLUDE_PATH` works — nix, Homebrew, or a local install. |
+| `cmake/Findngspice.cmake` | Looked for `libngspice.so.0` on every UNIX. macOS names it `libngspice.0.dylib`, so it now lets `find_library` apply the platform's own naming. |
+
+### macOS-specific things to keep in mind
+
+* **The wx port is `osx`, not `gtk`.** The GTK-only QA helpers in
+  `qa/qa_utils/CMakeLists.txt` are compiled out, so any test that reaches into
+  `GtkPrintSettings` or `GdkDisplay` is a Linux-only test by construction.
+* **`kiplatform` builds its Objective-C++ implementations** (`os/apple/*.mm`,
+  `port/wxosx/*.mm`) instead of the `os/unix` ones, which is why libsecret and
+  Poppler are Linux-only entries in `devenv.nix`.
+* **Two noisy but harmless messages.** `qa_common` prints "3Dconnexion driver
+  crashed during initialization" — there is no SpaceMouse driver, and support is
+  simply switched off for the run. Anything linked against fontconfig used to print
+  "Cannot load default config file"; `devenv.nix` now sets `FONTCONFIG_FILE`, which
+  is also what lets the outline font list see the system fonts.
+* **`tools/rust-gpu-testenv/` is Linux-only** — it exists to give a container a
+  software Vulkan device and a headless Wayland compositor. None of it is needed
+  here: `cargo test --workspace` passes as-is (215 tests, one `#[ignore]`d for a
+  gpui-component leak-detector quirk), and `cargo build -p kicad-eeschema-gpui`
+  links against the system Metal stack without Xcode's Metal toolchain being
+  installed.

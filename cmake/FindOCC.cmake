@@ -125,11 +125,18 @@ if(WIN32)
     )
   endif()
 else(WIN32)
+  # The literal paths below only cover an FHS install. The suffix makes the
+  # normal CMake search work too, so prefixes handed to us in CMAKE_PREFIX_PATH
+  # or CMAKE_INCLUDE_PATH (Homebrew, nix, a local install) are found as well --
+  # every one of them puts the headers in <prefix>/include/opencascade.
   FIND_PATH(OCC_INCLUDE_DIR Standard_Version.hxx
-    /usr/include/opencascade
-    /usr/local/include/opencascade
-    /opt/opencascade/include
-    /opt/opencascade/inc
+    PATHS
+      /usr/include/opencascade
+      /usr/local/include/opencascade
+      /opt/opencascade/include
+      /opt/opencascade/inc
+    PATH_SUFFIXES
+      opencascade
   )
   FIND_LIBRARY(OCC_LIBRARY TKernel
     HINTS

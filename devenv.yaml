@@ -1,0 +1,13 @@
+# yaml-language-server: $schema=https://devenv.sh/devenv.schema.json
+#
+# The exact revisions are pinned in devenv.lock; `devenv update` moves them.
+inputs:
+  nixpkgs:
+    url: github:cachix/devenv-nixpkgs/rolling
+  # Where `languages.rust.channel = "nightly"` comes from; nixpkgs itself only
+  # carries stable Rust.
+  rust-overlay:
+    url: github:oxalica/rust-overlay
+    inputs:
+      nixpkgs:
+        follows: nixpkgs

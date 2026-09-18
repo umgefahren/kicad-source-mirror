@@ -293,9 +293,20 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Nothing in the tree uses C++20 modules, so do not pay for the dependency
+# scan. Besides the build time, clang-scan-deps is invoked as a bare binary and
+# does not pick up flags that a compiler wrapper (a nix toolchain, for instance)
+# adds through the environment, which makes it fail to find libc++ headers on
+# sources the compiler itself handles fine.
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
+
 # Xcode older than 26 gates std::jthread / std::stop_token behind the
 # experimental library. Enable it for C++20.
-if( APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "Clang" )
+#
+# This is specific to Apple's own clang. An upstream LLVM toolchain on macOS
+# has both in the main library and ships no libc++experimental to link against,
+# so asking for it there only produces "library not found for -lc++experimental".
+if( APPLE AND CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang" )
     add_compile_options( -fexperimental-library )
     add_link_options( -fexperimental-library )
 endif()

@@ -161,3 +161,9 @@ qa/data/**/*.spice
 # Rust build artifacts (the schematic editor UI workspace)
 /rust/target/
 rust-target/
+
+# devenv / direnv state. devenv.nix, devenv.yaml and devenv.lock are tracked;
+# everything the tools generate from them is not.
+/.devenv*
+/devenv.local.nix
+/.direnv/
