@@ -710,6 +710,13 @@ target_include_directories( eeschema_kiface_objects
         netlist_exporters
      )
 
+# host/sch_host_abi.cpp *defines* the ksch_* entry points, so its export marker
+# has to say dllexport, not dllimport — an MSVC error otherwise. These objects
+# are the definition wherever they are linked, including into the kiface, which
+# consequently also exports the ABI. That is harmless: the symbols are the same
+# ones libkicad_sch_host exports, and nothing loads both.
+target_compile_definitions( eeschema_kiface_objects PRIVATE KISCH_HOST_BUILD )
+
 target_link_libraries( eeschema_kiface_objects
     PUBLIC
         common
@@ -745,6 +752,84 @@ target_link_libraries( eeschema_kiface
         ${wxWidgets_LIBRARIES}
         ${NGSPICE_LIBRARY}
     )
+
+#
+# libkicad_sch_host: the headless schematic session, as a shared library.
+#
+# This is what a non-wx UI links against. It is the same host objects the kiface
+# and the QA binaries use, wrapped in a library that also supplies the process
+# singletons (host/sch_host_runtime.cpp) — so a consumer that owns main() in
+# another language gets a complete, callable thing rather than a set of objects
+# with two undefined globals.
+#
+# Only the C ABI is exported, and that is enforced by the linker rather than
+# left to visibility attributes: KiCad's own C++ is hidden already, but the
+# vendored C libraries that come with the kiface objects are not, and would
+# otherwise export some 1,900 symbols of their own into a consumer's namespace.
+#
+# Off by default with the rest of the Rust work: it is a second full link of
+# eeschema, which is not free.
+#
+if( KICAD_BUILD_RUST_SCH_UI )
+    add_library( kicad_sch_host SHARED
+        host/sch_host_runtime.cpp
+        )
+
+    set_target_properties( kicad_sch_host PROPERTIES
+        OUTPUT_NAME     kicad_sch_host
+        CXX_VISIBILITY_PRESET hidden
+        VISIBILITY_INLINES_HIDDEN ON
+        )
+
+    # Compiled with the same definition the objects were, so that the ABI's
+    # export marker resolves to dllexport rather than dllimport on Windows.
+    target_compile_definitions( kicad_sch_host PRIVATE EESCHEMA KISCH_HOST_BUILD )
+
+    target_include_directories( kicad_sch_host
+        PUBLIC
+            ${CMAKE_SOURCE_DIR}/include
+        PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}
+        )
+
+    # The same link set as qa/tools/sch_dump, which is the worked example of
+    # standing this up in a process of its own.
+    target_link_libraries( kicad_sch_host
+        PRIVATE
+            eeschema_kiface_objects
+            common
+            kicommon
+            pads_common
+            kimath
+            markdown_lib
+            core
+            Boost::headers
+            ${wxWidgets_LIBRARIES}
+            ${GDI_PLUS_LIBRARIES}
+        )
+
+    # The export list. MSVC needs none: the ABI's __declspec( dllexport ) is
+    # already the whole answer there.
+    if( APPLE )
+        set( _sch_host_exports "${CMAKE_CURRENT_SOURCE_DIR}/host/sch_host_abi.exports" )
+        target_link_options( kicad_sch_host PRIVATE
+            "LINKER:-exported_symbols_list,${_sch_host_exports}" )
+        set_property( TARGET kicad_sch_host APPEND PROPERTY LINK_DEPENDS "${_sch_host_exports}" )
+    elseif( UNIX )
+        set( _sch_host_exports "${CMAKE_CURRENT_SOURCE_DIR}/host/sch_host_abi.map" )
+        target_link_options( kicad_sch_host PRIVATE
+            "LINKER:--version-script=${_sch_host_exports}" )
+        set_property( TARGET kicad_sch_host APPEND PROPERTY LINK_DEPENDS "${_sch_host_exports}" )
+    endif()
+
+    # Linking the kiface objects pulls in generated lexer sources; depend on the
+    # object library so those are finished before a parallel build links us.
+    add_dependencies( kicad_sch_host eeschema_kiface_objects )
+
+    if( TARGET api_schema_build_copy )
+        add_dependencies( kicad_sch_host api_schema_build_copy )
+    endif()
+endif()
 
 if( MSVC )
     # Allow for MSVC to debug ngspice from the build directory

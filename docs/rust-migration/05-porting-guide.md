@@ -33,6 +33,9 @@ Budget your time accordingly. Rendering is the part that is already done.
 | Draw-stream decoder | `rust/crates/kicad-gal` | **Unchanged** |
 | Stream → gpui primitives | `rust/crates/kicad-sch-render` | Mostly unchanged; see §3.5 |
 | Application shell | `rust/crates/kicad-sch-ui` | Structure reusable, content is editor-specific |
+| Process singletons for a headless host | `eeschema/host/sch_host_runtime.cpp` | **Unchanged** — `ksch_runtime_init` stands up wx, the settings manager and the kiface settings, and a board host needs exactly the same |
+| Host shared library + export list | `eeschema/CMakeLists.txt`, `host/sch_host_abi.exports` / `.map` | Copy the pattern: one `SHARED` target over the kiface objects, exporting only the ABI |
+| The ABI, bound and wrapped in Rust | `rust/crates/kicad-sch-sys` | Copy the pattern: `bindgen` in `build.rs`, auto-detected library, and a stub build so the workspace still compiles with no C++ |
 | cargo ↔ CMake integration | `cmake/KiCadRust.cmake` | **Unchanged** |
 | Headless GPU + compositor test env | `tools/rust-gpu-testenv/` | **Unchanged** |
 | CI workflow | `.github/workflows/rust-sch-ui.yml` | Extend the path filter |
@@ -322,6 +325,32 @@ Input is **not** wired up in the schematic port; see §7.
   target directory, and a KiCad build tree is several more. Share one
   `CARGO_TARGET_DIR`; cargo will serialise on its lock, which is slower but
   survivable, whereas running out of disk mid-build is not.
+* **`bindgen` needs libclang, and under a wrapped toolchain it needs telling
+  where the platform headers are.** libclang does not read the compiler wrapper's
+  flags. `devenv.nix` uses nixpkgs' `rustPlatform.bindgenHook`, which exports
+  `BINDGEN_EXTRA_CLANG_ARGS`; without something equivalent bindgen fails on
+  `#include <stdint.h>`.
+
+### 4.10 The host is main-thread-only, and says so by asserting
+
+Not "one session per thread" — one thread, the one that initialised the runtime.
+`SCH_CONNECTIVITY::ENGINE::Clear` (`eeschema/connectivity/conn_engine.cpp:117`)
+and `SCH_CONNECTIVITY::INPUT_STORE::Invalidate`
+(`eeschema/connectivity/conn_inputs.cpp:421`) both `wxASSERT( wxThread::IsMain() )`,
+and `SCHEMATIC`'s constructor reaches both, so an ordinary load trips them off the
+main thread. wx's idea of "main" is whichever thread called `wxInitialize`.
+
+Two consequences worth inheriting rather than rediscovering:
+
+* Make the wrapper enforce it. `kicad-sch-sys` records the initialising thread
+  and returns an error for a session asked for from another, which is a value
+  instead of an assertion on someone else's stack.
+* **A libtest harness will violate it**, because it runs each `#[test]` on a
+  worker thread. `rust/crates/kicad-sch-sys/tests/live_session.rs` uses
+  `harness = false` and a plain `main()` for that reason.
+
+Whether pcbnew's connectivity has the same constraint is unchecked, but
+`CONNECTIVITY_DATA` is threaded, so assume it does until measured.
 
 ---
 
@@ -338,7 +367,10 @@ Input is **not** wired up in the schematic port; see §7.
 4. **Renderer work**: layers/depth (§3.2), zone tessellation performance (§3.3),
    and render targets and blend modes (§3.4), which are the least-tested
    inherited code.
-5. **`PCB_HOST`**, modelled on `SCH_HOST`.
+5. **`PCB_HOST`**, modelled on `SCH_HOST`, and a `kicad-pcb-sys` modelled on
+   `kicad-sch-sys` — the shared-library target, the export list, the runtime call
+   and the bindgen build script are all patterns to copy rather than decisions to
+   retake (§2). Mind §4.10 while doing it.
 6. **The shell**: reuse the structure, add the layer widget, the appearance
    panel and pcbnew's toolbars.
 7. **Input** — only after `GetToolCanvas()` is dealt with (§4.8).

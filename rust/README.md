@@ -6,7 +6,11 @@ that owns the window, the pixels and the input, built on
 
 It is **opt-in and off by default**. The existing wxWidgets schematic editor is
 untouched and unaffected; with `-DKICAD_BUILD_RUST_SCH_UI=OFF` (the default)
-cargo is never invoked.
+cargo is never invoked and the host shared library is not built.
+
+It opens real `.kicad_sch` files — `--schematic` below — and it is a viewer, not
+an editor: input is collected and discarded. `docs/rust-migration/06-what-is-missing.md`
+is the honest account of the distance from here to an editor.
 
 ## What is and is not here
 
@@ -20,6 +24,11 @@ recording the calls `SCH_PAINTER` makes, rather than rasterising them. The
 result is a flat, device-independent command buffer that this workspace decodes
 and draws. `SCH_PAINTER` and `KIGFX::VIEW` are not modified, so every rule about
 how a schematic looks stays in one place, in C++, still covered by its own tests.
+
+A stream reaches Rust two ways: from a file recorded earlier by
+`kicad-sch-dump`, which is how the renderer is developed and tested with no C++
+linked, and straight out of memory through the host's C ABI, which is how a real
+`.kicad_sch` is opened.
 
 See `docs/rust-migration/` for the full design:
 
@@ -37,7 +46,14 @@ See `docs/rust-migration/` for the full design:
 | `kicad-gal` | The Rust half of the draw-stream ABI: decoder, validator, on-disk format, and a builder for constructing streams in tests |
 | `kicad-sch-render` | Turns a draw stream into gpui primitives; camera, culling and the tessellation cache |
 | `kicad-sch-ui` | The application shell: window, menu bar, toolbars, docks, status bar, command palette, input |
+| `kicad-sch-sys` | The C++ host, linked: `bindgen` over `include/sch_host/sch_host_abi.h` and a safe wrapper around a schematic session |
 | `kicad-eeschema-gpui` | The binary |
+
+`kicad-sch-sys` is the only crate here that talks to C++, and it is built so that
+the others never have to care: with no host library found it compiles to an API
+that reports itself unavailable, so `cargo test` in a checkout with no CMake build
+behind it still passes. `kicad_sch_sys::is_available()` is how the binary knows
+which it has.
 
 The ABI itself is defined once, in C, at
 `include/gal/recording/draw_stream_abi.h`, and both sides assert its layout at
@@ -70,21 +86,47 @@ that automatically for anything run inside this directory. This pin is a
 dependency constraint, not a preference, and should be removed once gpui builds
 on stable.
 
+`devenv shell` (see `devenv.nix` at the repo root) supplies the same nightly
+directly, without rustup in the picture, along with everything the C++ half of
+the build needs.
+
 ## Building and testing
 
 ```sh
-# On its own
+# On its own, against recorded streams. No C++ needed.
 cd rust
 cargo build
 cargo test
 
-# As part of the KiCad build
+# As part of the KiCad build, which also builds the C++ host library and tells
+# cargo where it is.
 cmake -S . -B build -DKICAD_BUILD_RUST_SCH_UI=ON
 cmake --build build --target eeschema_gpui
 ```
 
 With `KICAD_BUILD_QA_TESTS=ON`, `cargo test` for each crate is registered with
 CTest and runs alongside the rest of the QA suite.
+
+### Running it
+
+```sh
+# A real schematic, through the C++ host: eeschema's reader, eeschema's painter,
+# no file in between.
+build/rust-target/release/eeschema-gpui --schematic demos/video/video.kicad_sch
+
+# A stream recorded earlier by kicad-sch-dump. Works in a build with no host.
+build/rust-target/release/eeschema-gpui --stream qa/data/draw_streams/ecc83_pp_v2.kgds
+```
+
+`--schematic` needs the host library. Outside the CMake build, point
+`KICAD_SCH_HOST_DIR` at the directory holding `libkicad_sch_host` (or set
+`KICAD_BUILD_DIR` to a build tree) before `cargo build`; setting
+`KICAD_SCH_HOST_DIR=` empty forces the no-host build, which is how that path
+stays tested on a machine that has one.
+
+**Input still goes nowhere.** The window pans, zooms, selects tools and opens
+menus, and none of it reaches the document: the binary installs `NullSink`. See
+`docs/rust-migration/06-what-is-missing.md`.
 
 ### Tests that need a GPU
 

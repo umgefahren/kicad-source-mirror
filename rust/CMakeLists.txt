@@ -57,10 +57,33 @@ if( NOT _sch_ui_rustc MATCHES "nightly" )
              "nightly with `rustup toolchain install nightly`." )
 endif()
 
+#
+# Where the C++ host library is, for kicad-sch-sys's build script.
+#
+# Its own search would find a conventional in-tree `build/` directory, but a
+# CMake build can be anywhere, so it is told rather than left to guess. Without
+# it the crate still compiles — into an API that reports the host unavailable —
+# and `--schematic` would then fail at runtime in a build that has a perfectly
+# good library sitting next to it.
+#
+set( _sch_host_env "" )
+set( _sch_host_dep "" )
+
+if( TARGET kicad_sch_host )
+    set( _sch_host_env "KICAD_SCH_HOST_DIR=$<TARGET_FILE_DIR:kicad_sch_host>" )
+    set( _sch_host_dep kicad_sch_host )
+else()
+    message( WARNING
+             "kicad_sch_host is not a target, so the Rust UI will be built without "
+             "the C++ host and will not be able to open a .kicad_sch." )
+endif()
+
 kicad_add_rust_executable( eeschema_gpui
     CRATE       kicad-eeschema-gpui
     OUTPUT_NAME eeschema-gpui
-    MANIFEST    ${CMAKE_CURRENT_SOURCE_DIR}/Cargo.toml )
+    MANIFEST    ${CMAKE_CURRENT_SOURCE_DIR}/Cargo.toml
+    DEPENDS     ${_sch_host_dep}
+    ENVIRONMENT ${_sch_host_env} )
 
 if( KICAD_BUILD_QA_TESTS )
     # The Rust tests run under CTest with the rest of the QA suite. The GPU
@@ -77,4 +100,12 @@ if( KICAD_BUILD_QA_TESTS )
     kicad_add_rust_test( qa_rust_sch_ui
         CRATE    kicad-sch-ui
         MANIFEST ${CMAKE_CURRENT_SOURCE_DIR}/Cargo.toml )
+
+    # This one drives the C++ host for real: it loads qa/data/eeschema fixtures
+    # through the ABI and compares what comes back with the streams
+    # kicad-sch-dump recorded from the same files.
+    kicad_add_rust_test( qa_rust_sch_sys
+        CRATE       kicad-sch-sys
+        MANIFEST    ${CMAKE_CURRENT_SOURCE_DIR}/Cargo.toml
+        ENVIRONMENT ${_sch_host_env} )
 endif()

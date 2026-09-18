@@ -36,11 +36,18 @@
  *
  * ## Threading
  *
- * A session is not thread safe and neither is anything it owns. Use one session
- * per thread and do not share one between threads. The action registry calls
- * (::ksch_action_count and friends) read a table built once on first use and
- * are safe to call from any thread afterwards, but the first call must not race
- * with itself.
+ * **Everything here belongs to one thread: the one that called
+ * ::ksch_runtime_init.** Not one session per thread — one thread, full stop.
+ * wxWidgets records that thread as its main thread during initialisation, and
+ * eeschema's connectivity engine asserts on it: `SCH_CONNECTIVITY::ENGINE::Clear`
+ * and `INPUT_STORE::Invalidate` both `wxASSERT( wxThread::IsMain() )`, and both
+ * are reached by an ordinary document load. So a session created on a second
+ * thread does not merely race — it trips assertions on the way to whatever the
+ * engine does with state it believes is thread-confined.
+ *
+ * The action registry calls (::ksch_action_count and friends) read a table built
+ * once on first use and are safe from any thread afterwards, but the first call
+ * must not race with itself.
  *
  * ## String lifetimes, stated once
  *
@@ -97,7 +104,7 @@ extern "C" {
  * signature. A caller built against a different version must refuse to run
  * rather than reinterpret a struct.
  */
-#define KSCH_ABI_VERSION 1u
+#define KSCH_ABI_VERSION 2u
 
 /* --------------------------------------------------------------- status */
 
@@ -151,6 +158,62 @@ KISCH_API const char* ksch_status_name( ksch_status aStatus );
 /** The ::KSCH_ABI_VERSION this library was built against. */
 KISCH_API uint32_t ksch_abi_version( void );
 
+/* -------------------------------------------------------------- runtime */
+
+/**
+ * Stand up the process-wide state KiCad needs, once, before the first session.
+ *
+ * KiCad's document model reaches for two process singletons that a GUI build
+ * gets from `main()` and a kiface module: a `PGM_BASE`, which owns the settings
+ * manager, and a `KIFACE_BASE`, whose `KifaceSettings()` the schematic painter
+ * dereferences without a null check. There is no session-scoped way to supply
+ * them, so they are the embedder's job — and an embedder that has to discover
+ * that from a crash inside the font code has been handed a bad ABI. This call
+ * is that job, done once:
+ *
+ * - installs a minimal `PGM_BASE` and a minimal `KIFACE_BASE`;
+ * - initialises wxWidgets in console mode — no `wxApp`, no toolkit, no window;
+ * - creates the settings manager, registers eeschema's settings objects and
+ *   loads them;
+ * - leaves wx logging at the error level, so a UI's stderr stays readable.
+ *
+ * Settings **writeback is inhibited** unless `KICAD_INHIBIT_SETTINGS_WRITES` is
+ * already set in the environment: a host that only reads a schematic has no
+ * business rewriting the user's configuration. The rendered colours do not
+ * depend on it either way — the session loads KiCad's default theme explicitly,
+ * so a recorded stream is reproducible across machines.
+ *
+ * Calling this twice is harmless. If the process already installed its own
+ * `PGM_BASE` — the QA binaries and `kicad-sch-dump` do — nothing is touched and
+ * ::KSCH_OK is returned, because clobbering a live singleton would be worse
+ * than doing nothing.
+ *
+ * On failure ::ksch_last_global_error describes it and no session can be
+ * created.
+ *
+ * **Threading.** This call decides which thread everything else belongs to: wx
+ * takes the caller to be its main thread, and the document model asserts on that
+ * afterwards. Call it from the thread that will own the sessions, and do not race
+ * it with itself.
+ *
+ * @note This entry point lives in the host *shared library*, not in the host
+ *       objects: it defines the process singletons, and a program that has its
+ *       own must keep them.
+ */
+KISCH_API ksch_status ksch_runtime_init( void );
+
+/**
+ * Release what ::ksch_runtime_init created.
+ *
+ * Destroy every session first; this tears down the settings manager they read
+ * through. Safe to call when the runtime was never initialised, and safe to
+ * call twice. Does nothing if the process owned its singletons already.
+ */
+KISCH_API void ksch_runtime_shutdown( void );
+
+/** Non-zero once a session can be created, whoever stood the process up. */
+KISCH_API int ksch_runtime_is_ready( void );
+
 /* -------------------------------------------------------------- session */
 
 /**
@@ -163,6 +226,11 @@ typedef struct ksch_session ksch_session;
 
 /**
  * Create an empty session.
+ *
+ * The process singletons must be standing: either ::ksch_runtime_init has been
+ * called, or the program installed its own `PGM_BASE`. Without them this fails
+ * cleanly here rather than dereferencing null several frames into the document
+ * model.
  *
  * @return a handle the caller owns and must release with ::ksch_session_destroy,
  *         or null if the session could not be created — in which case

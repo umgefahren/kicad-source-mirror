@@ -175,11 +175,13 @@ headless compositor are set up.
 
 ## Where this actually got to
 
-The milestones below describe the intended shape. What landed is M1, M2 and the
-C++ half of M3: rendering works end to end on all 466 schematics in the tree,
-but the Rust and C++ halves are not linked to each other, and no input reaches
-`TOOL_MANAGER`. **See `06-what-is-missing.md`** for precisely where it stops and
-what the remaining stages are.
+The milestones above describe the intended shape. What landed is M1, M2 and the
+first half of M3: rendering works end to end on all 466 schematics in the tree,
+and the Rust binary now loads the host library and opens a real `.kicad_sch`
+through it — `--schematic FILE.kicad_sch`. The rest of M3 has not started: the
+frame is recorded once rather than live, and no input reaches `TOOL_MANAGER`.
+**See `06-what-is-missing.md`** for precisely where it stops and what the
+remaining stages are.
 
 ## Explicit non-goals for this step
 

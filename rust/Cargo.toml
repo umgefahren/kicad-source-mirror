@@ -18,6 +18,7 @@ repository = "https://gitlab.com/kicad/code/kicad"
 [workspace.dependencies]
 kicad-gal = { path = "crates/kicad-gal", version = "0.1.0" }
 kicad-sch-render = { path = "crates/kicad-sch-render", version = "0.1.0" }
+kicad-sch-sys = { path = "crates/kicad-sch-sys", version = "0.1.0" }
 kicad-sch-ui = { path = "crates/kicad-sch-ui", version = "0.1.0" }
 
 [profile.release]

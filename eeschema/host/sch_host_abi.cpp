@@ -30,6 +30,8 @@
 #include <bitmaps/bitmaps_list.h>
 #include <gal/recording/draw_stream.h>
 #include <ki_exception.h>
+#include <locale_io.h>
+#include <pgm_base.h>
 #include <sch_host/sch_host_abi.h>
 #include <tool/action_manager.h>
 #include <tool/tool_action.h>
@@ -323,6 +325,16 @@ extern "C" uint32_t ksch_abi_version( void )
 
 extern "C" ksch_session* ksch_session_create( void )
 {
+    // Without a PGM_BASE there is no settings manager, and the first thing a
+    // load does is ask for one. Failing here, with a message that names the fix,
+    // beats a null dereference several frames into the document model.
+    if( !PgmOrNull() )
+    {
+        globalError() = "The process singletons are not standing: call ksch_runtime_init() "
+                        "(or install a PGM_BASE) before creating a session.";
+        return nullptr;
+    }
+
     try
     {
         return new ksch_session();
@@ -382,6 +394,15 @@ extern "C" ksch_status ksch_session_load_file( ksch_session* aSession, const cha
     return guard( aSession,
                   [&]() -> ksch_status
                   {
+                      // Number formatting in the s-expression reader is locale
+                      // sensitive: a decimal comma turns every coordinate in the
+                      // file into a parse error. Callers used to have to know
+                      // that — kicad-sch-dump holds one for its whole run — but
+                      // an ABI that silently misreads a file in a French locale
+                      // is not one, so the guard belongs here. It counts, so a
+                      // caller that already holds one loses nothing.
+                      LOCALE_IO localeGuard;
+
                       const wxString path = wxString::FromUTF8( aPathUtf8 );
 
                       if( !wxFileName::FileExists( path ) )

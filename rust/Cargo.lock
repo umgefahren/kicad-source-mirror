@@ -3681,6 +3681,7 @@ version = "0.1.0"
 dependencies = [
  "gpui-kit",
  "kicad-sch-render",
+ "kicad-sch-sys",
  "kicad-sch-ui",
 ]
 
@@ -3696,6 +3697,14 @@ dependencies = [
  "gpui-pre",
  "kicad-gal",
  "lyon_tessellation",
+]
+
+[[package]]
+name = "kicad-sch-sys"
+version = "0.1.0"
+dependencies = [
+ "bindgen",
+ "kicad-gal",
 ]
 
 [[package]]

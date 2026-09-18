@@ -18,13 +18,24 @@ built on, especially §5–§8), `01-plan.md` (the architecture), `03-build-note
 | `eeschema/host/sch_host.h` / `.cpp` | `SCH_HOST` — a schematic editor session with no `wxFrame` |
 | `include/sch_host/sch_host_abi.h` | The plain-C ABI a Rust UI drives it through |
 | `eeschema/host/sch_host_abi.cpp` | Its implementation, plus the action-registry export |
+| `eeschema/host/sch_host_runtime.cpp` | The process singletons, and `ksch_runtime_init` |
+| `eeschema/host/sch_host_abi.exports` / `.map` | The shared library's export list, for ld64 and ELF |
 | `qa/tools/sch_dump/sch_dump.cpp` | `kicad-sch-dump`, the end-to-end proof and fixture generator |
 | `qa/tests/eeschema/test_sch_host.cpp` | QA coverage for all of the above |
 | `qa/data/draw_streams/` | Checked-in golden draw streams |
 
-Both `eeschema/host/` sources are compiled into `eeschema_kiface_objects`, so
-anything that already links eeschema — the kiface, `qa_eeschema`, a future Rust
-host library — gets them for free.
+`sch_host.cpp` and `sch_host_abi.cpp` are compiled into
+`eeschema_kiface_objects`, so anything that already links eeschema — the kiface,
+`qa_eeschema`, `kicad-sch-dump` — gets them for free.
+
+`sch_host_runtime.cpp` is the exception, and deliberately so: it *defines* the
+process singletons, and a program that has its own must keep them. It is compiled
+only into `libkicad_sch_host`, the shared library a non-C++ UI links
+(`-DKICAD_BUILD_RUST_SCH_UI=ON`, off by default because it is a second full
+eeschema link). The export list beside it keeps that library's surface to the 26
+`ksch_*` symbols and nothing else — worth doing because the kiface objects bring
+vendored C libraries whose symbols are not hidden by the tree's
+`-fvisibility=hidden`, that flag being C++-only.
 
 ---
 
@@ -159,11 +170,10 @@ reason — and only then deletes it.
 `draw_stream_abi.h`: plain C, POD structs, an opaque handle, no C++ type across
 the boundary, `extern "C"`, and documented ownership on every pointer.
 
-It has been verified to be `bindgen`-clean, not assumed to be: `bindgen` 0.73
-parses it with no diagnostics and produces 23 `extern "C"` functions, and the
-generated crate — including bindgen's compile-time layout assertions — compiles.
-Those assertions are the useful part, because they are the Rust side agreeing
-with the C side about every struct:
+It is no longer merely `bindgen`-clean: `rust/crates/kicad-sch-sys` generates the
+bindings in its build script on every build, so the header cannot drift from what
+Rust believes it says. bindgen's compile-time layout assertions come along with
+that, and they are the useful part — the two sides agreeing about every struct:
 
 | Struct | Bytes |
 |---|---|
@@ -177,6 +187,33 @@ with the C side about every struct:
 | `ksch_document_info` | 24 |
 | `ksch_sheet_info` | 32 |
 | `ksch_action` | 88 |
+
+### 3.0 The runtime, and why the ABI grew one
+
+`KSCH_ABI_VERSION` is 2. The addition is three calls — `ksch_runtime_init`,
+`ksch_runtime_shutdown`, `ksch_runtime_is_ready` — and they exist because
+everything else in this header is uncallable without them.
+
+KiCad's document model reaches for two process singletons that a GUI build gets
+from `main()` and a loaded kiface: a `PGM_BASE`, which owns the settings manager,
+and a `KIFACE_BASE`, whose `KifaceSettings()` `SCH_PAINTER` dereferences with no
+null check (§2.2). §4.2 called that out and offered `kicad-sch-dump`'s `main()` as
+the worked example — which is fine for a C++ tool and useless to a Rust binary,
+which has no C++ `main()` to put it in. So the twenty lines moved behind the ABI:
+wx in console mode, the settings manager, eeschema's settings registered and
+loaded, the kiface's settings installed.
+
+It is idempotent, and it adopts rather than replaces: if the process already
+installed a `PGM_BASE` — `qa_eeschema` and `kicad-sch-dump` both do — it changes
+nothing and reports success, because clobbering a live singleton is worse than
+doing nothing. `ksch_session_create` now fails with a message naming
+`ksch_runtime_init` when no `PGM_BASE` is standing, rather than letting the first
+load dereference null several frames deep.
+
+`ksch_session_load_file` also holds a `LOCALE_IO` now. `kicad-sch-dump` held one
+for its whole run, which meant a caller that did not know to do that would
+misread every coordinate in a file under a decimal-comma locale. That is not a
+thing an ABI should leave to its callers.
 
 ### 3.1 Error handling
 
@@ -263,8 +300,13 @@ It supplies its own `PGM_BASE` and `KIFACE_BASE`, both minimal:
 * `eeschema_kiface_objects` references the global `Kiface()` but does not define
   it — `eeschema.cpp`, which does, is linked only into the kiface module. The
   loader touches `Kiface()` once, for `KifaceSettings()`, so a stub that has had
-  `InitSettings()` called on it is sufficient. **A Rust host library will need
-  the same two objects**, and this is the worked example.
+  `InitSettings()` called on it is sufficient.
+
+This was the worked example for a Rust host library, and it has since been made
+part of the ABI instead: `host/sch_host_runtime.cpp` does the same twenty lines
+behind `ksch_runtime_init` (§3.0), because a Rust binary has no C++ `main()` to
+put them in. This tool keeps its own — the runtime call detects that and leaves
+them alone — which is why both code paths still exist.
 
 ---
 
@@ -303,6 +345,11 @@ This is the next milestone and it is **not** started. Survey §6 and §7 name
 `TOOLS_HOLDER::GetToolCanvas()` as the blocker. That is right, but it is not the
 worst of it, and the ordering below reflects what the code actually says rather
 than what the survey predicted.
+
+> Since this was written, the ABI is linked and driven from Rust — see
+> `06-what-is-missing.md`, Stage 1 — so "the Rust UI cannot reach the document
+> model" is no longer part of what stands in the way. Everything in this section
+> is about the *input* direction, and none of it has moved.
 
 ### 6.1 `GetToolCanvas()` is smaller than it looks
 
@@ -432,6 +479,11 @@ Each stage lands on its own and leaves the tree working.
 Stages 1–3 are ordinary C++ refactors that improve the tree whether or not the
 Rust work continues, which is a good property for them to have.
 
+Step 7's second half is now cheap: Rust *is* wired to this ABI, through
+`rust/crates/kicad-sch-sys`, so extending it means adding entry points and
+regenerating — the bindings come from the header on every build. See
+`06-what-is-missing.md` for how that landed and what it cost.
+
 ---
 
 ## 7. A bug found and fixed in `DRAW_STREAM::Compact()`
@@ -526,4 +578,34 @@ Covered by `test_draw_stream.cpp::MalformedImageTablesAreRejected`.
   path shared with `kicad-cli`.
 * **The 14 unchecked downcasts of §6.2** are latent UB that the next milestone
   will trip over. Also pre-existing.
+* **The connectivity engine is main-thread-only, and asserts it.**
+  `SCH_CONNECTIVITY::ENGINE::Clear` (`eeschema/connectivity/conn_engine.cpp:117`)
+  and `SCH_CONNECTIVITY::INPUT_STORE::Invalidate`
+  (`eeschema/connectivity/conn_inputs.cpp:421`) both `wxASSERT( wxThread::IsMain() )`,
+  and `SCHEMATIC`'s constructor reaches both through `Reset()` — so an ordinary
+  load trips them off the main thread. wx's "main thread" is whichever thread
+  called `wxInitialize`, i.e. whichever one called `ksch_runtime_init`, so a
+  single worker thread that does everything is fine and a second one is not. The
+  header's threading section used to say "one session per thread", which is
+  wrong; it now says one thread. Found by running the Rust integration tests
+  under libtest, which puts each test on a different worker thread.
+* **A recorded stream's ordering is not canonical across standard libraries.**
+  The same schematic, the same viewport, the same ABI, recorded on Linux and on
+  macOS: identical group table, identical 2,587 group commands, identical
+  coordinate multiset — and four of 222 group bodies holding those coordinates
+  under different group ids. Group ids are assigned in the order `KIGFX::VIEW`
+  visits items, and items with equal sort keys are left in whatever order an
+  unstable sort produced, which libstdc++ and libc++ decide differently.
+
+  Nothing renders differently, and nothing in the renderer cares: it replays the
+  frame's `DRAW_GROUP` list in order. Two consequences, though. Regenerating
+  `qa/data/draw_streams/` on a different platform produces a diff that is not a
+  change in KiCad, so don't; and a test comparing a live render with a fixture
+  has to compare the picture, not the bytes —
+  `rust/crates/kicad-sch-sys/tests/live_session.rs` does, and explains how.
+
+  Worth knowing beyond this project: it means a draw stream is not a canonical
+  form of a schematic's geometry, so it cannot be used as a cross-platform
+  rendering hash. Sorting items by a total order before recording would fix that
+  if it were ever wanted.
 

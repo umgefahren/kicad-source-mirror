@@ -38,6 +38,15 @@ The viewport is pinned to 1920x1080 in that script. The recorded geometry is in
 world coordinates and does not depend on it, but `KGDS_OP_BEGIN_FRAME` and the
 grid command do, so changing it changes the bytes.
 
+**Regenerate on the platform the files were recorded on** — Linux, for the ones
+here — or expect a diff that is not a change in KiCad. Group ids are assigned in
+the order `KIGFX::VIEW` visits items, and items with equal sort keys come out in
+whatever order an unstable sort left them, which libstdc++ and libc++ decide
+differently. On macOS these four files come back with the same group table, the
+same commands and the same coordinates, with a handful of bodies swapped between
+ids. Nothing renders differently; the bytes are simply not canonical. See
+`docs/rust-migration/04-host-seam.md` §8.
+
 ## Keeping them small
 
 These are fixtures, not a corpus. Add a file only when it covers something the

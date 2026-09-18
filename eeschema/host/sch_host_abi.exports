@@ -1,0 +1,10 @@
+# Exported symbols of libkicad_sch_host, for ld64 (-exported_symbols_list).
+#
+# The whole surface of this library is include/sch_host/sch_host_abi.h. KiCad's
+# own C++ is hidden by -fvisibility=hidden already, but that flag is applied to
+# C++ only, so without this list the vendored C libraries linked in alongside
+# (libwmf, emf2svg, tinyspline, the JSON schema validator) would export some
+# 1,900 symbols of their own.
+#
+# The leading underscore is the Mach-O symbol prefix.
+_ksch_*

@@ -44,6 +44,15 @@ pub enum DocumentSource {
         /// The file it was read from, as shown in the title and the panels.
         file: SharedString,
     },
+    /// A `.kicad_sch` opened through the C++ host, rendered in this process.
+    ///
+    /// Distinct from [`DocumentSource::RecordedStream`] on purpose: the two look
+    /// identical on the canvas, and a window that cannot say which one it is
+    /// showing makes it impossible to tell a live render from a replay of one.
+    Schematic {
+        /// The file the session loaded, as shown in the title and the panels.
+        file: SharedString,
+    },
     /// Nothing loaded.
     Empty,
 }
@@ -53,7 +62,9 @@ impl DocumentSource {
     pub fn title(&self) -> SharedString {
         match self {
             DocumentSource::Demonstration => "demonstration stream".into(),
-            DocumentSource::RecordedStream { file } => file.clone(),
+            DocumentSource::RecordedStream { file } | DocumentSource::Schematic { file } => {
+                file.clone()
+            }
             DocumentSource::Empty => "no document".into(),
         }
     }
@@ -63,6 +74,7 @@ impl DocumentSource {
         match self {
             DocumentSource::Demonstration => "Synthesised draw stream".into(),
             DocumentSource::RecordedStream { .. } => "Recorded draw stream".into(),
+            DocumentSource::Schematic { .. } => "Live schematic session".into(),
             DocumentSource::Empty => "Nothing loaded".into(),
         }
     }
@@ -209,9 +221,19 @@ impl DesignState {
     /// The line the hierarchy panel shows under its header.
     pub fn connection_note(&self) -> SharedString {
         if self.connected {
-            self.source.description()
-        } else {
-            "Document model not connected \u{2014} showing draw stream contents".into()
+            return self.source.description();
+        }
+
+        match self.source {
+            // A live session drew this, so "showing draw stream contents" would
+            // undersell it — and claiming a connection would oversell it. The
+            // geometry is the document's; the tree below is still the stream's.
+            DocumentSource::Schematic { .. } => {
+                "Rendered from the schematic \u{2014} the tree below describes the \
+                 draw stream, and the document model is not connected yet"
+                    .into()
+            }
+            _ => "Document model not connected \u{2014} showing draw stream contents".into(),
         }
     }
 
@@ -600,6 +622,29 @@ mod tests {
             design.connection_note().contains("not connected"),
             "{}",
             design.connection_note()
+        );
+    }
+
+    /// Including when the geometry did come from a live session, which is the
+    /// case where the claim is most tempting to overstate.
+    #[test]
+    fn a_live_session_still_admits_the_model_is_not_connected() {
+        let design = DesignState::from_stream(
+            DocumentSource::Schematic {
+                file: "video.kicad_sch".into(),
+            },
+            facts(),
+            [0.0, 0.0],
+            [1_000.0, 1_000.0],
+        );
+
+        assert!(!design.is_connected());
+
+        let note = design.connection_note();
+        assert!(note.contains("not connected yet"), "{note}");
+        assert!(
+            note.contains("Rendered from the schematic"),
+            "and it should say where the geometry came from: {note}"
         );
     }
 
