@@ -3702,6 +3702,8 @@ name = "kicad-sch-ui"
 version = "0.1.0"
 dependencies = [
  "gpui-kit",
+ "kicad-gal",
+ "kicad-sch-render",
 ]
 
 [[package]]

@@ -34,8 +34,9 @@ use gpui_kit::{
     AnyWindowHandle, AppContext as _, ElementId, Entity, Focusable, MenuItem, Point, ScrollDelta,
     TestAppContext, px, size,
 };
-use kicad_sch_ui::canvas::StubScene;
+use kicad_sch_render::SchematicRenderer;
 use kicad_sch_ui::commands;
+use kicad_sch_ui::demo::demo_stream;
 use kicad_sch_ui::input::{PointerButton, RecordingSink, ShellEvent, shared_sink};
 use kicad_sch_ui::shell::{self, SchematicShell};
 use kicad_sch_ui::tools::Tool;
@@ -60,9 +61,10 @@ fn open(cx: &mut TestAppContext) -> Harness {
     let slot = captured.clone();
 
     let handle = cx.open_window(size(WINDOW.width, WINDOW.height), move |window, cx| {
-        let view = cx.new(|cx| {
-            SchematicShell::new_with_scene(Box::new(StubScene::new()), shared, window, cx)
-        });
+        let mut renderer = SchematicRenderer::new();
+        renderer.set_stream(demo_stream());
+        let renderer = std::rc::Rc::new(std::cell::RefCell::new(renderer));
+        let view = cx.new(|cx| SchematicShell::new_with_renderer(renderer, shared, window, cx));
         *slot.borrow_mut() = Some(view.clone());
         Root::new(view, window, cx)
     });
@@ -119,9 +121,9 @@ fn active_tool(cx: &mut TestAppContext, harness: &Harness) -> Tool {
     .expect("window is live")
 }
 
-fn zoom(cx: &mut TestAppContext, harness: &Harness) -> f32 {
+fn zoom(cx: &mut TestAppContext, harness: &Harness) -> f64 {
     cx.update_window(harness.window, |_, _, cx| {
-        harness.shell.read(cx).canvas().read(cx).camera().zoom()
+        harness.shell.read(cx).canvas().read(cx).zoom()
     })
     .expect("window is live")
 }
@@ -452,13 +454,17 @@ fn the_status_bar_follows_the_pointer(cx: &mut TestAppContext) {
         })
         .expect("window is live");
     let position = position.expect("hovering the canvas gives a cursor position");
-    // The canvas centre of an A4 sheet fitted to the window is near the middle
-    // of the sheet, and the value is snapped to the 50 mil grid.
-    let spacing = 1.27;
+    // The reported position is in internal units and lands on the 50 mil grid,
+    // because that is the position an edit would actually use.
+    let spacing = 50.0 * kicad_sch_ui::grid::IU_PER_MIL;
     assert!(
         (position.x / spacing - (position.x / spacing).round()).abs() < 1e-6,
         "{position:?} is not on the grid"
     );
+    // A fitted A4 sheet puts the pointer somewhere in the middle of it, which
+    // is of the order of 1e8 internal units — the magnitude an f32 would have
+    // started rounding away.
+    assert!(position.x.abs() > 1.0e7, "{position:?} looks like millimetres");
 }
 
 #[gpui_kit::test]
@@ -620,8 +626,10 @@ fn opening_a_menu_marks_it_and_draws_a_popup(cx: &mut TestAppContext) {
     .expect("window is live");
 
     // Leave the menu closed. gpui's test harness fails a test that exits with
-    // a live entity handle, and an open PopupMenu is one.
-    press(cx, &harness, "escape");
+    // a live entity handle, and an open PopupMenu is one. Clicking away is how
+    // a user closes it, and it is what the popup's mouse-down-out handler
+    // listens for.
+    click(cx, &harness, "status-message");
     cx.update_window(harness.window, |_, window, cx| {
         window.render_frame(cx);
         assert!(
@@ -700,9 +708,8 @@ fn the_canvas_context_menu_opens_on_a_right_click(cx: &mut TestAppContext) {
         harness.sink.events()
     );
 
-    // Dismiss it: an open PopupMenu is a live entity handle, and the harness
-    // fails any test that exits holding one.
-    press(cx, &harness, "escape");
+    // Dismiss it the way a user does, by clicking away.
+    click(cx, &harness, "status-message");
     cx.update_window(harness.window, |_, window, cx| {
         window.render_frame(cx);
         assert!(
@@ -711,6 +718,16 @@ fn the_canvas_context_menu_opens_on_a_right_click(cx: &mut TestAppContext) {
         );
     })
     .expect("window is live");
+
+    // `ContextMenu` keeps the `PopupMenu` it built in element state after
+    // dismissing it — closing only clears the open flag — so the entity lives
+    // as long as the window does. That is fine in an application and fatal to
+    // gpui's leaked-handle check, which runs when the test's `App` is dropped.
+    // Closing the window drops the element arena with it.
+    cx.update_window(harness.window, |_, window, _| window.remove_window())
+        .expect("window is live");
+    drop(harness);
+    cx.run_until_parked();
 }
 
 #[gpui_kit::test]

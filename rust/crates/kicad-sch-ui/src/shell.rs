@@ -7,6 +7,7 @@
 
 //! The window: menu bar, toolbars, docks, canvas, status bar and palette.
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use gpui_kit::assets::IconName;
@@ -27,7 +28,7 @@ use gpui_kit::{
     KeyUpEvent, SharedString, Window, div, px,
 };
 
-use crate::canvas::{CanvasElement, CanvasState, SchematicScene, StubScene};
+use crate::canvas::{CanvasElement, CanvasState};
 use crate::commands::{
     self, CancelTool, CycleGrid, OpenCommandPalette, Quit, RunAction, ToggleFrameStats, ToggleGrid,
     ToggleLeftPanel, ToggleRightPanel, ToggleTheme, ToggleUnits, ZoomActualSize, ZoomIn, ZoomOut,
@@ -38,6 +39,7 @@ use crate::input::{Modifiers, SharedSink, ShellEvent, shared_sink};
 use crate::panels::{DesignState, HierarchyPanel, PropertiesPanel};
 use crate::stats::FrameStats;
 use crate::theme::{self, CanvasPalette};
+use kicad_sch_render::SchematicRenderer;
 use crate::tools::TOOLS;
 
 /// Initialise gpui-kit, the theme, the key map and the menu bar.
@@ -210,22 +212,27 @@ pub struct SchematicShell {
 }
 
 impl SchematicShell {
-    /// The shell showing the placeholder scene and reporting nowhere.
+    /// The shell showing the demonstration draw stream and reporting nowhere.
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        Self::new_with_scene(
-            Box::new(StubScene::new()),
+        let mut renderer = SchematicRenderer::new();
+        renderer.set_stream(crate::demo::demo_stream());
+        Self::new_with_renderer(
+            Rc::new(RefCell::new(renderer)),
             shared_sink(crate::input::NullSink),
             window,
             cx,
         )
     }
 
-    /// The shell showing `scene` and reporting to `sink`.
+    /// The shell driving `renderer` and reporting to `sink`.
     ///
-    /// This is the entry point `kicad-sch-render` plugs into: hand it the real
-    /// scene and the host's sink and nothing else in the shell changes.
-    pub fn new_with_scene(
-        scene: Box<dyn SchematicScene>,
+    /// This is the entry point a host uses: build a
+    /// [`SchematicRenderer`](kicad_sch_render::SchematicRenderer), give it a
+    /// draw stream, and hand it here along with the sink that will feed
+    /// `TOOL_MANAGER`. The shell keeps the `Rc` and drives the renderer's
+    /// camera; it never copies the view transform anywhere.
+    pub fn new_with_renderer(
+        renderer: Rc<RefCell<SchematicRenderer>>,
         sink: SharedSink,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -233,7 +240,7 @@ impl SchematicShell {
         let theme_mode = Theme::global(cx).mode;
         let palette = CanvasPalette::for_mode(theme_mode);
 
-        let canvas = cx.new(|_| CanvasState::new(scene, palette, sink));
+        let canvas = cx.new(|_| CanvasState::new(renderer, palette, sink));
         let canvas_panel = cx.new(|cx| CanvasPanel::new(canvas.clone(), cx));
         let design = cx.new(|_| DesignState::placeholder());
         let hierarchy = cx.new(|cx| HierarchyPanel::new(design.clone(), cx));
@@ -638,7 +645,7 @@ impl SchematicShell {
     fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let grid_label = self.canvas.read(cx).grid().size().label;
-        let zoom = self.canvas.read(cx).camera().zoom();
+        let zoom = self.canvas.read(cx).zoom();
         let stats_on = self.stats.is_enabled();
         let dark = self.theme_mode.is_dark();
 
@@ -831,7 +838,6 @@ impl SchematicShell {
     fn render_status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let canvas = self.canvas.read(cx);
-        let camera = canvas.camera();
         let units = self.units;
         let position = canvas
             .cursor_world()
@@ -846,7 +852,7 @@ impl SchematicShell {
             .unwrap_or_else(|| format!("X --  Y -- {}", units.suffix()));
         let selection = canvas.selection_count();
         let grid = canvas.grid().size().label;
-        let zoom = format!("{:.0}%", camera.zoom() * 100.);
+        let zoom = format!("{:.0}%", canvas.zoom() * 100.);
         let tool = canvas.tool().label();
         let readout = if self.stats.is_enabled() {
             self.stats.readout()
@@ -910,19 +916,37 @@ impl SchematicShell {
                     .child(format!("Zoom {zoom}")),
             )
             .when_some(readout, |bar, readout| {
-                bar.right(status_divider(cx)).right(
-                    div()
-                        .id("status-frame-time")
-                        .test_support()
-                        .text_xs()
-                        .font_family("monospace")
-                        .text_color(if meets_target {
-                            theme.success
-                        } else {
-                            theme.warning
-                        })
-                        .child(readout),
-                )
+                // The renderer's own numbers sit next to the frame timing,
+                // because "60 fps" means something different when it is drawing
+                // forty groups than when it is drawing five thousand.
+                let frame = canvas.last_frame();
+                bar.right(status_divider(cx))
+                    .right(
+                        div()
+                            .id("status-render")
+                            .test_support()
+                            .text_xs()
+                            .font_family("monospace")
+                            .text_color(theme.muted_foreground)
+                            .child(format!(
+                                "{} drawn  {} culled  {} paths",
+                                frame.groups_drawn, frame.groups_culled, frame.paths
+                            )),
+                    )
+                    .right(status_divider(cx))
+                    .right(
+                        div()
+                            .id("status-frame-time")
+                            .test_support()
+                            .text_xs()
+                            .font_family("monospace")
+                            .text_color(if meets_target {
+                                theme.success
+                            } else {
+                                theme.warning
+                            })
+                            .child(readout),
+                    )
             })
     }
 

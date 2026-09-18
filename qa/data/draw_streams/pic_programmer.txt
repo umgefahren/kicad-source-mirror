@@ -1,0 +1,18 @@
+/home/user/kicad-source-mirror/demos/pic_programmer/pic_programmer.kicad_sch
+  load             163.78 ms
+  sheets           2
+  modified         no
+  sheet 0  "pic_programmer"  page 1
+    path             /
+    items            295
+    page bbox        0 0  2970022 x 2100072 IU
+    item bbox        132849 131528  2700014 x 1837735 IU
+    viewport         1920x1080 px  scale 0.01  centre 1485011 1050036
+    groups           1336
+    group commands   12315  (first pass 12315)
+    frame commands   1877
+    coords           97860 group + 3843 frame doubles
+    images           0  (0 bytes)
+    render           24.65 ms first, 24.65 ms last (1 pass)
+    wrote            /home/user/kicad-source-mirror/qa/data/draw_streams/pic_programmer.kgds (1175688 bytes)
+SUMMARY /home/user/kicad-source-mirror/demos/pic_programmer/pic_programmer.kicad_sch sheet=0 items=295 groups=1336 gcmds=12315 fcmds=1877 coords=101703 bytes=1175688 render_ms=24.65

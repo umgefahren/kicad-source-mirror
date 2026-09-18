@@ -18,9 +18,15 @@
 //!
 //! * **Positions are reported twice.** Every pointer event carries both the
 //!   screen position (device-independent pixels, canvas-local) and the world
-//!   position (schematic millimetres). The C++ tools work in world space, but
+//!   position (KiCad internal units). The C++ tools work in world space, but
 //!   hit-test tolerances and drag thresholds are screen-space quantities, so
 //!   throwing either away costs the host information it cannot recover.
+//! * **World coordinates are internal units in `f64`, never millimetres and
+//!   never `f32`.** A sheet can sit more than 1.2e9 internal units from the
+//!   origin, which is past the point where an `f32` can tell neighbouring units
+//!   apart; storing world coordinates in one produces pan jitter that looks
+//!   like a renderer bug and is not one. Millimetres appear only where a number
+//!   is formatted for a human, in [`crate::grid::Units`].
 //! * **Drags are explicit.** gpui reports a move with a button held; KiCad's
 //!   tools want a distinct "a drag began" moment after a threshold has been
 //!   passed. The shell owns that threshold and emits
@@ -36,23 +42,32 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-/// A point in schematic world space, in millimetres.
+/// A point in schematic world space, in KiCad internal units (nanometres).
 ///
-/// Millimetres rather than KiCad's nanometre internal units because the shell
-/// only ever displays and forwards these; the host converts to IU once, at the
-/// boundary, where the rounding policy belongs.
+/// The same units the draw stream and the renderer's camera use, so a position
+/// can travel from a mouse event to `TOOL_MANAGER` without a single conversion.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct WorldPoint {
-    /// Distance right of the sheet origin, in millimetres.
+    /// Distance right of the sheet origin, in internal units.
     pub x: f64,
-    /// Distance below the sheet origin, in millimetres.
+    /// Distance below the sheet origin, in internal units.
     pub y: f64,
 }
 
 impl WorldPoint {
-    /// A world point at the given millimetre coordinates.
+    /// A world point at the given internal-unit coordinates.
     pub const fn new(x: f64, y: f64) -> Self {
         Self { x, y }
+    }
+
+    /// The pair the renderer's camera speaks in.
+    pub const fn to_array(self) -> [f64; 2] {
+        [self.x, self.y]
+    }
+
+    /// From the pair the renderer's camera speaks in.
+    pub const fn from_array(p: [f64; 2]) -> Self {
+        Self { x: p[0], y: p[1] }
     }
 }
 
@@ -219,11 +234,11 @@ impl std::fmt::Display for ActionId {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ViewportState {
     /// Canvas width in device-independent pixels.
-    pub width: f32,
+    pub width: f64,
     /// Canvas height in device-independent pixels.
-    pub height: f32,
-    /// Screen pixels per world millimetre.
-    pub scale: f32,
+    pub height: f64,
+    /// Screen pixels per internal unit.
+    pub scale: f64,
     /// The world point at the centre of the canvas.
     pub center: WorldPoint,
 }

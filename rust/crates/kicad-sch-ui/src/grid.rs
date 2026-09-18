@@ -7,17 +7,28 @@
 
 //! Grid spacings and display units.
 //!
-//! Schematic work is done on a 50 mil grid because that is the pin pitch KiCad's
-//! symbol libraries are drawn on; everything else here exists so a user can say
-//! so in whichever unit they think in.
+//! Everything here is in KiCad internal units — nanometres, as `f64` — because
+//! that is what the draw stream and the renderer's camera use, and a second
+//! world unit in the shell would be a conversion waiting to be got wrong.
+//! Millimetres and mils exist only in [`Units`], which formats a number for the
+//! status bar and is the one place a display unit is allowed to appear.
+//!
+//! Schematic work is done on a 50 mil grid because that is the pin pitch
+//! KiCad's symbol libraries are drawn on.
 
 use crate::input::WorldPoint;
 
-/// Millimetres in one mil, exactly.
-pub const MM_PER_MIL: f64 = 0.0254;
+/// Internal units in one millimetre.
+pub const IU_PER_MM: f64 = 1.0e6;
+
+/// Internal units in one mil (thousandth of an inch). Exact.
+pub const IU_PER_MIL: f64 = 25_400.0;
+
+/// Internal units in one inch. Exact.
+pub const IU_PER_INCH: f64 = 25_400_000.0;
 
 /// How coordinates are displayed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Units {
     /// Millimetres.
     Millimetres,
@@ -37,12 +48,12 @@ impl Units {
         }
     }
 
-    /// Convert a millimetre value into this unit.
-    pub fn from_mm(self, mm: f64) -> f64 {
+    /// Convert internal units into this display unit.
+    pub fn from_iu(self, iu: f64) -> f64 {
         match self {
-            Units::Millimetres => mm,
-            Units::Mils => mm / MM_PER_MIL,
-            Units::Inches => mm / 25.4,
+            Units::Millimetres => iu / IU_PER_MM,
+            Units::Mils => iu / IU_PER_MIL,
+            Units::Inches => iu / IU_PER_INCH,
         }
     }
 
@@ -55,9 +66,12 @@ impl Units {
         }
     }
 
-    /// Format a millimetre value for the status bar.
-    pub fn format(self, mm: f64) -> String {
-        format!("{:.*}", self.decimals(), self.from_mm(mm))
+    /// Format an internal-unit value for the status bar.
+    ///
+    /// The only place a display unit is allowed to exist: the number goes
+    /// straight into a string and is never stored.
+    pub fn format(self, iu: f64) -> String {
+        format!("{:.*}", self.decimals(), self.from_iu(iu))
     }
 
     /// The next unit in the cycle the `Switch Units` command walks.
@@ -73,8 +87,8 @@ impl Units {
 /// One selectable grid spacing.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GridSize {
-    /// Spacing in millimetres.
-    pub mm: f64,
+    /// Spacing in internal units.
+    pub iu: f64,
     /// How it is written in the status bar and the grid menu.
     pub label: &'static str,
 }
@@ -82,31 +96,31 @@ pub struct GridSize {
 /// The schematic grid ladder, coarsest first, matching eeschema's own list.
 pub static GRID_SIZES: &[GridSize] = &[
     GridSize {
-        mm: 100.0 * MM_PER_MIL,
+        iu: 100.0 * IU_PER_MIL,
         label: "100 mil",
     },
     GridSize {
-        mm: 50.0 * MM_PER_MIL,
+        iu: 50.0 * IU_PER_MIL,
         label: "50 mil",
     },
     GridSize {
-        mm: 25.0 * MM_PER_MIL,
+        iu: 25.0 * IU_PER_MIL,
         label: "25 mil",
     },
     GridSize {
-        mm: 10.0 * MM_PER_MIL,
+        iu: 10.0 * IU_PER_MIL,
         label: "10 mil",
     },
     GridSize {
-        mm: 1.0,
+        iu: IU_PER_MM,
         label: "1.0 mm",
     },
     GridSize {
-        mm: 0.5,
+        iu: 0.5 * IU_PER_MM,
         label: "0.5 mm",
     },
     GridSize {
-        mm: 0.25,
+        iu: 0.25 * IU_PER_MM,
         label: "0.25 mm",
     },
 ];
@@ -136,9 +150,9 @@ impl GridState {
         GRID_SIZES[self.index.min(GRID_SIZES.len() - 1)]
     }
 
-    /// Spacing in millimetres.
-    pub fn spacing_mm(&self) -> f64 {
-        self.size().mm
+    /// Spacing in internal units.
+    pub fn spacing_iu(&self) -> f64 {
+        self.size().iu
     }
 
     /// Whether the grid is drawn. Snapping is the host's business and is not
@@ -165,7 +179,7 @@ impl GridState {
 
     /// Snap a world point to the nearest grid intersection.
     pub fn snap(&self, point: WorldPoint) -> WorldPoint {
-        let spacing = self.spacing_mm();
+        let spacing = self.spacing_iu();
         if spacing <= 0. {
             return point;
         }
@@ -182,16 +196,26 @@ mod tests {
 
     #[test]
     fn a_mil_is_25_4_micrometres() {
-        assert!((Units::Mils.from_mm(2.54) - 100.0).abs() < 1e-9);
-        assert!((Units::Inches.from_mm(25.4) - 1.0).abs() < 1e-9);
-        assert_eq!(Units::Millimetres.from_mm(3.5), 3.5);
+        assert_eq!(Units::Mils.from_iu(2_540_000.0), 100.0);
+        assert_eq!(Units::Inches.from_iu(25_400_000.0), 1.0);
+        assert_eq!(Units::Millimetres.from_iu(3_500_000.0), 3.5);
     }
 
     #[test]
     fn formatting_uses_a_sensible_number_of_digits() {
-        assert_eq!(Units::Millimetres.format(1.27), "1.270");
-        assert_eq!(Units::Mils.format(1.27), "50.0");
-        assert_eq!(Units::Inches.format(25.4), "1.0000");
+        assert_eq!(Units::Millimetres.format(1_270_000.0), "1.270");
+        assert_eq!(Units::Mils.format(1_270_000.0), "50.0");
+        assert_eq!(Units::Inches.format(25_400_000.0), "1.0000");
+    }
+
+    /// A sheet can sit more than 1.2e9 internal units from the origin, which is
+    /// past where an `f32` can tell neighbouring units apart. The formatter has
+    /// to survive that, because the status bar is where it would show first.
+    #[test]
+    fn a_coordinate_far_from_the_origin_still_formats_exactly() {
+        let far = 1_234_567_891.0;
+        assert_eq!(Units::Millimetres.format(far), "1234.568");
+        assert_eq!(Units::Mils.format(far), "48605.0");
     }
 
     #[test]
@@ -207,7 +231,7 @@ mod tests {
     fn the_default_grid_is_fifty_mil() {
         let grid = GridState::default();
         assert_eq!(grid.size().label, "50 mil");
-        assert!((grid.spacing_mm() - 1.27).abs() < 1e-12);
+        assert_eq!(grid.spacing_iu(), 1_270_000.0);
         assert!(grid.is_visible());
     }
 
@@ -223,9 +247,9 @@ mod tests {
     #[test]
     fn snapping_lands_on_the_grid() {
         let grid = GridState::default();
-        let snapped = grid.snap(WorldPoint::new(1.3, -2.6));
-        assert!((snapped.x - 1.27).abs() < 1e-9, "{snapped:?}");
-        assert!((snapped.y + 2.54).abs() < 1e-9, "{snapped:?}");
+        let snapped = grid.snap(WorldPoint::new(1_300_000.0, -2_600_000.0));
+        assert_eq!(snapped.x, 1_270_000.0);
+        assert_eq!(snapped.y, -2_540_000.0);
     }
 
     #[test]

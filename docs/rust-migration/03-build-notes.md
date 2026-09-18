@@ -203,12 +203,40 @@ you intermediate checkpoints and better failure localisation.
 
 ### Timings
 
-See `TIMINGS` section appended at the end of this file. On 4 cores with a cold
-ccache this is a multi-hour build; `kicommon` alone is ~400 compilation units and
-`eeschema_kiface_objects` is the single largest chunk.
+Measured on the reference box (4 cores, `-j4`, **cold ccache**, `Release`):
+
+| Target | Wall time | Notes |
+|---|---:|---|
+| `kicommon` | 15m 06s | 396 edges |
+| `common` | 13m 06s | 635 edges cumulative; pulls in `gal` |
+| `gal` | 0m 09s | already built as a dependency of `common` |
+| `connectivity` | 0m 45s | pcbnew's, not eeschema's — see caveat above |
+| `eeschema_kiface` | 62m 41s | 563 edges; the dominant cost |
+| `eeschema` | 0m 39s | thin launcher, links against the kiface |
+| **total to `eeschema`** | **~1h 52m** | |
+
+`eeschema_kiface_objects` is ~470 translation units and dominates everything else;
+budget roughly an hour for it on any 4-core machine.
+
+Because `gal` and `connectivity` are already pulled in as dependencies, the staged
+command list in the previous section costs nothing extra over a single
+`ninja -j4 eeschema` — it just gives you checkpoints.
 
 With a warm ccache a full rebuild drops to minutes. Do not delete
 `~/.cache/ccache` between experiments.
+
+### Artifacts produced
+
+| Path (relative to build dir) | Size |
+|---|---:|
+| `common/libkicommon.so.10.99.0` | 18.8 MB |
+| `common/libcommon.a` | 58.6 MB |
+| `common/gal/libkigal.so.10.99.0` | 7.2 MB |
+| `eeschema/_eeschema.kiface` | 63.0 MB |
+| `eeschema/eeschema` | 170 KB (launcher only) |
+
+The size split between `eeschema` and `_eeschema.kiface` is the clearest evidence of
+the kiface architecture: essentially all of eeschema lives in the loadable module.
 
 ### Gotchas
 

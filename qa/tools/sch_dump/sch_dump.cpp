@@ -61,6 +61,9 @@
 #include <kiway.h>
 #include <locale_io.h>
 #include <pgm_base.h>
+
+
+
 #include <settings/kicad_settings.h>
 #include <settings/settings_manager.h>
 #include <symbol_editor/symbol_editor_settings.h>
@@ -111,6 +114,25 @@ struct SCH_DUMP_KIFACE : public KIFACE_BASE
 
 SCH_DUMP_PGM    g_program;
 SCH_DUMP_KIFACE g_kiface;
+} // namespace
+
+
+/**
+ * The global that the eeschema objects link against.
+ *
+ * It must return the same object InitSettings() was called on. Returning a
+ * fresh one instead compiles and links perfectly well, and then SCH_PAINTER's
+ * eeconfig() is null the first time it draws a sheet — a null dereference a
+ * long way from its cause.
+ */
+KIFACE_BASE& Kiface()
+{
+    return g_kiface;
+}
+
+
+namespace
+{
 
 
 /// Command-line options, after parsing.

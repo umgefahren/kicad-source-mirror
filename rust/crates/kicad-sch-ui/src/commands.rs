@@ -23,8 +23,10 @@
 //! [`MENUS`] below can be replaced by a walk over it without touching any
 //! other part of the shell.
 
-use gpui_kit::{Action, KeyBinding, Menu, MenuItem, SharedString};
+use std::rc::Rc;
+
 use gpui_kit::assets::IconName;
+use gpui_kit::{Action, KeyBinding, KeyBindingContextPredicate, Menu, MenuItem, SharedString};
 
 
 use crate::tools::{TOOLS, Tool};
@@ -686,7 +688,7 @@ pub fn key_bindings() -> (Vec<KeyBinding>, Vec<&'static str>) {
         match KeyBinding::load(
             keys,
             spec.action(),
-            None,
+            context_for(keys),
             false,
             None,
             &gpui_kit::DummyKeyboardMapper,
@@ -702,7 +704,7 @@ pub fn key_bindings() -> (Vec<KeyBinding>, Vec<&'static str>) {
     match KeyBinding::load(
         "escape",
         ShellCommand::CancelTool.action(),
-        None,
+        context_for("escape"),
         false,
         None,
         &gpui_kit::DummyKeyboardMapper,
@@ -712,6 +714,26 @@ pub fn key_bindings() -> (Vec<KeyBinding>, Vec<&'static str>) {
     }
 
     (bindings, rejected)
+}
+
+/// The context predicate a keystroke is bound under.
+///
+/// A shortcut with no Ctrl, Alt or Cmd in it is a character somebody might want
+/// to type. Bound globally, `w` would select the wire tool instead of reaching
+/// the command palette's search field, `delete` would delete a schematic item
+/// instead of a character, and typing "Annotate" into the palette would arrive
+/// as "Annoe" — which is exactly what happened before this existed. gpui's
+/// `!Input` matches only when no element in the focus chain declares the text
+/// input context, which is the question being asked.
+///
+/// Modified shortcuts are left global on purpose: Ctrl+S should save whether or
+/// not a text field has focus.
+fn context_for(keys: &str) -> Option<Rc<KeyBindingContextPredicate>> {
+    let modified = keys.contains("ctrl-") || keys.contains("alt-") || keys.contains("cmd-");
+    if modified {
+        return None;
+    }
+    KeyBindingContextPredicate::parse("!Input").ok().map(Rc::new)
 }
 
 /// The tool a KiCad action name activates, if it names a tool.
@@ -726,6 +748,37 @@ pub fn tool_for_action(id: &str) -> Option<Tool> {
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    /// Single-key shortcuts must not fire while a text field has focus, or the
+    /// command palette cannot be typed into.
+    #[test]
+    fn unmodified_shortcuts_are_scoped_away_from_text_inputs() {
+        assert!(context_for("w").is_some());
+        assert!(context_for("escape").is_some());
+        assert!(context_for("delete").is_some());
+        assert!(context_for("shift-t").is_some());
+        assert!(context_for("ctrl-s").is_none());
+        assert!(context_for("ctrl-shift-p").is_none());
+
+        let (bindings, _) = key_bindings();
+        for binding in &bindings {
+            let keys: Vec<String> = binding
+                .keystrokes()
+                .iter()
+                .map(|k| k.inner().key.clone())
+                .collect();
+            let modifiers = binding
+                .keystrokes()
+                .iter()
+                .any(|k| k.inner().modifiers.control || k.inner().modifiers.alt);
+            if !modifiers {
+                assert!(
+                    binding.predicate().is_some(),
+                    "{keys:?} is bound globally and would steal typed characters"
+                );
+            }
+        }
+    }
 
     #[test]
     fn every_keystroke_in_the_catalogue_parses() {
