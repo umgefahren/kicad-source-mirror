@@ -63,7 +63,37 @@ same entry point `kicad-cli` uses. No file-format code is duplicated:
 migration for pre-2022 files, page numbering, junction repair and connectivity
 all happen exactly as they do for any other headless consumer.
 
-### 2.2 The canvas, and one deliberate difference from `SCH_DRAW_PANEL`
+### 2.2 Two process globals the host must stand up, or it crashes
+
+Both of these were found by running the tool on real files, and both are null
+dereferences rather than errors, so they are worth stating plainly. `SCH_HOST`
+handles each itself — a C ABI that segfaults because the embedder forgot an
+undocumented global is not an ABI — but anyone embedding this differently needs
+to know they exist.
+
+**1. `Kiface().KifaceSettings()` must be live before anything draws.**
+`SCH_PAINTER` reads `eeconfig()`, which is that pointer cast to
+`EESCHEMA_SETTINGS`, and dereferences it with no null check at
+`sch_painter.cpp:594` and six other sites. In the GUI the eeschema kiface module
+installs it during `OnKifaceStart`. A process that never loaded that module — a
+test binary, a CLI tool, a Rust host — has nothing to install it, and the first
+piece of *text* drawn is a null dereference several frames deep inside KIFONT,
+which reads as a font-subsystem failure and is not one. Since text is most of a
+schematic's geometry, this fires almost immediately.
+`SCH_HOST::ensureKifaceSettings()` installs a fallback when the slot is empty.
+
+**2. A schematic with no sibling `.kicad_pro` needs a project loaded first.**
+`EESCHEMA_HELPERS::LoadSchematic` falls back to `SETTINGS_MANAGER::Prj()`, which
+with nothing loaded returns a **static `PROJECT` whose `PROJECT_FILE` is null**
+(`settings_manager.cpp:1225`). `SCHEMATIC::Settings()` then dereferences that
+file unconditionally. `SCH_HOST::LoadFile()` loads the empty project when the
+settings manager has none, which gives the fallback something real behind it.
+
+Neither is reachable from the GUI, because a frame always has both. They are
+purely artefacts of running the document model without one, which is exactly
+what this seam does.
+
+### 2.3 The canvas, and one deliberate difference from `SCH_DRAW_PANEL`
 
 The GAL/view/painter wiring in `SCH_HOST::buildCanvas()` is copied from
 `SCH_DRAW_PANEL`'s constructor, including `SetWorldUnitLength( SCH_WORLD_UNIT )`
@@ -79,7 +109,7 @@ non-cached would mean the recorded stream never exercised
 `BeginGroup`/`DrawGroup` at all, so the property most worth testing would go
 untested.
 
-### 2.3 Rendering
+### 2.4 Rendering
 
 `SCH_HOST::Render()` follows `EDA_DRAW_PANEL_GAL::DoRePaint()`
 (`common/draw_panel_gal.cpp:257`):
@@ -111,7 +141,7 @@ bitmap-text LOD threshold and the scaled selection shadow — and `SCH_HOST` has
 selection. It becomes relevant the moment selection arrives, and is listed in
 §6.4 for that reason.
 
-### 2.4 Teardown order
+### 2.5 Teardown order
 
 `SCH_VIEW` registers an invalidation listener on the schematic's
 `TEXT_VAR_TRACKER` and holds a `DS_PROXY_VIEW_ITEM` built from the screen's page
@@ -193,6 +223,37 @@ kicad-sch-dump [options] <file.kicad_sch>
 The tool drives the session **through its own C ABI**, not through `SCH_HOST`
 directly. If the tool works, the ABI works, and there is no second code path to
 keep in step.
+
+### 4.1 Results on the whole corpus
+
+Every `.kicad_sch` in the tree, root sheet only, 1920x1080 viewport, zoom to fit:
+
+| | |
+|---|---|
+| Files recorded | **466 of 466**, no failures, no crashes |
+| Items | 57,896 total, median 21, max 1,686 |
+| Retained groups | 211,567 total, median 85, max 5,849 |
+| Group commands | 1,669,381 total, median 714, max 43,695 |
+| Coordinates | 12.4 M doubles total, median 7,062, max 326,872 |
+| First-frame render | median 3.6 ms, max 93 ms |
+
+Twenty-six files produce zero groups. All twenty-six have zero items: they are
+blank root sheets whose children hold the content. They still emit ~400 frame
+commands, which is the drawing sheet — it lives on `TARGET_NONCACHED` and so
+records into the frame arena rather than into a group. That is correct, not a gap.
+
+The heaviest sheets are `demos/jetson-agx-thor-baseboard/dcdc` (1,453 items,
+5,849 groups, 93 ms) and `demos/tiny_tapeout/tinytapeout-demo` (43,695 group
+commands, 326,872 coordinates). `demos/sonde xilinx/` — a path with a space in
+it, which the survey flagged as a filesystem edge case — records fine.
+
+Warm re-render is the number that matters for the 120 Hz target, because it is
+what a pan costs. On `demos/video/video.kicad_sch` (363 items, 1,328 groups) the
+first frame is 12.33 ms and the third is **1.75 ms**, with the retained group
+arena byte-identical across all three. The geometry is recorded once; a pan
+replays it.
+
+### 4.2 Standing up the process
 
 It supplies its own `PGM_BASE` and `KIFACE_BASE`, both minimal:
 
