@@ -459,6 +459,12 @@ set( EESCHEMA_SRCS
     files-io.cpp
     generate_alias_info.cpp
     gfx_import_utils.cpp
+
+    # The non-wx host seam: a schematic session with no frame, and the C ABI a
+    # Rust UI drives it through. See docs/rust-migration/04-host-seam.md.
+    host/sch_host.cpp
+    host/sch_host_abi.cpp
+
     import_net_map.cpp
     junction_helpers.cpp
     lib_fields_data_model.cpp
