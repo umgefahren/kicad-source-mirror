@@ -34,25 +34,6 @@ use gpui_kit::{
     App, Context, Entity, EventEmitter, FocusHandle, Focusable, SharedString, Window, div, px,
 };
 
-/// One row in the properties panel.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Property {
-    /// The field name.
-    pub name: SharedString,
-    /// The field value, already formatted.
-    pub value: SharedString,
-}
-
-impl Property {
-    /// A property row.
-    pub fn new(name: impl Into<SharedString>, value: impl Into<SharedString>) -> Self {
-        Self {
-            name: name.into(),
-            value: value.into(),
-        }
-    }
-}
-
 /// Where what the panels show came from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DocumentSource {
@@ -590,6 +571,18 @@ mod tests {
         }
     }
 
+    fn all_labels(items: &[TreeItem]) -> Vec<String> {
+        fn walk(items: &[TreeItem], out: &mut Vec<String>) {
+            for item in items {
+                out.push(item.label.to_string());
+                walk(&item.children, out);
+            }
+        }
+        let mut out = Vec::new();
+        walk(items, &mut out);
+        out
+    }
+
     fn state() -> DesignState {
         DesignState::from_stream(
             DocumentSource::RecordedStream {
@@ -619,11 +612,14 @@ mod tests {
         let design = state();
         let root = &design.hierarchy()[0];
         assert_eq!(root.label.as_ref(), "ecc83-pp_v2.kicad_sch");
-        let rendered = format!("{:?}", design.hierarchy());
-        assert!(rendered.contains("336 retained groups"), "{rendered}");
-        assert!(rendered.contains("795 frame commands"), "{rendered}");
+        let labels = all_labels(design.hierarchy());
+        assert!(labels.iter().any(|l| l == "336 retained groups"), "{labels:?}");
+        assert!(labels.iter().any(|l| l == "795 frame commands"), "{labels:?}");
         // 1 660 271 internal units at 100 nm each is 166.0 mm.
-        assert!(rendered.contains("166.0"), "{rendered}");
+        assert!(
+            labels.iter().any(|l| l.contains("166.0")),
+            "{labels:?}"
+        );
     }
 
     #[test]

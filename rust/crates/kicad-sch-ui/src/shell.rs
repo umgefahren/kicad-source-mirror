@@ -36,7 +36,7 @@ use crate::commands::{
 };
 use crate::grid::Units;
 use crate::input::{Modifiers, SharedSink, ShellEvent, shared_sink};
-use crate::panels::{DesignState, HierarchyPanel, PropertiesPanel};
+use crate::panels::{DesignState, DocumentSource, HierarchyPanel, PropertiesPanel, StreamFacts};
 use crate::stats::FrameStats;
 use crate::theme::{self, CanvasPalette};
 use kicad_sch_render::SchematicRenderer;
@@ -76,15 +76,26 @@ pub fn install_menus(cx: &mut App) {
 pub struct CanvasPanel {
     focus_handle: FocusHandle,
     state: Entity<CanvasState>,
+    /// What the tab says. The document's own name, not a placeholder: a
+    /// screenshot that claims to be untitled while showing a real schematic
+    /// is worse than no caption at all.
+    title: SharedString,
 }
 
 impl CanvasPanel {
-    /// Wrap `state` as the centre panel.
-    pub fn new(state: Entity<CanvasState>, cx: &mut Context<Self>) -> Self {
+    /// Wrap `state` as the centre panel, captioned `title`.
+    pub fn new(state: Entity<CanvasState>, title: impl Into<SharedString>, cx: &mut Context<Self>) -> Self {
         Self {
             focus_handle: cx.focus_handle(),
             state,
+            title: title.into(),
         }
+    }
+
+    /// Re-caption the tab, when the document changes.
+    pub fn set_title(&mut self, title: impl Into<SharedString>, cx: &mut Context<Self>) {
+        self.title = title.into();
+        cx.notify();
     }
 
     /// The canvas state behind the panel.
@@ -144,7 +155,7 @@ impl gpui_kit::component::dock::BasePanel for CanvasPanel {
 
 impl Panel for CanvasPanel {
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        "untitled.kicad_sch"
+        self.title.clone()
     }
 
     fn inner_padding(&self, _cx: &App) -> bool {
@@ -216,8 +227,9 @@ impl SchematicShell {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut renderer = SchematicRenderer::new();
         renderer.set_stream(crate::demo::demo_stream());
-        Self::new_with_renderer(
+        Self::new_with_document(
             Rc::new(RefCell::new(renderer)),
+            DocumentSource::Demonstration,
             shared_sink(crate::input::NullSink),
             window,
             cx,
@@ -237,12 +249,45 @@ impl SchematicShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        Self::new_with_document(renderer, DocumentSource::Empty, sink, window, cx)
+    }
+
+    /// The shell driving `renderer`, captioned by `source`.
+    ///
+    /// The caption reaches the canvas tab and both docked panels, so a window
+    /// showing a real schematic says which one it is.
+    pub fn new_with_document(
+        renderer: Rc<RefCell<SchematicRenderer>>,
+        source: DocumentSource,
+        sink: SharedSink,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let theme_mode = Theme::global(cx).mode;
         let palette = CanvasPalette::for_mode(theme_mode);
 
+        // Everything the panels show is derived from the stream that was
+        // actually loaded. Nothing here is invented.
+        let (facts, origin, extent) = {
+            let renderer = renderer.borrow();
+            let facts = renderer
+                .stream()
+                .map(|stream| StreamFacts {
+                    groups: stream.groups().len(),
+                    group_commands: stream.group_cmds().len(),
+                    frame_commands: stream.frame_cmds().len(),
+                    images: stream.images().len(),
+                })
+                .unwrap_or_default();
+            let bounds = renderer.document_bounds();
+            (facts, bounds.min, bounds.size())
+        };
+        let design_state = DesignState::from_stream(source.clone(), facts, origin, extent);
+        let title = design_state.source().title();
+
         let canvas = cx.new(|_| CanvasState::new(renderer, palette, sink));
-        let canvas_panel = cx.new(|cx| CanvasPanel::new(canvas.clone(), cx));
-        let design = cx.new(|_| DesignState::placeholder());
+        let canvas_panel = cx.new(|cx| CanvasPanel::new(canvas.clone(), title, cx));
+        let design = cx.new(|_| design_state);
         let hierarchy = cx.new(|cx| HierarchyPanel::new(design.clone(), cx));
         let properties = cx.new(|cx| PropertiesPanel::new(design.clone(), cx));
         let command_state = cx.new(|cx| CommandState::new(window, cx));
@@ -633,12 +678,12 @@ impl SchematicShell {
                     .child(self.menu_bar.clone()),
             )
             .child(
-                div().text_xs().text_color(theme.muted_foreground).child(
-                    self.design
-                        .read(cx)
-                        .selected_label()
-                        .clone(),
-                ),
+                div()
+                    .id("document-name")
+                    .test_support()
+                    .text_xs()
+                    .text_color(theme.muted_foreground)
+                    .child(self.design.read(cx).source().title()),
             )
     }
 
