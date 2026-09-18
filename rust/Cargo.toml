@@ -1,0 +1,40 @@
+# Rust workspace for the incremental KiCad-in-Rust migration.
+#
+# See docs/rust-migration/ for the architecture and roadmap.
+
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+# gpui needs a nightly compiler (see rust-toolchain.toml); this records the
+# language level the crates themselves target.
+rust-version = "1.85"
+license = "GPL-3.0-or-later"
+repository = "https://gitlab.com/kicad/code/kicad"
+
+[workspace.dependencies]
+kicad-gal = { path = "crates/kicad-gal", version = "0.1.0" }
+kicad-sch-render = { path = "crates/kicad-sch-render", version = "0.1.0" }
+kicad-sch-ui = { path = "crates/kicad-sch-ui", version = "0.1.0" }
+
+thiserror = "2"
+anyhow = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+log = "0.4"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4
+
+# Interactive editing wants a fast debug build; the heavy geometry crates are
+# optimised even in dev profiles so that panning a large schematic stays smooth
+# while debugging.
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.dev]
+opt-level = 1

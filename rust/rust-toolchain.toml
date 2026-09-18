@@ -1,0 +1,10 @@
+# gpui 0.3.5 (via gpui-kit) uses `std::hint::cold_path`, which is still
+# unstable, so the schematic UI cannot be built on a stable toolchain today.
+# See docs/rust-migration/02-gpui-kit-cookbook.md for the details and
+# docs/rust-migration/01-plan.md for what it would take to drop this pin.
+#
+# This is scoped to the `rust/` workspace and does not affect any other part of
+# the KiCad build.
+[toolchain]
+channel = "nightly"
+components = ["rustfmt", "clippy"]

@@ -1,0 +1,20 @@
+# Thin binary that starts the schematic editor shell. Everything of substance
+# lives in `kicad-sch-ui`; this crate exists so there is something runnable and
+# so the shell stays a library that tests can drive without a `main`.
+
+[package]
+name = "kicad-eeschema-gpui"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Runnable gpui-kit front end for the KiCad schematic editor"
+
+[[bin]]
+name = "kicad-eeschema-gpui"
+path = "src/main.rs"
+
+[dependencies]
+kicad-sch-ui = { path = "../kicad-sch-ui", version = "0.1.0" }
+gpui-kit = "0.6.1"

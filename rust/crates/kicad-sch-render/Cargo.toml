@@ -1,0 +1,27 @@
+# Translates a recorded KiCad draw stream into gpui primitives.
+#
+# There is deliberately no wgpu dependency here. gpui owns the device, the
+# queue and the render pass and exposes no hook into any of them, so the way to
+# reach the GPU is to emit gpui's own primitives and let its renderer
+# (wgpu, 4x MSAA) rasterise them. See docs/rust-migration/02-gpui-kit-cookbook.md.
+
+[package]
+name = "kicad-sch-render"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Renders the KiCad GAL draw stream through gpui"
+
+[dependencies]
+kicad-gal = { path = "../kicad-gal", version = "0.1.0" }
+gpui-kit = "0.6.1"
+
+[dev-dependencies]
+gpui-kit = { version = "0.6.1", features = ["test-support"] }
+criterion = { version = "0.7", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "frame"
+harness = false
