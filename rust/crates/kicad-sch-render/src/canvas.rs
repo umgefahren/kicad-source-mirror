@@ -393,31 +393,59 @@ impl SchematicRenderer {
         PreparedFrame { items, stats }
     }
 
-    /// Paint a prepared frame.
+    /// Paint a prepared frame, opening a layer for it.
     ///
     /// Everything goes inside one `paint_layer`, which is what merges the paths
     /// into a single gpui batch and a single render pass. Splitting this across
     /// layers is the biggest performance cliff available.
     pub fn paint(&self, frame: &PreparedFrame, bounds: Bounds<Pixels>, window: &mut Window) {
-        window.paint_layer(bounds, |window| {
-            for item in &frame.items {
-                match item {
-                    PreparedItem::Direct(t) => {
-                        paint_tessellated(window, t, Placement::IDENTITY, None)
-                    }
-                    PreparedItem::Group {
-                        cached,
-                        placement,
-                        override_color,
-                    } => paint_tessellated(
-                        window,
-                        &cached.tessellated,
-                        *placement,
-                        *override_color,
-                    ),
-                }
+        window.paint_layer(bounds, |window| self.paint_in_layer(frame, window));
+    }
+
+    /// Paint a prepared frame into the layer the caller has already opened.
+    ///
+    /// For a host that owns the element itself and has pushed its own layer —
+    /// the application shell does — since opening a second one there would
+    /// split the path batch in two and cost a render pass.
+    pub fn paint_in_layer(&self, frame: &PreparedFrame, window: &mut Window) {
+        for item in &frame.items {
+            match item {
+                PreparedItem::Direct(t) => paint_tessellated(window, t, Placement::IDENTITY, None),
+                PreparedItem::Group {
+                    cached,
+                    placement,
+                    override_color,
+                } => paint_tessellated(window, &cached.tessellated, *placement, *override_color),
             }
-        });
+        }
+    }
+
+    /// Prepare and paint in one call, into the caller's layer.
+    ///
+    /// This is the whole of what a host element has to do per frame. `bounds`
+    /// is the canvas rectangle in window coordinates; the viewport is taken
+    /// from its size and the origin is where the canvas sits.
+    ///
+    /// # Driving it from a host's own camera
+    ///
+    /// A host that keeps its own view transform — the application shell keeps
+    /// one in millimetres — syncs it in before calling:
+    ///
+    /// ```ignore
+    /// // The shell's world unit is the millimetre; the draw stream's is the
+    /// // nanometre, so the two differ by 1e6. Getting this conversion wrong is
+    /// // a factor-of-a-million error, not a subtle one.
+    /// const NM_PER_MM: f64 = 1.0e6;
+    /// renderer.camera_mut().set_center([host.center().x * NM_PER_MM,
+    ///                                   host.center().y * NM_PER_MM]);
+    /// renderer.camera_mut().set_scale(host.scale() as f64 / NM_PER_MM);
+    /// let stats = renderer.paint_frame(bounds, window);
+    /// ```
+    pub fn paint_frame(&mut self, bounds: Bounds<Pixels>, window: &mut Window) -> FrameStats {
+        self.set_viewport([bounds.size.width.to_f64(), bounds.size.height.to_f64()]);
+        let frame = self.prepare([bounds.origin.x.to_f64(), bounds.origin.y.to_f64()]);
+        self.paint_in_layer(&frame, window);
+        frame.stats
     }
 }
 
