@@ -161,8 +161,12 @@ impl Default for Camera {
 impl Camera {
     /// A camera centred on `center` at `scale` pixels per world unit.
     pub fn new(center: [f64; 2], scale: f64, viewport: [f64; 2]) -> Camera {
-        let mut c = Camera::default();
-        c.center = center;
+        let mut c = Camera {
+            center,
+            ..Camera::default()
+        };
+        // Both go through their setters, which clamp scale and reject a
+        // degenerate viewport.
         c.set_scale(scale);
         c.set_viewport(viewport);
         c

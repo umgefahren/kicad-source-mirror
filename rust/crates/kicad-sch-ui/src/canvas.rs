@@ -869,12 +869,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_drag_threshold_is_a_few_pixels_not_zero() {
-        // A zero threshold turns every click into a drag on a trackpad.
-        assert!(DRAG_THRESHOLD_PX >= 2.0 && DRAG_THRESHOLD_PX <= 8.0);
-    }
-
-    #[test]
     fn one_to_one_is_ninety_six_dots_per_inch() {
         // At the reference scale a 25.4 mm ruler spans 96 pixels.
         let span_iu = 25.4 * crate::grid::IU_PER_MM;

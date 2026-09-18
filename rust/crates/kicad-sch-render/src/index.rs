@@ -176,9 +176,9 @@ impl BoundsIndex {
             let child_level_end = self.level_ends[level - 1];
             let first = self.refs[node] as usize;
             let last = (first + NODE_SIZE).min(child_level_end);
-            for child in first..last {
-                if self.boxes[child].intersects(query) {
-                    stack.push(child);
+            for (offset, bbox) in self.boxes[first..last].iter().enumerate() {
+                if bbox.intersects(query) {
+                    stack.push(first + offset);
                 }
             }
         }

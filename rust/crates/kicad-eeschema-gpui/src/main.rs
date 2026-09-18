@@ -143,7 +143,7 @@ fn main() {
                 // the app closes itself.
                 cx.spawn(async move |cx| {
                     cx.background_executor().timer(run_for).await;
-                    let _ = cx.update(|cx| cx.quit());
+                    cx.update(|cx| cx.quit());
                 })
                 .detach();
             }
@@ -223,7 +223,7 @@ fn main() {
                 );
                 if let Err(error) = opened {
                     eprintln!("could not open the editor window: {error}");
-                    let _ = cx.update(|cx| cx.quit());
+                    cx.update(|cx| cx.quit());
                 }
             })
             .detach();

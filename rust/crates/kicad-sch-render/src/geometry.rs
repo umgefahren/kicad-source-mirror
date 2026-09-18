@@ -194,7 +194,11 @@ pub fn flatten_cubic(
 ) {
     let tol_world = FLATTEN_TOLERANCE_PX / (transform.uniform_scale() * scale_px).max(1e-12);
     out.push(transform.apply(p0));
-    subdivide_cubic(p0, c0, c1, p1, tol_world, 0, transform, out);
+    let ctx = CubicCtx {
+        tol: tol_world,
+        transform,
+    };
+    subdivide_cubic(p0, c0, c1, p1, &ctx, 0, out);
     out.push(transform.apply(p1));
 }
 
@@ -202,16 +206,23 @@ pub fn flatten_cubic(
 /// matters, and bounds the work a degenerate control polygon can ask for.
 const MAX_CUBIC_DEPTH: u32 = 16;
 
+/// The parts of a subdivision that do not change as the recursion descends.
+struct CubicCtx {
+    tol: f64,
+    transform: Affine,
+}
+
 fn subdivide_cubic(
     p0: [f64; 2],
     c0: [f64; 2],
     c1: [f64; 2],
     p1: [f64; 2],
-    tol: f64,
+    ctx: &CubicCtx,
     depth: u32,
-    transform: Affine,
     out: &mut Vec<[f64; 2]>,
 ) {
+    let CubicCtx { tol, transform } = *ctx;
+
     if depth >= MAX_CUBIC_DEPTH || cubic_is_flat(p0, c0, c1, p1, tol) {
         return;
     }
@@ -223,9 +234,9 @@ fn subdivide_cubic(
     let p123 = mid(p12, p23);
     let p0123 = mid(p012, p123);
 
-    subdivide_cubic(p0, p01, p012, p0123, tol, depth + 1, transform, out);
+    subdivide_cubic(p0, p01, p012, p0123, ctx, depth + 1, out);
     out.push(transform.apply(p0123));
-    subdivide_cubic(p0123, p123, p23, p1, tol, depth + 1, transform, out);
+    subdivide_cubic(p0123, p123, p23, p1, ctx, depth + 1, out);
 }
 
 /// The usual control-point distance test: the curve is flat when both control

@@ -636,12 +636,13 @@ fn rejects_a_file_from_a_future_abi_version() {
 fn every_truncation_of_a_valid_file_is_a_clean_error() {
     let bytes = rich_stream().to_bytes();
     for cut in 0..bytes.len() {
-        match Stream::from_bytes(&bytes[..cut]) {
-            Ok(_) => panic!(
+        // Any error is fine; not panicking, and not accepting a truncated
+        // stream as valid, is the point.
+        if Stream::from_bytes(&bytes[..cut]).is_ok() {
+            panic!(
                 "a stream truncated to {cut} of {} bytes parsed",
                 bytes.len()
-            ),
-            Err(_) => {} // Any error is fine; not panicking is the point.
+            );
         }
     }
     assert!(Stream::from_bytes(&bytes).is_ok());

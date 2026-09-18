@@ -190,46 +190,47 @@ impl<'a> StreamView<'a> {
     /// checked here, so a producer bug short of violating the above yields a
     /// [`DecodeError`] rather than undefined behaviour.
     pub unsafe fn from_raw(raw: &kgds_stream_view) -> Result<StreamView<'a>, DecodeError> {
-        // SAFETY: each call goes through `slice_from_raw`, which rejects null,
-        // misaligned and over-long sections before forming a slice. The
-        // remaining preconditions (initialisation, no aliasing mutation,
-        // lifetime) are the caller's, per this function's Safety section.
-        let group_cmds =
-            unsafe { slice_from_raw(raw.group_cmds, raw.group_cmd_count, Section::GroupCommands)? };
-        let group_coords = unsafe {
-            slice_from_raw(
-                raw.group_coords,
-                raw.group_coord_count,
-                Section::GroupCoords,
-            )?
+        // SAFETY: every section goes through `slice_from_raw`, which rejects
+        // null, misaligned and over-long sections before forming a slice. The
+        // remaining preconditions — that the memory is initialised, is not
+        // mutated while borrowed, and outlives `'a` — are the caller's, and are
+        // stated in this function's Safety section.
+        //
+        // The sections are read in one block rather than eight so that the
+        // justification is written once and cannot drift from a call it is
+        // meant to cover.
+        let parts = unsafe {
+            StreamParts {
+                version: raw.version,
+                flags: raw.flags,
+                group_cmds: slice_from_raw(
+                    raw.group_cmds,
+                    raw.group_cmd_count,
+                    Section::GroupCommands,
+                )?,
+                group_coords: slice_from_raw(
+                    raw.group_coords,
+                    raw.group_coord_count,
+                    Section::GroupCoords,
+                )?,
+                groups: slice_from_raw(raw.groups, raw.group_count, Section::Groups)?,
+                frame_cmds: slice_from_raw(
+                    raw.frame_cmds,
+                    raw.frame_cmd_count,
+                    Section::FrameCommands,
+                )?,
+                frame_coords: slice_from_raw(
+                    raw.frame_coords,
+                    raw.frame_coord_count,
+                    Section::FrameCoords,
+                )?,
+                strings: slice_from_raw(raw.strings, raw.string_bytes, Section::Strings)?,
+                images: slice_from_raw(raw.images, raw.image_count, Section::Images)?,
+                image_data: slice_from_raw(raw.image_data, raw.image_bytes, Section::ImageData)?,
+            }
         };
-        let groups = unsafe { slice_from_raw(raw.groups, raw.group_count, Section::Groups)? };
-        let frame_cmds =
-            unsafe { slice_from_raw(raw.frame_cmds, raw.frame_cmd_count, Section::FrameCommands)? };
-        let frame_coords = unsafe {
-            slice_from_raw(
-                raw.frame_coords,
-                raw.frame_coord_count,
-                Section::FrameCoords,
-            )?
-        };
-        let strings = unsafe { slice_from_raw(raw.strings, raw.string_bytes, Section::Strings)? };
-        let images = unsafe { slice_from_raw(raw.images, raw.image_count, Section::Images)? };
-        let image_data =
-            unsafe { slice_from_raw(raw.image_data, raw.image_bytes, Section::ImageData)? };
 
-        StreamView::new(StreamParts {
-            version: raw.version,
-            flags: raw.flags,
-            group_cmds,
-            group_coords,
-            groups,
-            frame_cmds,
-            frame_coords,
-            strings,
-            images,
-            image_data,
-        })
+        StreamView::new(parts)
     }
 
     /// ABI version this stream was recorded with. Always [`KGDS_VERSION`],

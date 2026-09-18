@@ -23,9 +23,10 @@ use crate::input::ToolId;
 /// Ordered as the left palette presents them: pointer tools, then the things
 /// that carry a net, then the things that carry a name, then sheets, then
 /// graphics, then the utilities.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Tool {
-    /// Pick and edit existing items.
+    /// Pick and edit existing items. The tool a session starts in.
+    #[default]
     Select,
     /// Click a net to highlight everything it reaches.
     HighlightNet,
@@ -113,12 +114,6 @@ impl Tool {
     /// The tool's display name.
     pub fn label(self) -> &'static str {
         self.spec().label
-    }
-}
-
-impl Default for Tool {
-    fn default() -> Self {
-        Tool::Select
     }
 }
 
