@@ -644,6 +644,13 @@ fn apply<'a>(
                 },
             );
         }
+
+        // `Command` is marked non-exhaustive, so a later ABI version can add an
+        // opcode this build has never seen. `kicad_gal` refuses to decode one,
+        // so this arm is unreachable today; counting it means that if the two
+        // crates ever go out of step the result is a number rather than
+        // geometry quietly going missing.
+        _ => em.stats.unsupported += 1,
     }
 }
 
@@ -1054,7 +1061,6 @@ pub fn translate_frame(
             let (geometry, _, stats, _) =
                 std::mem::replace(&mut em, Emitter::new(proj)).finish(false);
             frame.stats.add(&stats);
-            frame.stats.commands -= stats.commands;
             if !geometry.is_empty() {
                 frame.items.push(FrameItem::Geometry(geometry));
             }
@@ -1070,7 +1076,6 @@ pub fn translate_frame(
 
     let (geometry, _, stats, _) = em.finish(false);
     frame.stats.add(&stats);
-    frame.stats.commands -= stats.commands;
     if !geometry.is_empty() {
         frame.items.push(FrameItem::Geometry(geometry));
     }

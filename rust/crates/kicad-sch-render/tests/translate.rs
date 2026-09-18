@@ -202,15 +202,16 @@ fn transforms_compose_and_the_stack_restores_them() {
     assert!((q[0] - 600.0).abs() < 0.01, "expected 200 px, got {q:?}");
     assert!((width_px - 20.0).abs() < 0.01, "{width_px}");
 
-    // The second segment is back at the world origin: a long way off screen.
-    let far = polylines
-        .iter()
-        .chain(g.batches.iter().filter_map(|b| match b {
-            Batch::Stroke { polylines, .. } => polylines.first(),
-            _ => None,
-        }))
-        .any(|p| p.points[0][0] < -1000.0);
-    assert!(far, "the restore did not put the transform back");
+    // The second segment is back at the world origin, a long way off screen.
+    // It is also half the width, so it lands in a batch of its own.
+    let Batch::Stroke { polylines, .. } = &g.batches[1] else {
+        panic!("expected a second stroke batch");
+    };
+    assert!(
+        polylines[0].points[0][0] < -1000.0,
+        "the restore did not put the transform back: {:?}",
+        polylines[0].points[0]
+    );
 }
 
 #[test]
@@ -519,6 +520,10 @@ fn a_small_zoom_re_tessellates_nothing_but_a_large_one_does() {
     r.set_stream(sheet(16));
     r.set_viewport([1200.0, 900.0]);
     r.zoom_to_fit(20.0);
+    // Sit exactly on a level-of-detail step, so that the small zoom below is
+    // testing the quantisation rather than where the fit happened to land.
+    let centred = r.camera().lod_scale();
+    r.camera_mut().set_scale(centred);
     r.prepare([0.0, 0.0]);
 
     // Under one level-of-detail step: the cached triangles are reused and only

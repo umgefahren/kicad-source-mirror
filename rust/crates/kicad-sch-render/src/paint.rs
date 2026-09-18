@@ -79,15 +79,20 @@ pub struct Tessellated {
     pub dropped: usize,
 }
 
-/// Convert a packed RGBA8 colour to something gpui will paint with.
-pub fn to_background(packed: PackedColor) -> Background {
+/// Unpack a stream colour. Red is in the low byte and alpha in the high one,
+/// matching `kgds_pack_color`.
+pub fn to_rgba(packed: PackedColor) -> Rgba {
     Rgba {
         r: (packed & 0xFF) as f32 / 255.0,
         g: ((packed >> 8) & 0xFF) as f32 / 255.0,
         b: ((packed >> 16) & 0xFF) as f32 / 255.0,
         a: ((packed >> 24) & 0xFF) as f32 / 255.0,
     }
-    .into()
+}
+
+/// Convert a packed RGBA8 colour to something gpui will paint with.
+pub fn to_background(packed: PackedColor) -> Background {
+    to_rgba(packed).into()
 }
 
 /// Tessellate geometry into gpui primitives.
@@ -375,12 +380,11 @@ mod tests {
     fn colour_unpacking_matches_the_abi_packing() {
         // Red in the low byte, alpha in the high one, as `kgds_pack_color`
         // writes it.
-        let packed = kicad_gal::pack_color(1.0, 0.0, 0.0, 1.0);
-        let bg = to_background(packed);
-        let solid = bg.solid;
-        // Round-tripping through Hsla, a pure red stays a pure red.
-        let rgba: Rgba = solid.into();
+        let rgba = to_rgba(kicad_gal::pack_color(1.0, 0.0, 0.0, 1.0));
         assert!(rgba.r > 0.99 && rgba.g < 0.01 && rgba.b < 0.01 && rgba.a > 0.99);
+
+        let half = to_rgba(kicad_gal::pack_color(0.0, 0.5, 0.0, 0.25));
+        assert!(half.r < 0.01 && (half.g - 0.5).abs() < 0.01 && (half.a - 0.25).abs() < 0.01);
     }
 
     #[test]

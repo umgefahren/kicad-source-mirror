@@ -104,6 +104,13 @@ drawn.
 `SetDepthRange` (survey §5.4 hazard 3) needs no attention here: `GAL`'s own
 constructor already sets it to `[MIN_DEPTH, MAX_DEPTH]`.
 
+One hook is deliberately not wired. `SCH_VIEW::SetScale()` calls
+`m_frame->RefreshZoomDependentItems()`, which is a no-op with a null frame. That
+costs nothing today, because the method only re-paints *selected* items — the
+bitmap-text LOD threshold and the scaled selection shadow — and `SCH_HOST` has no
+selection. It becomes relevant the moment selection arrives, and is listed in
+§6.4 for that reason.
+
 ### 2.4 Teardown order
 
 `SCH_VIEW` registers an invalidation listener on the schematic's
@@ -330,6 +337,7 @@ program inherits, so it wants its own commit and its own review.
 | `TOOL_DISPATCHER` | `: public wxEvtHandler`, not abstract | Write a replacement. Its output contract is only ~10 distinct `TOOL_EVENT` constructions (survey §6.3), and the two subtle helpers — `IsPastDragThreshold` and `ShouldDropAutoRepeat` — are already `static` and wx-free, deliberately so they can be reused. |
 | Key codes | constraint | The hotkey vocabulary is `WXK_*` integers. Rust must map its keys onto the same numbers or every default and every saved binding breaks. Transcribe once from `wx/defs.h`, test against `KeyNameFromKeyCode`. |
 | `TOOLS_HOLDER` virtuals | straightforward | `GetCurrentSelection()` must be overridden; `PushTool`/`PopTool`/`DisplayToolMsg`/`RegisterUIUpdateHandler` are notification-only and route to the Rust shell. |
+| Zoom-dependent repaint | one line | `SCH_VIEW::SetScale()` routes through `SCH_BASE_FRAME::RefreshZoomDependentItems()`, which needs a frame and a selection tool. Once selection exists, `SCH_HOST` must provide the equivalent or cached text will not switch to its bitmap LOD. |
 | `ACTION_MENU : public wxMenu` | rewrite | Context menus. `TOOL_INTERACTIVE::SetContextMenu` is the only coupling point. |
 | Modal dialogs | ~124 files | Do not attempt. Survey §7.4: keep them for bring-up, async-bridge them through `COROUTINE::Yield` later. The coroutine machinery (`include/tool/coroutine.h`, `libcontext`) is wx-free and already supports the suspension this needs. |
 
@@ -365,7 +373,66 @@ Rust work continues, which is a good property for them to have.
 
 ---
 
-## 7. Known issues found while doing this
+## 7. A bug found and fixed in `DRAW_STREAM::Compact()`
+
+Compaction rewrote each relocated coordinate index into argument slot *n* for
+run *n*, with one special case for `KGDS_OP_SEGMENT_CHAIN`. That mapping is not
+the one the ABI actually uses. `kgds_coord_refs()` reads `KGDS_OP_BITMAP`'s runs
+from **arg1 and arg2**, because arg0 holds an image-table index; and it reads
+`KGDS_OP_DRAW_GROUP`'s optional depth override from **arg2**, because arg0 holds
+a group id.
+
+So compacting a group containing a bitmap did two things:
+
+* wrote the transform's new offset over the image-table index, silently
+  repointing the command at a different image;
+* left both geometry indices pointing past the end of the compacted arena.
+
+Reproduced with a standalone harness against the pre-fix code — one deleted
+group, one retained bitmap group, two images:
+
+```
+old:    op=0x3d arg0(image)=0 arg1(xform)=6 arg2(alpha)=9 coords=7
+        FAIL: image index clobbered (0, want 1)
+        FAIL: xform out of range          <- reads 6 doubles from offset 6 of a 7-element arena
+fixed:  op=0x3d arg0(image)=1 arg1(xform)=0 arg2(alpha)=6 coords=7
+        => OK
+```
+
+The out-of-range index is the serious half: the consumer's job is to render what
+the indices point at, and five of those six doubles are off the end of the
+buffer. `KGDS_OP_SEGMENT`, `KGDS_OP_SEGMENT_CHAIN` and `KGDS_OP_ELLIPSE_ARC`
+were all already correct, and still are.
+
+**Why it had not shown up.** It needs a `KGDS_OP_BITMAP` inside a *retained*
+group plus a compaction, and eeschema puts bitmaps on `LAYER_DRAW_BITMAPS`,
+which `SCH_DRAW_PANEL` — and `SCH_HOST`, copying it — sets to
+`TARGET_NONCACHED`. Bitmaps therefore land in the frame arena, which `Compact()`
+does not touch. One changed layer target, or pcbnew's reference images later,
+and it becomes live. The existing compaction test used a circle, whose single
+run does live in arg0.
+
+**The fix** (`common/gal/recording/draw_stream.cpp`) does not duplicate the
+ABI's table locally, because two copies would drift and the symptom would
+reappear far from the cause. It recovers the run-to-slot mapping *from the ABI
+function itself*: poke a value that appears nowhere else in the command into one
+argument slot at a time, and see which run's `start` follows it. The shared
+header stays the single source of truth, and any opcode added later is handled
+without touching this code.
+
+While there, the out-of-range branch now reserves the space it could not copy,
+so that "every index in a compacted stream is in range" holds unconditionally —
+that is the invariant the consumer's bounds check rests on, and it should not
+have an exception for already-damaged input.
+
+Regression coverage is in
+`qa/tests/common/gal/test_draw_stream.cpp::CompactionRelocatesNonArg0Indices`,
+which checks `KGDS_OP_BITMAP` and `KGDS_OP_SEGMENT_CHAIN` through a compaction
+and then asserts the in-range invariant across the whole compacted stream.
+
+---
+
+## 8. Other known issues found while doing this
 
 * **`EESCHEMA_HELPERS::LoadSchematic` leaks a `TOOL_MANAGER`.**
   `eeschema/eeschema_helpers.cpp:364` does `TOOL_MANAGER* toolManager = new TOOL_MANAGER;`

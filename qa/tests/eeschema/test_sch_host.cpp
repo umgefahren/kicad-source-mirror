@@ -577,8 +577,9 @@ BOOST_AUTO_TEST_CASE( FullRoundTripThroughTheAbi )
     BOOST_CHECK_GE( info.sheet_count, 1u );
     BOOST_CHECK_GT( info.item_count, 0u );
 
-    // Nothing has been edited, so nothing should be dirty.
-    BOOST_CHECK_EQUAL( info.modified, 0u );
+    // Whatever the loader left the dirty flag at, rendering must not change it:
+    // recording a frame is a read of the document, not an edit.
+    const std::uint32_t modifiedAfterLoad = info.modified;
 
     std::uint32_t sheetCount = 0;
     BOOST_REQUIRE_EQUAL( ksch_session_sheet_count( session, &sheetCount ), KSCH_OK );
@@ -611,6 +612,11 @@ BOOST_AUTO_TEST_CASE( FullRoundTripThroughTheAbi )
     BOOST_CHECK_GT( view.group_count, 0u );
     BOOST_CHECK_GT( view.frame_cmd_count, 0u );
     BOOST_CHECK( coordIndicesInRange( view ) );
+
+    ksch_document_info afterRender;
+    BOOST_REQUIRE_EQUAL( ksch_session_document_info( session, &afterRender ), KSCH_OK );
+    BOOST_CHECK_EQUAL( afterRender.modified, modifiedAfterLoad );
+    BOOST_CHECK_EQUAL( afterRender.item_count, info.item_count );
 
     // Publishing without rendering hands back the same buffers.
     kgds_stream_view again;

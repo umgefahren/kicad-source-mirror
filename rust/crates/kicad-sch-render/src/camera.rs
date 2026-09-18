@@ -23,6 +23,14 @@ pub struct WorldRect {
     pub max: [f64; 2],
 }
 
+impl Default for WorldRect {
+    /// The empty rectangle, so that a renderer holding one can derive
+    /// `Default` before it has a document.
+    fn default() -> Self {
+        WorldRect::EMPTY
+    }
+}
+
 impl WorldRect {
     /// An empty rectangle that absorbs any point it is extended by.
     pub const EMPTY: WorldRect = WorldRect {

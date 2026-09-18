@@ -273,7 +273,7 @@ impl SchematicRenderer {
         // override, this is what floats it above its neighbours. gpui has no
         // depth buffer, so ordering can only come from the order things are
         // painted in.
-        let mut flush = |items: &mut Vec<PreparedItem>,
+        let flush = |items: &mut Vec<PreparedItem>,
                          groups: &mut Vec<PreparedItem>,
                          depths: &mut Vec<f64>| {
             if groups.is_empty() {
