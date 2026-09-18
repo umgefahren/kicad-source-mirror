@@ -24,6 +24,20 @@ Two more places hold the parts that are code rather than prose:
 * `rust/README.md` — the Rust workspace: crate layout, toolchain requirement,
   and how to build, test and screenshot it.
 
+## What it looks like
+
+![The schematic editor rendering a recorded draw stream](images/schematic-editor-light.png)
+
+The ECC83 valve amplifier from `demos/`, recorded to a draw stream by
+`RECORDING_GAL` and drawn by gpui. The geometry, colours and typography come
+from `SCH_PAINTER` unchanged; only the rasterisation is new.
+
+The side panels show what the shell can actually derive — the stream's retained
+group count, command counts and extent — and say plainly that per-item
+properties need the C++ document model it is not yet connected to. They are
+labelled that way on purpose: a panel showing plausible placeholder data beside
+real data is worse than one admitting what it does not have.
+
 ## The shape of it, in one paragraph
 
 `SCH_PAINTER` already holds every rule about how a schematic looks, and
