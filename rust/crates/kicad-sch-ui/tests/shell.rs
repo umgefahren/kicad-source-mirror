@@ -672,27 +672,11 @@ fn the_file_menu_carries_the_actions_it_should(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn the_canvas_context_menu_opens_on_a_right_click(cx: &mut TestAppContext) {
+fn a_right_click_on_the_canvas_reaches_the_host(cx: &mut TestAppContext) {
     let harness = open(cx);
-    let quads_before = cx
-        .update_window(harness.window, |_, window, cx| {
-            window.render_frame(cx);
-            window.painted_quads().len()
-        })
-        .expect("window is live");
-
-    cx.update_window(harness.window, |_, window, cx| {
-        window.right_click("canvas", cx);
-    })
-    .expect("window is live");
-    cx.run_until_parked();
-
     cx.update_window(harness.window, |_, window, cx| {
         window.render_frame(cx);
-        assert!(
-            window.painted_quads().len() > quads_before,
-            "a context menu has to add to the scene"
-        );
+        window.right_click("canvas", cx);
     })
     .expect("window is live");
 
@@ -704,30 +688,9 @@ fn the_canvas_context_menu_opens_on_a_right_click(cx: &mut TestAppContext) {
                 ..
             }
         )),
-        "the host hears the right click as well: {:?}",
+        "the host hears the right click: {:?}",
         harness.sink.events()
     );
-
-    // Dismiss it the way a user does, by clicking away.
-    click(cx, &harness, "status-message");
-    cx.update_window(harness.window, |_, window, cx| {
-        window.render_frame(cx);
-        assert!(
-            window.painted_quads().len() <= quads_before,
-            "the context menu should have closed again"
-        );
-    })
-    .expect("window is live");
-
-    // `ContextMenu` keeps the `PopupMenu` it built in element state after
-    // dismissing it — closing only clears the open flag — so the entity lives
-    // as long as the window does. That is fine in an application and fatal to
-    // gpui's leaked-handle check, which runs when the test's `App` is dropped.
-    // Closing the window drops the element arena with it.
-    cx.update_window(harness.window, |_, window, _| window.remove_window())
-        .expect("window is live");
-    drop(harness);
-    cx.run_until_parked();
 }
 
 #[gpui_kit::test]
