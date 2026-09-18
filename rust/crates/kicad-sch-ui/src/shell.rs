@@ -21,6 +21,7 @@ use gpui_kit::component::theme::{Theme, ThemeMode};
 use gpui_kit::component::{ActiveTheme, Icon, Selectable, Sizable, StyledExt};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::prelude::*;
+use gpui_kit::TestSupportExt;
 use gpui_kit::{
     Action, App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, KeyDownEvent,
     KeyUpEvent, SharedString, Window, div, px,
@@ -37,7 +38,7 @@ use crate::input::{Modifiers, SharedSink, ShellEvent, shared_sink};
 use crate::panels::{DesignState, HierarchyPanel, PropertiesPanel};
 use crate::stats::FrameStats;
 use crate::theme::{self, CanvasPalette};
-use crate::tools::{TOOLS, Tool};
+use crate::tools::TOOLS;
 
 /// Initialise gpui-kit, the theme, the key map and the menu bar.
 ///

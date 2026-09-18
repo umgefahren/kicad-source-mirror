@@ -27,13 +27,13 @@ use std::rc::Rc;
 
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    App, Bounds, CursorStyle, DispatchPhase, Element, ElementId, Entity, GlobalElementId, Hitbox,
+    App, Bounds, DispatchPhase, Element, ElementId, Entity, GlobalElementId, Hitbox,
     HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, PathBuilder, Pixels, Point, ScrollWheelEvent, Size, Style,
     StyleRefinement, Styled, Window, point, px, size,
 };
 
-use crate::camera::{Camera, REFERENCE_SCALE, WorldRect};
+use crate::camera::{Camera, WorldRect};
 use crate::grid::GridState;
 use crate::input::{
     Modifiers, PointerButton, ScrollDelta, ScreenPoint, SharedSink, ShellEvent, WorldPoint,
@@ -789,7 +789,7 @@ fn paint_selection_band(
         size: extent,
     };
     window.paint_quad(gpui_kit::fill(rect, color.opacity(0.12)));
-    window.paint_quad(gpui_kit::outline(rect, color));
+    window.paint_quad(gpui_kit::outline(rect, color, gpui_kit::BorderStyle::Solid));
 }
 
 // ---------------------------------------------------------------------------
@@ -1025,9 +1025,6 @@ impl SchematicScene for StubScene {
             }
         }
 
-        // A faint reminder that this is not the real renderer. It sits in the
-        // sheet's top-left corner so it scrolls away like any other content.
-        let _ = REFERENCE_SCALE;
     }
 }
 

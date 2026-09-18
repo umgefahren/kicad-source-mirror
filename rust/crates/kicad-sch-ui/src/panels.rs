@@ -20,6 +20,7 @@ use gpui_kit::component::tree::{TreeItem, TreeState, tree};
 use gpui_kit::component::{ActiveTheme, Icon, StyledExt};
 use gpui_kit::assets::IconName;
 use gpui_kit::prelude::*;
+use gpui_kit::TestSupportExt;
 use gpui_kit::{
     App, Context, Entity, EventEmitter, FocusHandle, Focusable, SharedString, Window, div, px,
 };
