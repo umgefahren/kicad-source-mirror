@@ -53,16 +53,20 @@ and it is the C++ one.
 
 This step delivers the rendering and presentation seam, not a finished editor.
 **Input is not yet wired into `TOOL_MANAGER`** — that is the next milestone, and
-`04-host-seam.md` records what it would take. What is not done is stated in each
+`04-host-seam.md` records what it would take. Its prerequisite is not the one it
+appears to be: `GetToolCanvas()` is largely a red herring, while eight unchecked
+`static_cast<SCH_EDIT_FRAME*>` of the tool holder are undefined behaviour for
+any non-frame host. See `05-porting-guide.md` §4.8. What is not done is stated in each
 document rather than left for a reader to discover.
 
 What *is* verified, on this branch, in this container:
 
 * The C++ tree configures and builds — `kicommon` 15m, `common` 13m,
   `eeschema_kiface` 63m on four cores.
-* `kicad-sch-dump` renders real schematics through
-  `SCHEMATIC` → `VIEW` → `SCH_PAINTER` → `RECORDING_GAL` into a draw stream,
-  with retained geometry reused across repeated frames rather than regrown.
+* `kicad-sch-dump` renders **all 466 `.kicad_sch` files in the tree** through
+  `SCHEMATIC` → `VIEW` → `SCH_PAINTER` → `RECORDING_GAL` into a draw stream —
+  zero failures, zero crashes — with retained geometry reused across repeated
+  frames rather than regrown.
 * The recording backend's 30 tests pass inside KiCad's own `qa_common`.
 * `kicad-gal` is 56 tests green, `kicad-sch-render` 89, and the Rust shell
   renders those streams in a real gpui window.

@@ -262,35 +262,49 @@ Do not reach for gpui's text API for board text. You do not need it.
 * **Cull before tessellating.** gpui culls primitives against the content mask,
   but by then you have already paid the CPU tessellation cost.
 
-### 4.8 `GetToolCanvas()` is smaller than it looks
+### 4.8 The input blocker is not the one it looks like
 
-`TOOLS_HOLDER::GetToolCanvas()` is pure virtual and returns a `wxWindow*`, which
-makes it look like a hard structural blocker to feeding `TOOL_MANAGER` from a
-non-wx host. On closer inspection it mostly is not, and this is worth knowing
-before you plan a refactor around it:
+The obvious candidate is `TOOLS_HOLDER::GetToolCanvas()`: pure virtual,
+returns a `wxWindow*`, sitting right on the path a non-wx host needs. It turns
+out to be the lesser problem.
 
-* `TOOL_MANAGER` has **zero** wx references in its header. `TOOL_EVENT` is a
-  plain value type with wx-free enums.
-* Only `TOOL_DISPATCHER` is bound to wx (it derives from `wxEvtHandler`), and it
-  is a thin translator. Its drag-threshold and auto-repeat helpers are `static`
+Why it is *not* the blocker:
+
+* `TOOL_MANAGER` has **zero** wx references in its header, and `TOOL_EVENT` is a
+  plain value type. Only `TOOL_DISPATCHER` derives from `wxEvtHandler`, and it is
+  a thin translator whose drag-threshold and auto-repeat helpers are `static`
   pure functions, reusable as they stand.
-* The dispatcher's `GetToolCanvas()` call sites **null-guard it**
-  (`common/tool/tool_dispatcher.cpp:590-598`), so returning `nullptr` is viable
-  there.
-* **eeschema has no `GetToolCanvas()` call sites at all** outside the new host.
-  The fourteen in the tree are in `tool_dispatcher.cpp`, `eda_base_frame.cpp`,
-  `dialog_shim.cpp`, and the other applications — pcbnew, the 3D viewer,
-  bitmap2component, pcb_calculator.
+* The dispatcher's `GetToolCanvas()` uses are **null-guarded**
+  (`common/tool/tool_dispatcher.cpp:590-598`), and several production
+  implementations already return `nullptr`.
+* eeschema has no `GetToolCanvas()` call sites of its own.
 
-**Audit that last point for pcbnew before relying on it.** `pcb_edit_frame.cpp`
-is in the list, so a board editor host may have call sites a schematic host does
-not, and whether each is guarded is the thing to check.
+**The real obstacle is unchecked downcasting.** eeschema contains eight
+`static_cast<SCH_EDIT_FRAME*>( m_toolMgr->GetToolHolder() )` — no `dynamic_cast`,
+no null check — in `sch_commit.cpp`, `tools/sch_selection_tool.cpp` and
+`tools/sch_editor_control.cpp`. `sch_commit.cpp` is the one that matters: every
+edit goes through it.
 
-What remains is real but bounded: write a dispatcher that builds `TOOL_EVENT`s
-from gpui input instead of wx events, and feed `TOOL_MANAGER::ProcessEvent` /
-`PostEvent` / `DispatchHotKey` directly. Survey §6 has the exact event
-constructions, the `BUT_*`/`MD_*` bit values, and the constraint that hotkeys are
-`WXK_*` integers — so gpui key codes must map onto the same numbers.
+So installing *any* `TOOLS_HOLDER` that is not a `SCH_EDIT_FRAME` — which is
+exactly what a non-wx host is — is undefined behaviour at each of those sites,
+and it will not announce itself. The code is latent today only because nothing
+yet installs a non-frame holder.
+
+Worth noting for contrast: the same file set uses `dynamic_cast<SCH_EDIT_FRAME*>`
+seventy-two times. The unchecked ones look like an oversight rather than a
+deliberate invariant, which is encouraging for fixing them.
+
+**Do this before any Rust input work.** Converting those eight to checked casts
+with a null path is a small, self-contained change that improves the tree on its
+own merits and is reviewable independently. Audit pcbnew for its own equivalent
+before starting there — `pcb_edit_frame.cpp` appears in the `GetToolCanvas()`
+list, so a board editor may have a different distribution.
+
+What then remains is bounded: a dispatcher that builds `TOOL_EVENT`s from gpui
+input and feeds `TOOL_MANAGER::ProcessEvent` / `PostEvent` / `DispatchHotKey`.
+Survey §6 has the exact event constructions, the `BUT_*`/`MD_*` bit values, and
+the constraint that hotkeys are `WXK_*` integers, so gpui key codes must map onto
+the same numbers.
 
 Input is **not** wired up in the schematic port; see §7.
 
@@ -355,9 +369,10 @@ Before claiming the renderer is right:
 
 Stated plainly so you do not assume it exists:
 
-* **Input into `TOOL_MANAGER`** (§4.8). The single biggest remaining piece,
-  though smaller than first assessed: the obstacle is writing a non-wx
-  dispatcher, not refactoring `GetToolCanvas()`.
+* **Input into `TOOL_MANAGER`** (§4.8). The single biggest remaining piece. The
+  prerequisite is fixing eight unchecked `static_cast<SCH_EDIT_FRAME*>` of the
+  tool holder, which are undefined behaviour for any non-frame host; after that
+  it is a dispatcher, not a refactor.
 * **Dialogs.** All 124 of eeschema's are still wxWidgets; pcbnew has 224.
   `00-architecture-survey.md` §7.4 discusses keeping them, bridging them
   asynchronously through the existing tool coroutines, or rewriting them, and
