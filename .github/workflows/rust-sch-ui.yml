@@ -1,0 +1,149 @@
+# CI for the Rust schematic editor UI (gpui + wgpu).
+#
+# Scoped deliberately: it only runs when something under rust/, the draw-stream
+# ABI, the recording GAL or this workflow changes, so it adds nothing to the
+# turnaround of ordinary KiCad work.
+#
+# See docs/rust-migration/ for what this code is and why it exists.
+
+name: Rust schematic UI
+
+on:
+  push:
+    paths:
+      - 'rust/**'
+      - 'include/gal/recording/**'
+      - 'common/gal/recording/**'
+      - 'qa/tests/common/gal/**'
+      - 'cmake/KiCadRust.cmake'
+      - '.github/workflows/rust-sch-ui.yml'
+  pull_request:
+    paths:
+      - 'rust/**'
+      - 'include/gal/recording/**'
+      - 'common/gal/recording/**'
+      - 'qa/tests/common/gal/**'
+      - 'cmake/KiCadRust.cmake'
+      - '.github/workflows/rust-sch-ui.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-sch-ui-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Note: RUSTFLAGS is deliberately not set to `-D warnings` here. It would
+  # apply to every dependency as well, so an upstream crate's warning would
+  # fail our build. Denials are passed to clippy directly instead, where they
+  # only affect this workspace.
+
+jobs:
+  rust:
+    name: Build and test the Rust workspace
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          # gpui links against Wayland, X11, xkbcommon and fontconfig; wgpu
+          # needs the Vulkan loader. lavapipe is Mesa's software Vulkan device
+          # and is what makes the GPU-backed tests runnable on a CI runner with
+          # no GPU at all.
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config cmake \
+            libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libx11-dev libxcb1-dev libxrandr-dev libxi-dev \
+            libfontconfig1-dev libfreetype6-dev \
+            libasound2-dev libssl-dev \
+            libvulkan-dev mesa-vulkan-drivers vulkan-tools
+
+      # rust/rust-toolchain.toml pins nightly: gpui uses the unstable
+      # `cold_path` intrinsic and does not build on stable.
+      - name: Install the pinned Rust toolchain
+        run: |
+          rustup show active-toolchain || rustup toolchain install nightly
+          rustup component add rustfmt clippy --toolchain nightly
+        working-directory: rust
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+        working-directory: rust
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+        working-directory: rust
+
+      - name: Build
+        run: cargo build --workspace --locked
+        working-directory: rust
+
+      - name: Test
+        # Software Vulkan, so the renderer tests have a real adapter to run on.
+        # Tests that still find no adapter skip themselves rather than failing.
+        env:
+          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json:/usr/share/vulkan/icd.d/lvp_icd.json
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: cargo test --workspace --locked
+        working-directory: rust
+
+  recording-gal:
+    name: Recording GAL C++ unit tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config cmake \
+            libwxgtk3.2-dev libboost-test-dev
+
+      # DRAW_STREAM and RECORDING_GAL are deliberately free of any window, GL
+      # context or wxFrame dependency, which is what lets them be compiled and
+      # exercised on their own here rather than needing a full KiCad build.
+      # If that ever stops being true, this job is what will notice.
+      # config.h is normally produced by a full CMake configure. The draw
+      # stream only needs it transitively, through kimath's math/util.h, so a
+      # default-valued one is generated here instead of configuring the whole
+      # tree and pulling in every KiCad dependency for two source files.
+      - name: Generate a default config.h
+        run: |
+          mkdir -p /tmp/kicad-gen
+          cat > /tmp/genconf.cmake <<'EOF'
+          configure_file( "${CMAKE_ARGV3}/cmake/config.h.cmake" "${CMAKE_ARGV4}/config.h" )
+          EOF
+          cmake -P /tmp/genconf.cmake "$PWD" /tmp/kicad-gen
+
+      - name: Build and run the draw stream tests
+        run: |
+          g++ -std=c++20 -O1 -Wall -Wextra \
+            -DBOOST_TEST_DYN_LINK -DBOOST_TEST_MODULE=draw_stream \
+            -I /tmp/kicad-gen \
+            -I include -I libs/kimath/include -I libs/core/include \
+            -I thirdparty/clipper2/Clipper2Lib/include \
+            $(wx-config --cxxflags) \
+            qa/tests/common/gal/test_draw_stream.cpp \
+            common/gal/recording/draw_stream.cpp \
+            -o /tmp/test_draw_stream \
+            -lboost_unit_test_framework $(wx-config --libs base)
+          /tmp/test_draw_stream
+
+      - name: Check the draw stream ABI header is valid C and C++
+        run: |
+          printf '#include "include/gal/recording/draw_stream_abi.h"\nint main(void){return 0;}\n' > /tmp/abi.c
+          gcc   -std=c11   -I. -Wall -Wextra -Werror -o /tmp/abi_c   /tmp/abi.c
+          g++   -std=c++17 -I. -Wall -Wextra -Werror -x c++ -o /tmp/abi_cxx /tmp/abi.c
+          /tmp/abi_c && /tmp/abi_cxx

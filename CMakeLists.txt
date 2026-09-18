@@ -122,6 +122,14 @@ option( KICAD_UPDATE_CHECK
     "Build in update check"
     ON )
 
+# The Rust schematic editor UI (gpui + wgpu). Off by default: it is an
+# in-progress replacement for the wxWidgets schematic canvas, it needs a
+# nightly Rust toolchain, and nothing else in the tree depends on it.
+# See docs/rust-migration/ for the design and current state.
+option( KICAD_BUILD_RUST_SCH_UI
+    "Build the experimental Rust (gpui + wgpu) schematic editor UI (default OFF)"
+    OFF )
+
 cmake_dependent_option( KICAD_WAYLAND
     "Support Wayland features"
     ON "UNIX_NOT_APPLE"
@@ -1110,6 +1118,10 @@ add_subdirectory( cvpcb )               # must be after pcbnew
 add_subdirectory( kicad )               # should follow pcbnew, eeschema, api
 add_subdirectory( tools )
 add_subdirectory( utils )
+
+if( KICAD_BUILD_RUST_SCH_UI )
+    add_subdirectory( rust )
+endif()
 
 if( KICAD_BUILD_QA_TESTS )
     add_subdirectory( qa )
