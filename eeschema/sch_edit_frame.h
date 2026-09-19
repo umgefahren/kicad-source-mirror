@@ -147,6 +147,15 @@ public:
 
     SCHEMATIC& Schematic() const;
 
+    /**
+     * @copydoc SCHEMATIC_HOLDER::GetSchematic
+     *
+     * The same document ::Schematic returns, as a pointer, because the interface has to
+     * be able to say "none" — a symbol frame is a SCHEMATIC_HOLDER too and has no
+     * schematic at all.
+     */
+    SCHEMATIC* GetSchematic() const override { return m_schematic; }
+
     bool IsSchematicEditor() const override { return true; }
 
     std::unique_ptr<GRID_HELPER> MakeGridHelper() override;
