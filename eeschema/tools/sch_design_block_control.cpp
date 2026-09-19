@@ -33,7 +33,13 @@ SCH_DESIGN_BLOCK_CONTROL::~SCH_DESIGN_BLOCK_CONTROL()
 
 bool SCH_DESIGN_BLOCK_CONTROL::Init()
 {
-    m_editFrame     = getEditFrame<SCH_EDIT_FRAME>();
+    // Checked, because the tool holder is not necessarily a frame; see
+    // SCH_TOOL_BASE::Init() for why declining is the right answer when it is not.
+    m_editFrame     = dynamic_cast<SCH_EDIT_FRAME*>( m_toolMgr->GetToolHolder() );
+
+    if( !m_editFrame )
+        return false;
+
     m_frame         = m_editFrame;
     m_framesToNotify = { FRAME_PCB_EDITOR };
 

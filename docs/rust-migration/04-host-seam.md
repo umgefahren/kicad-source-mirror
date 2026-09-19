@@ -380,7 +380,7 @@ reports and checking that the SVG exists at that path.
 
 ## 6. Not done: feeding `TOOL_MANAGER` from Rust
 
-This is the next milestone and it is **not** started. Survey §6 and §7 name
+This is the next milestone and it is **barely** started. Survey §6 and §7 name
 `TOOLS_HOLDER::GetToolCanvas()` as the blocker. That is right, but it is not the
 worst of it, and the ordering below reflects what the code actually says rather
 than what the survey predicted.
@@ -389,7 +389,12 @@ than what the survey predicted.
 > is held open and re-recorded per view change — see `06-what-is-missing.md`,
 > Stages 1 and 2 — so "the Rust UI cannot reach the document model" is no longer
 > part of what stands in the way. Everything in this section is about the *input*
-> direction, and none of it has moved.
+> direction.
+>
+> One item in it has moved: §6.2's unchecked downcasts, §6.5's step 1, are fixed
+> (Stage 3). That removes the undefined behaviour and, in doing so, replaces a
+> guess about step 6 with a fact — see the note on §6.2 below. No `TOOL_EVENT` is
+> sent from anywhere yet.
 
 ### 6.1 `GetToolCanvas()` is smaller than it looks
 
@@ -430,6 +435,16 @@ one-line implementations and six call sites.
 
 ### 6.2 The real blocker: 14 unchecked downcasts from `TOOLS_HOLDER*`
 
+> **Fixed. And the count below is wrong twice over — it is 16, and the casts were
+> not the mechanism.** See `06-what-is-missing.md`, Stage 3. The short version:
+> `TOOL_BASE::getEditFrame<T>()` (`include/tool/tool_base.h:182`) does the same
+> `static_cast` for the whole tree and is how every tool's `m_frame` is set, so
+> converting the list below would have left every tool holding a wild pointer
+> anyway. What made it safe was checking at each tool's `Init()` and declining,
+> which `TOOL_MANAGER::InitTools()` already knows how to handle. The consequence
+> for §6.5 step 6 is that registering the eeschema tools on a non-frame holder now
+> gives you *no tools*, visibly and testably, instead of memory corruption.
+
 This one the survey did not flag, and it is worse:
 
 ```cpp
@@ -444,26 +459,31 @@ assumes the holder really is a frame. Point a `TOOL_MANAGER` at a `SCH_HOST`
 that is not one, and these are undefined behaviour — a wild `vtable` lookup on
 the first virtual call, not a null check away.
 
-There are **14** such `static_cast`s in eeschema (plus 5 `dynamic_cast`s, which
-are fine — they yield null):
+There were **14** such `static_cast`s in eeschema found this way (plus 5
+`dynamic_cast`s, which are fine — they yield null):
 
 * `eeschema/sch_commit.cpp` — 6, at `:51`, `:163`, `:195`, `:606`, `:624`, `:637`
 * `eeschema/tools/sch_editor_control.cpp` — 6, at `:1065`, `:1220`, `:1576`,
   `:1602`, `:1654`, `:1771`
 * `eeschema/tools/symbol_editor_control.cpp` — 2, at `:974`, `:983`
 
+Two more were missed here and in `06-what-is-missing.md`, at
+`eeschema/tools/sch_selection_tool.cpp:191` and `:271`, for a true total of 16 —
+which is the lesson about enumerating call sites by grep and treating the result
+as a specification.
+
 `SCH_COMMIT` is the one that matters most, because **every edit goes through
 it**. Its `TOOL_MANAGER*` constructor downcasts the holder on line 51 before it
 has done anything else.
 
-Note that today this is latent rather than live: `EESCHEMA_HELPERS::LoadSchematic`
-constructs a `TOOL_MANAGER` and calls
+Note that before the fix this was latent rather than live:
+`EESCHEMA_HELPERS::LoadSchematic` constructs a `TOOL_MANAGER` and calls
 `SetEnvironment( schematic, nullptr, nullptr, KifaceSettings(), nullptr )` —
-a **null** holder — so `frame && ...` short-circuits and the headless CLI path is
-safe. Installing a non-null, non-frame holder is what turns it into UB. That is
-exactly what the next milestone must do, so these 19 sites have to be converted
-to `dynamic_cast` (or to a virtual on `TOOLS_HOLDER`) **first**, as a standalone
-commit, before a single `TOOL_EVENT` is sent.
+a **null** holder — so `frame && ...` short-circuits and the headless CLI path was
+always safe. Installing a non-null, non-frame holder is what would have turned it
+into UB, and that is exactly what the next milestone must do, which is why these
+sites were converted first, as their own commit, before a single `TOOL_EVENT` is
+sent.
 
 ### 6.3 Undo/redo lives on `wxFrame`
 
@@ -493,14 +513,16 @@ program inherits, so it wants its own commit and its own review.
 
 Each stage lands on its own and leaves the tree working.
 
-1. **Make the downcasts safe.** Convert the 14 `static_cast`s in §6.2 to
-   `dynamic_cast` with null handling, or add the two or three virtuals to
-   `TOOLS_HOLDER` that would remove the need for a downcast at all. No behaviour
-   change, no Rust involved, fully testable today. **This is the prerequisite for
-   everything below and should land first.**
+1. ~~**Make the downcasts safe.**~~ **Done** — all 16 of §6.2 are `dynamic_cast`
+   with a defined no-frame path, and the tools decline a holder that is not their
+   frame rather than trusting one. No behaviour change with a real frame, no Rust
+   involved, four tests in `qa_eeschema`. `06-what-is-missing.md` Stage 3 has what
+   it actually took, which was not what this line predicted.
 2. **Neutralise `GetToolCanvas()`.** Change the return type to an opaque handle,
    or give `TOOLS_HOLDER` a default implementation returning `nullptr` and drop
-   the `= 0`. ~12 implementations, six call sites, all listed in §6.1.
+   the `= 0`. ~12 implementations, six call sites, all listed in §6.1. Optional at
+   this point: step 1's test double implements it in one line returning `nullptr`,
+   which confirms §6.1's claim that a null canvas is already a supported state.
 3. **Hoist undo/redo** off `EDA_BASE_FRAME` into a container both it and
    `SCH_HOST` own (§6.3).
 4. **`HOST_VIEW_CONTROLS`.** Implement the eight pure virtuals against
@@ -511,7 +533,10 @@ Each stage lands on its own and leaves the tree working.
    and asserting on the events, which is far easier than testing the wx one.
 6. **Make `SCH_HOST` a `TOOLS_HOLDER`** and register the eeschema tools. At this
    point selection and move can be driven from a C++ test with no Rust at all —
-   which is the right place to find out what else breaks.
+   which is the right place to find out what else breaks. Step 1 found out one
+   thing already: unless `SCH_HOST` *is* a `SCH_BASE_FRAME`, every eeschema tool
+   declines to initialise, so this step is gated on deciding what `m_frame` means
+   for a non-frame host. `06-what-is-missing.md` Stage 4 lays out the two routes.
 7. **Extend the C ABI** with input events and action dispatch
    (`TOOL_ACTION::MakeEvent()` → `TOOL_MANAGER::ProcessEvent()`), and only then
    wire Rust to it.

@@ -62,7 +62,13 @@
 
 bool SYMBOL_EDITOR_CONTROL::Init()
 {
-    m_frame = getEditFrame<SCH_BASE_FRAME>();
+    // Checked, because the tool holder is not necessarily a frame; see
+    // SCH_TOOL_BASE::Init() for why declining is the right answer when it is not.
+    m_frame = dynamic_cast<SCH_BASE_FRAME*>( m_toolMgr->GetToolHolder() );
+
+    if( !m_frame )
+        return false;
+
     m_selectionTool = m_toolMgr->GetTool<SCH_SELECTION_TOOL>();
     m_isSymbolEditor = m_frame->IsType( FRAME_SCH_SYMBOL_EDITOR );
 
@@ -971,7 +977,9 @@ int SYMBOL_EDITOR_CONTROL::ChangeUnit( const TOOL_EVENT& aEvent )
 
 int SYMBOL_EDITOR_CONTROL::PreviousSymbol( const TOOL_EVENT& aEvent )
 {
-    if( SYMBOL_VIEWER_FRAME* viewerFrame = static_cast<SYMBOL_VIEWER_FRAME*>( m_toolMgr->GetToolHolder() ) )
+    // Checked: this tool is also registered by SYMBOL_EDIT_FRAME, where the holder is
+    // not a viewer at all, so the static_cast this used to be made the test meaningless.
+    if( SYMBOL_VIEWER_FRAME* viewerFrame = dynamic_cast<SYMBOL_VIEWER_FRAME*>( m_toolMgr->GetToolHolder() ) )
         viewerFrame->SelectPreviousSymbol();
 
     return 0;
@@ -980,7 +988,7 @@ int SYMBOL_EDITOR_CONTROL::PreviousSymbol( const TOOL_EVENT& aEvent )
 
 int SYMBOL_EDITOR_CONTROL::NextSymbol( const TOOL_EVENT& aEvent )
 {
-    if( SYMBOL_VIEWER_FRAME* viewerFrame = static_cast<SYMBOL_VIEWER_FRAME*>( m_toolMgr->GetToolHolder() ) )
+    if( SYMBOL_VIEWER_FRAME* viewerFrame = dynamic_cast<SYMBOL_VIEWER_FRAME*>( m_toolMgr->GetToolHolder() ) )
         viewerFrame->SelectNextSymbol();
 
     return 0;

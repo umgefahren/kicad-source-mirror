@@ -326,34 +326,82 @@ Why it is *not* the blocker:
   implementations already return `nullptr`.
 * eeschema has no `GetToolCanvas()` call sites of its own.
 
-**The real obstacle is unchecked downcasting.** eeschema contains eight
-`static_cast<SCH_EDIT_FRAME*>( m_toolMgr->GetToolHolder() )` — no `dynamic_cast`,
-no null check — in `sch_commit.cpp`, `tools/sch_selection_tool.cpp` and
-`tools/sch_editor_control.cpp`. `sch_commit.cpp` is the one that matters: every
-edit goes through it.
+**The real obstacle is unchecked downcasting of the tool holder.** eeschema
+contained sixteen `static_cast<SOME_FRAME*>( m_toolMgr->GetToolHolder() )` — no
+`dynamic_cast`, no null check — in `sch_commit.cpp`, `tools/sch_editor_control.cpp`,
+`tools/sch_selection_tool.cpp` and `tools/symbol_editor_control.cpp`.
+`sch_commit.cpp` is the one that matters: every edit goes through it.
 
-So installing *any* `TOOLS_HOLDER` that is not a `SCH_EDIT_FRAME` — which is
-exactly what a non-wx host is — is undefined behaviour at each of those sites,
-and it will not announce itself. The code is latent today only because nothing
-yet installs a non-frame holder.
+So installing *any* `TOOLS_HOLDER` that is not the expected frame — which is
+exactly what a non-wx host is — was undefined behaviour at each of those sites,
+and it would not announce itself.
 
 Worth noting for contrast: the same file set uses `dynamic_cast<SCH_EDIT_FRAME*>`
-seventy-two times. The unchecked ones look like an oversight rather than a
-deliberate invariant, which is encouraging for fixing them.
+seventy-two times. The unchecked ones read as an oversight rather than a
+deliberate invariant, which is what made them cheap to fix.
 
-**Do this before any Rust input work.** Converting those eight to checked casts
-with a null path is a small, self-contained change that improves the tree on its
-own merits and is reviewable independently. Audit pcbnew for its own equivalent
-before starting there — `pcb_edit_frame.cpp` appears in the `GetToolCanvas()`
-list, so a board editor may have a different distribution.
+**Do this before any input work, and do not stop at the cast list.** This is the
+part we got wrong twice while writing it down. Both earlier drafts of this section
+enumerated the casts by grepping for `static_cast<.*GetToolHolder`, published a
+count (eight, then fourteen), and treated the list as the specification. It was
+neither complete — the true number is sixteen — nor sufficient:
 
-What then remains is bounded: a dispatcher that builds `TOOL_EVENT`s from gpui
-input and feeds `TOOL_MANAGER::ProcessEvent` / `PostEvent` / `DispatchHotKey`.
-Survey §6 has the exact event constructions, the `BUT_*`/`MD_*` bit values, and
-the constraint that hotkeys are `WXK_*` integers, so gpui key codes must map onto
-the same numbers.
+```cpp
+// include/tool/tool_base.h:182 — the mechanism, in no grep for GetToolHolder
+template <typename T> T* getEditFrame() const
+{
+    wxASSERT( dynamic_cast<T*>( getToolHolderInternal() ) );   // compiled out under QA_TEST
+    return static_cast<T*>( getToolHolderInternal() );
+}
+```
 
-Input is **not** wired up in the schematic port; see §7.
+That is how every tool's `m_frame` is set, tree-wide, in eeschema and pcbnew
+alike. Convert only the enumerated sites and every tool still holds a pointer that
+is not a frame, from its first line of `Init()` onward, and the commit looks
+finished.
+
+What actually works is checking at the one place per tool where the frame is
+learned, and returning `false`:
+
+```cpp
+m_frame = dynamic_cast<T*>( m_toolMgr->GetToolHolder() );
+if( !m_frame )
+    return false;
+```
+
+`TOOL_MANAGER::InitTools()` already unregisters and deletes a tool whose `Init()`
+returns false, so this is the framework's own answer rather than a new mechanism,
+and it is where the tool roster's real requirement becomes visible instead of
+latent. In eeschema that was five entry points (`SCH_TOOL_BASE<T>::Init()`,
+`SCH_SELECTION_TOOL::Init()`, `SYMBOL_EDITOR_CONTROL::Init()`,
+`SCH_DESIGN_BLOCK_CONTROL::Init()`, `SIMULATOR_CONTROL::Reset()`) — plus thirteen
+derived `Init()`s that called `SCH_TOOL_BASE::Init()` and discarded its result, so
+the base's return value meant nothing until they were changed to propagate it.
+Expect pcbnew's `PCB_TOOL_BASE` to want the same shape.
+
+**Then find out what your `m_frame` is going to be, early.** The consequence of
+the above is that a non-frame holder gets *no tools at all*, which is defined and
+testable and still not an editor. Survey §7 measured roughly 470 of ~600
+`m_frame->` sites in `eeschema/tools/` as plain model or settings access with no wx
+in them; deciding whether to hoist those onto an interface or to give the host a
+real frame is the actual size of "wire up input", and it is worth costing on day
+one rather than discovering after the dispatcher works.
+
+Audit pcbnew for its own equivalents before starting. There are at least
+`tools/drawing_tool.cpp:232,269` (C-style casts to `PCB_EDIT_FRAME`),
+`tools/pcb_selection_tool.cpp:145` and `dialogs/dialog_position_relative.cpp:279`,
+and `pcb_edit_frame.cpp` also appears in the `GetToolCanvas()` list, so the
+distribution differs.
+
+The rest is bounded: a dispatcher that builds `TOOL_EVENT`s from gpui input and
+feeds `TOOL_MANAGER::ProcessEvent` / `PostEvent` / `DispatchHotKey`. Survey §6 has
+the exact event constructions, the `BUT_*`/`MD_*` bit values, and the constraint
+that hotkeys are `WXK_*` integers, so gpui key codes must map onto the same
+numbers.
+
+Input is **not** wired up in the schematic port; see §7. What is done is the
+safety of the holder — `qa/tests/eeschema/test_non_frame_tools_holder.cpp` is the
+pattern to copy, including its 4-line `TOOLS_HOLDER` test double.
 
 ### 4.9 Toolchain and environment
 
@@ -425,7 +473,8 @@ Whether pcbnew's connectivity has the same constraint is unchecked, but
    depended on the camera.
 7. **The shell**: reuse the structure, add the layer widget, the appearance
    panel and pcbnew's toolbars.
-8. **Input** — only after `GetToolCanvas()` is dealt with (§4.8).
+8. **Input** — only after the tool-holder downcasts are checked and you know what
+   `m_frame` will be (§4.8). `GetToolCanvas()` is not the gate it looks like.
 
 Steps 1–4 are largely independent of the C++ build and can proceed in parallel
 with it.
@@ -460,10 +509,12 @@ Before claiming the renderer is right:
 
 Stated plainly so you do not assume it exists:
 
-* **Input into `TOOL_MANAGER`** (§4.8). The single biggest remaining piece. The
-  prerequisite is fixing eight unchecked `static_cast<SCH_EDIT_FRAME*>` of the
-  tool holder, which are undefined behaviour for any non-frame host; after that
-  it is a dispatcher, not a refactor.
+* **Input into `TOOL_MANAGER`** (§4.8). The single biggest remaining piece. Its
+  prerequisite — making a non-frame tool holder safe rather than undefined
+  behaviour — *is* done for eeschema, and doing it revealed that what follows is
+  not only a dispatcher: with no frame, every eeschema tool now declines to
+  initialise, so a host must first decide what `m_frame` is. §4.8 has both routes
+  and the reasoning.
 * **Dialogs.** All 124 of eeschema's are still wxWidgets; pcbnew has 224.
   `00-architecture-survey.md` §7.4 discusses keeping them, bridging them
   asynchronously through the existing tool coroutines, or rewriting them, and

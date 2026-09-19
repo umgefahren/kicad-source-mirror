@@ -57,7 +57,9 @@ bool SIMULATOR_CONTROL::Init()
 
 void SIMULATOR_CONTROL::Reset( RESET_REASON aReason )
 {
-    m_simulatorFrame = getEditFrame<SIMULATOR_FRAME>();
+    // Checked: the null test below is only meaningful if the cast can produce one, and a
+    // static_cast of a tool holder that is not a SIMULATOR_FRAME never does.
+    m_simulatorFrame = dynamic_cast<SIMULATOR_FRAME*>( m_toolMgr->GetToolHolder() );
 
     if( m_simulatorFrame )
     {

@@ -311,7 +311,9 @@ SCH_LINE_WIRE_BUS_TOOL::~SCH_LINE_WIRE_BUS_TOOL()
 
 bool SCH_LINE_WIRE_BUS_TOOL::Init()
 {
-    SCH_TOOL_BASE::Init();
+    // Declines a tool holder that is not this tool's frame; see SCH_TOOL_BASE::Init().
+    if( !SCH_TOOL_BASE::Init() )
+        return false;
 
     const auto busGetter =
             [this]()

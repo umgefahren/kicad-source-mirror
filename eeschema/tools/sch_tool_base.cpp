@@ -59,7 +59,17 @@ SCH_TOOL_BASE<T>::~SCH_TOOL_BASE()
 template <class T>
 bool SCH_TOOL_BASE<T>::Init()
 {
-    m_frame = getEditFrame<T>();
+    // A TOOLS_HOLDER is not necessarily a frame: a headless host installs one that is
+    // not, and static_cast'ing that to T yields a pointer adjusted by the offset of the
+    // TOOLS_HOLDER subobject inside a frame that does not exist. Declining to
+    // initialise is the framework's own answer to "this tool cannot run in this holder"
+    // — TOOL_MANAGER::InitTools() unregisters and deletes the tool — so every tool that
+    // needs a frame is absent rather than holding a wild pointer.
+    m_frame = dynamic_cast<T*>( m_toolMgr->GetToolHolder() );
+
+    if( !m_frame )
+        return false;
+
     m_selectionTool = m_toolMgr->GetTool<SCH_SELECTION_TOOL>();
     m_isSymbolEditor = m_frame->IsType( FRAME_SCH_SYMBOL_EDITOR );
 
@@ -83,7 +93,7 @@ void SCH_TOOL_BASE<T>::Reset( RESET_REASON aReason )
     if( aReason == MODEL_RELOAD || aReason == SUPERMODEL_RELOAD )
     {
         // Init variables used by every drawing tool
-        m_frame = getEditFrame<T>();
+        m_frame = dynamic_cast<T*>( m_toolMgr->GetToolHolder() );
         m_isSymbolEditor = dynamic_cast<SYMBOL_EDIT_FRAME*>( m_frame ) != nullptr;
     }
 

@@ -70,7 +70,9 @@ EE_GRAPHIC_TOOL::EE_GRAPHIC_TOOL() :
 
 bool EE_GRAPHIC_TOOL::Init()
 {
-    SCH_TOOL_BASE::Init();
+    // Declines a tool holder that is not this tool's frame; see SCH_TOOL_BASE::Init().
+    if( !SCH_TOOL_BASE::Init() )
+        return false;
 
     const auto inDrawingArc =
             [this]( const SELECTION& aSel )

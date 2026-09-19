@@ -8,12 +8,16 @@ redraws them live from the document, plus a seam an editor can be built on. It i
 not a schematic editor, and wxWidgets has not been removed from anything.** The
 wx schematic editor is untouched and is still the only way to edit a schematic.
 
-> **Stages 1 and 2 below are done.**
+> **Stages 1, 2 and 3 below are done.**
 > `kicad-eeschema-gpui --schematic FILE.kicad_sch` loads the file through
 > eeschema's own reader and keeps the session open for the window's lifetime,
 > asking it for a frame whenever the view moves. The two arrows that used to be
-> missing or drawn-once are both live. What is left is the one that matters most:
-> **nothing the user does reaches the document.**
+> missing or drawn-once are both live, and pointing a `TOOL_MANAGER` at something
+> that is not a `wxFrame` is no longer undefined behaviour. What is left is the one
+> that matters most: **nothing the user does reaches the document.**
+>
+> Stage 3 also changed the shape of Stage 4, and not for the better — see
+> [What this does and does not buy Stage 4](#what-this-does-and-does-not-buy-stage-4).
 
 ## Exactly where it stops
 
@@ -66,6 +70,7 @@ Worth being clear about, because it changes the size of what remains:
 | Action registry | 440 actions enumerable headless with icons and hotkeys |
 | `kicad-sch-sys` | The ABI linked from Rust, 11 checks against the live host |
 | Live re-render | The canvas asks the session for the frame it is about to paint |
+| A non-frame `TOOLS_HOLDER` | Defined rather than undefined: 16 checked casts, 5 tool entry points that decline, 4 tests |
 
 The rendering half is genuinely finished, on all 466 schematics in the tree.
 
@@ -269,31 +274,150 @@ Two things worth knowing about the fix:
   and is worse: `TreeState::set_items` resets selection and expansion, so the
   hierarchy would collapse while the user panned.
 
-## Stage 3 — Make a non-frame `TOOLS_HOLDER` safe
+## Stage 3 — Make a non-frame `TOOLS_HOLDER` safe (done)
 
-**Effort: half a day. Worth doing regardless of this project.**
+**Estimated half a day, took about that. Everything the stage description asked
+for is done — and the description was describing a symptom rather than the
+mechanism. See "the part that was not in the plan".**
 
-eeschema has eight `static_cast<SCH_EDIT_FRAME*>( m_toolMgr->GetToolHolder() )`
-with no `dynamic_cast` and no null check:
+eeschema had unchecked `static_cast`s of `TOOL_MANAGER::GetToolHolder()` with no
+`dynamic_cast` and no null check. This document counted eight and
+`04-host-seam.md` §6.2 counted fourteen; the real number is **sixteen**, because
+neither count included `tools/sch_selection_tool.cpp:191` and `:271`, and both
+counted only `SCH_EDIT_FRAME` while `sch_commit.cpp` also casts to
+`SCH_BASE_FRAME` and `SYMBOL_EDIT_FRAME` and `symbol_editor_control.cpp` casts to
+`SYMBOL_VIEWER_FRAME`. All sixteen are now `dynamic_cast` with a defined path
+when the answer is null:
 
+| File | Sites | What happens with no frame |
+|---|---|---|
+| `sch_commit.cpp` | 6 | The edit goes through; the undo stack and the canvas refresh are skipped, which is what the `frame &&` guards already said and could not deliver |
+| `tools/sch_editor_control.cpp` | 6 | Net highlighting and the net-chain actions return without doing anything |
+| `tools/sch_selection_tool.cpp` | 2 | The two context sub-menus stay empty |
+| `tools/symbol_editor_control.cpp` | 2 | See below — this pair was a live bug, not a latent one |
+
+`sch_commit.cpp` is the one that mattered, because every edit goes through it,
+and it is the one the new test pins down: restore the `static_cast` on line 195
+and `NonFrameToolsHolder/ACommitEditsTheDocumentWithoutAFrame` segfaults.
+
+### The part that was not in the plan
+
+**The sixteen casts were the symptom. The mechanism is `getEditFrame<T>()`**
+(`include/tool/tool_base.h:182`), which is how every tool's `m_frame` is set:
+
+```cpp
+template <typename T>
+T* getEditFrame() const
+{
+#if !defined( QA_TEST )
+    wxASSERT( dynamic_cast<T*>( getToolHolderInternal() ) );
+#endif
+    return static_cast<T*>( getToolHolderInternal() );   // ← the same cast, tree-wide
+}
 ```
-eeschema/sch_commit.cpp:195
-eeschema/tools/sch_selection_tool.cpp:191
-eeschema/tools/sch_editor_control.cpp:1065, 1220, 1576, 1602, 1654, 1771
+
+So converting the enumerated list would have left `SCH_TOOL_BASE<T>::Init()` —
+the first thing that runs for seventeen of eeschema's tool classes — doing
+`m_frame = getEditFrame<T>()` and then `m_frame->IsType(...)` through a pointer
+that is not a frame. The enumerated list was never a sufficient condition for
+safety, and a reviewer working only from it would have produced a commit that
+looked complete and changed nothing about the actual hazard.
+
+What makes a non-frame holder defined is checking at the **one** place each tool
+learns what its frame is, and declining:
+
+```cpp
+m_frame = dynamic_cast<T*>( m_toolMgr->GetToolHolder() );
+
+if( !m_frame )
+    return false;
 ```
 
-`sch_commit.cpp` is the one that matters: every edit goes through it. Installing
-any `TOOLS_HOLDER` that is not a `SCH_EDIT_FRAME` — which is exactly what a
-non-wx host is — is undefined behaviour at each site, and will not announce
-itself. It is latent today only because nothing installs a non-frame holder.
+`TOOL_MANAGER::InitTools()` already unregisters and deletes a tool whose `Init()`
+returns false, so this is the framework's own answer to "this tool cannot run in
+this holder" rather than a new mechanism. Four entry points needed it —
+`SCH_TOOL_BASE<T>::Init()`, `SCH_SELECTION_TOOL::Init()`,
+`SYMBOL_EDITOR_CONTROL::Init()`, `SCH_DESIGN_BLOCK_CONTROL::Init()` — plus
+`SIMULATOR_CONTROL::Reset()`, whose existing null test could never fire.
 
-For contrast, the same code uses `dynamic_cast<SCH_EDIT_FRAME*>` seventy-two
-times, so these read as oversights rather than a deliberate invariant.
+One consequence worth stating, because it moves work into Stage 4 rather than
+out of it: the thirteen derived `Init()`s all called `SCH_TOOL_BASE::Init()` and
+**discarded its result**, so the base's return value meant nothing. They now
+propagate it. That is what makes the refusal real.
 
-**Done when:** the eight are checked casts with a defined behaviour when the
-holder is not a frame, and the QA suite still passes. This is a small,
-self-contained, independently reviewable change that improves the tree whether
-or not the Rust work continues.
+The second finding is smaller and is a **live** bug rather than a latent one.
+`symbol_editor_control.cpp:974,983` read:
+
+```cpp
+if( SYMBOL_VIEWER_FRAME* viewerFrame = static_cast<SYMBOL_VIEWER_FRAME*>( ...GetToolHolder() ) )
+    viewerFrame->SelectPreviousSymbol();
+```
+
+`SYMBOL_EDITOR_CONTROL` is registered by `SYMBOL_EDIT_FRAME` as well as by
+`SYMBOL_VIEWER_FRAME` (`symbol_edit_frame.cpp:492`, `symbol_viewer_frame.cpp:283`),
+and a `static_cast` of a non-null holder is never null, so in the symbol *editor*
+that `if` always succeeded and called a viewer method on something that is not a
+viewer. The `dynamic_cast` makes the test mean what it plainly says.
+
+### What this does and does not buy Stage 4
+
+It buys the absence of undefined behaviour, which was the whole of the stage. It
+does **not** buy a working tool on a non-frame holder, and the staging in
+`04-host-seam.md` §6.5 step 6 — "make `SCH_HOST` a `TOOLS_HOLDER` and register the
+eeschema tools" — now has a visible, testable answer: every one of them declines.
+`m_frame` is the route to the screen, the selection, the undo stack and every
+dialog, and the survey's count of roughly 600 `m_frame->` sites in
+`eeschema/tools/` is the size of making it not be. Stage 4 has to either give the
+host something that *is* a `SCH_BASE_FRAME` or reroute those sites; it cannot
+simply install a holder and expect tools.
+
+That is a worse answer than the one this stage was expected to produce, and it is
+the true one. It was not visible from the cast list.
+
+### Tests
+
+`qa/tests/eeschema/test_non_frame_tools_holder.cpp`, four cases in `qa_eeschema`:
+
+* a commit against a non-frame holder edits the document, marks the screen
+  modified and rebuilds connectivity — pushed *without* `SKIP_UNDO`, because
+  deciding to skip undo is the commit's job and not a caller's;
+* every one of eeschema's nineteen tool classes, both editors', declines such a
+  holder, one `TOOL_MANAGER` each so a failure names itself;
+* `InitTools()` leaves `GetTool<T>()` null for the ones that declined;
+* the same commit with a null holder, which is what `EESCHEMA_HELPERS` installs
+  for the CLI, so the two cases read as one behaviour.
+
+The test double is 4 lines: `GetToolCanvas()` is `TOOLS_HOLDER`'s only pure
+virtual and returning `nullptr` from it is already a production state. It does
+have to supply a `KIGFX::VIEW`, because `SCH_SELECTION_TOOL`'s destructor unlinks
+itself from `getView()` without a null check — a real constraint on any host, and
+one `SCH_HOST` already meets.
+
+`qa_eeschema` is 1,703 cases green (1,699 before, plus these four) and
+`qa_common` 1,477; `ctest -L rust` is 4/4.
+
+### What Stage 3 deliberately did not do
+
+* **`getEditFrame<T>()` itself is unchanged.** Making it a checked cast is the
+  right fix and it is one line, but `tool_base.h` is included tree-wide and the
+  change would alter what pcbnew, gerbview and the 3D viewer get back from every
+  call site. That is a separate commit with a separate review, and it is not
+  eeschema's to make. Note that the assertion above **is** live in this Release
+  QA build — the reverted-fix experiment above tripped it — so the tree does warn
+  about a wrong holder today. It warns and then returns the bad pointer anyway.
+* **pcbnew was not audited.** It has its own equivalents, including
+  `tools/drawing_tool.cpp:232,269` (C-style casts to `PCB_EDIT_FRAME`) and
+  `tools/pcb_selection_tool.cpp:145`, plus `dialogs/dialog_position_relative.cpp:279`.
+  `05-porting-guide.md` §4.8 already says to audit them before starting there.
+* **`common/` tools were not touched.** `COMMON_TOOLS`, `ZOOM_TOOL`,
+  `PICKER_TOOL`, `PROPERTIES_TOOL`, `EMBED_TOOL` and `GROUP_TOOL` are registered
+  by eeschema's frames but live in `common/`, and whether each survives a
+  non-frame holder is unchecked. The test registers only eeschema's own.
+* **Downcasts within the frame hierarchy are left alone.**
+  `sch_selection_tool.cpp:1221,1242,1251` and `sch_tool_base.cpp:330,332`
+  `static_cast` an already-valid `SCH_BASE_FRAME*` to a more derived frame. Those
+  are guarded by `m_isSymbolEditor` or by a context-menu id that only one editor
+  produces; they are a different question from "is the holder a frame at all".
 
 ## Stage 4 — A non-wx tool dispatcher
 
@@ -315,6 +439,22 @@ The constraint that will bite: **hotkeys are `WXK_*` integers**. gpui key codes
 must map onto exactly those numbers or every keyboard shortcut silently does
 nothing. Survey §6 has the event constructions and the `BUT_*` / `MD_*` bit
 values.
+
+The step this stage now has to start with, which Stage 3 promoted from an
+assumption to a measured fact: **decide what `m_frame` is.** Every eeschema tool
+declines a holder that is not a `SCH_BASE_FRAME`, deliberately and testably, so
+there is no version of "send a `TOOL_EVENT` and see what happens" that reaches a
+tool. Two routes, and they want costing before either is started:
+
+* **Give the host a `SCH_BASE_FRAME`.** Cheap to write and it makes every tool
+  work at once, but it means a `wxFrame` — so wxWidgets' GUI layer stays in the
+  process and the project's stated goal is deferred rather than approached.
+* **Reroute `m_frame`.** `00-architecture-survey.md` §7 measured that roughly 470
+  of the ~600 `m_frame->` sites in `eeschema/tools/` are plain model or settings
+  access with no wx involvement. Hoisting those onto an interface both
+  `SCH_BASE_FRAME` and `SCH_HOST` implement is the honest version and is a large
+  mechanical change — which is exactly why `SCH_HOST`'s header says it is not a
+  refactor of `SCH_EDIT_FRAME`.
 
 Then, in rough order of how much each unlocks:
 
@@ -350,23 +490,34 @@ genuinely means Stage 5 completed, and that is a long way past where this is.
 
 ## Honest sizing
 
-Stages 1–3 are mechanical and bounded: roughly two to three days. Stages 1 and 2
-are done and cost about a day each — which turns a viewer of a recorded frame into
-a window onto a document that redraws itself. Stage 3 remains.
+Stages 1–3 were estimated at roughly two to three days and came in there: about a
+day each for 1 and 2, half a day for 3. All three are done. Between them they turn
+a viewer of a recorded frame into a window onto a document that redraws itself, on
+a tool framework that no longer corrupts memory when its holder is not a `wxFrame`.
 
-Both finished stages spent most of their time on something that was not in the
-plan, and in both cases it was the same kind of thing: a quantity that two layers
-disagreed about and nothing had yet forced them to agree on. Stage 1 found that a
-draw stream's group ordering is not canonical across standard libraries; Stage 2
-found that the host's viewport scale was the GAL zoom factor where the ABI promised
-pixels per internal unit. Neither was a hard problem once seen, and neither was
-visible until a consumer depended on it. That is worth expecting for Stages 3 and 4
-as well, and is an argument for wiring something end to end early rather than
-building each layer to its own satisfaction.
+All three spent most of their time on something that was not in the plan, and it
+was the same kind of thing every time: a claim that two layers made differently
+and nothing had yet forced them to reconcile.
 
-Stage 4 is where a schematic editor actually lives. Selection alone is a
-meaningful milestone; a tool set someone would choose over the wx editor is
-substantially more.
+| Stage | The plan said | The code said |
+|---|---|---|
+| 1 | a recorded stream is canonical | group ordering is not, across standard libraries |
+| 2 | `ksch_viewport::scale` is pixels per internal unit | `SetViewport` fed it to `VIEW::SetScale`, which wants the GAL zoom factor — 2,800× out |
+| 3 | eight (later fourteen) unchecked casts are the hazard | sixteen, and the mechanism is `getEditFrame<T>()`, which the lists never mentioned |
+
+None was hard once seen and none was visible until something depended on it. Stage
+3's version is the most useful one to carry into Stage 4, because it is about
+*enumerations* rather than about numbers: a list of call sites, arrived at by
+grepping for a cast, looked like a specification and was not one. The thing that
+made it safe was found by asking where the value comes from, not by fixing the
+places it is used.
+
+Stage 4 is where a schematic editor actually lives, and Stage 3 sharpened the first
+question it has to answer: what `m_frame` is for a host that is not a frame. That
+is a decision about how much of `SCH_EDIT_FRAME` gets hoisted, and it is a larger
+question than "write a dispatcher". Selection alone is still a meaningful
+milestone; a tool set someone would choose over the wx editor is substantially
+more.
 
 Stage 5 is a separate project.
 

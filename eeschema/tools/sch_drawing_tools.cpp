@@ -103,7 +103,9 @@ SCH_DRAWING_TOOLS::SCH_DRAWING_TOOLS() :
 
 bool SCH_DRAWING_TOOLS::Init()
 {
-    SCH_TOOL_BASE::Init();
+    // Declines a tool holder that is not this tool's frame; see SCH_TOOL_BASE::Init().
+    if( !SCH_TOOL_BASE::Init() )
+        return false;
 
     auto belowRootSheetCondition =
             [this]( const SELECTION& aSel )

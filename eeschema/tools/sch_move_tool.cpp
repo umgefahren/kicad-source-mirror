@@ -183,7 +183,9 @@ SCH_MOVE_TOOL::SCH_MOVE_TOOL() :
 
 bool SCH_MOVE_TOOL::Init()
 {
-    SCH_TOOL_BASE::Init();
+    // Declines a tool holder that is not this tool's frame; see SCH_TOOL_BASE::Init().
+    if( !SCH_TOOL_BASE::Init() )
+        return false;
 
     auto moveCondition =
             []( const SELECTION& aSel )

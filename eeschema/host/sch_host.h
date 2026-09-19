@@ -69,10 +69,18 @@ struct SCH_HOST_SHEET_INFO
  *
  * ## What is deliberately absent
  *
- * No TOOL_MANAGER, no undo/redo, no selection, no dialogs. Driving the tool
- * framework from a non-wx host is blocked on
- * `TOOLS_HOLDER::GetToolCanvas() -> wxWindow*` being pure virtual; that is the
- * next milestone and is written up in `docs/rust-migration/04-host-seam.md`.
+ * No TOOL_MANAGER, no undo/redo, no selection, no dialogs.
+ *
+ * `TOOLS_HOLDER::GetToolCanvas() -> wxWindow*` being pure virtual is not the
+ * obstacle it looks like: returning nullptr from it is already a production
+ * state, which SIMULATOR_FRAME and MERGETOOL_FRAME both do. Installing a
+ * TOOLS_HOLDER that is not a frame used to be undefined behaviour instead, and
+ * no longer is — see `docs/rust-migration/06-what-is-missing.md` Stage 3. But
+ * every eeschema tool now *declines* such a holder, deliberately, because
+ * `m_frame` is its route to the screen, the selection, the undo stack and every
+ * dialog. Registering the tool set here therefore needs a decision about what
+ * `m_frame` is for a host that is not a frame; that is the next milestone and is
+ * written up in `docs/rust-migration/04-host-seam.md` §6.
  *
  * ## Threading
  *

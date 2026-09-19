@@ -52,7 +52,9 @@ SCH_ALIGN_TOOL::~SCH_ALIGN_TOOL()
 
 bool SCH_ALIGN_TOOL::Init()
 {
-    SCH_TOOL_BASE::Init();
+    // Declines a tool holder that is not this tool's frame; see SCH_TOOL_BASE::Init().
+    if( !SCH_TOOL_BASE::Init() )
+        return false;
 
     if( !m_alignMenu )
     {

@@ -1143,7 +1143,9 @@ bool SCH_POINT_EDITOR::Init()
 {
     using S_C = SELECTION_CONDITIONS;
 
-    SCH_TOOL_BASE::Init();
+    // Declines a tool holder that is not this tool's frame; see SCH_TOOL_BASE::Init().
+    if( !SCH_TOOL_BASE::Init() )
+        return false;
 
     const auto addCornerCondition = [&]( const SELECTION& aSelection ) -> bool
     {

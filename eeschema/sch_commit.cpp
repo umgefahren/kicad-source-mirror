@@ -48,7 +48,12 @@ SCH_COMMIT::SCH_COMMIT( TOOL_MANAGER* aToolMgr ) :
         m_toolMgr( aToolMgr ),
         m_isLibEditor( false )
 {
-    SCH_BASE_FRAME* frame = static_cast<SCH_BASE_FRAME*>( m_toolMgr->GetToolHolder() );
+    // A TOOL_MANAGER's holder need not be a frame: EESCHEMA_HELPERS installs none at
+    // all, and a headless host installs one that is not a frame. Every downcast of the
+    // holder in this file is therefore checked, and every use of the result guarded —
+    // a commit without a frame edits the document and skips the undo stack and the
+    // canvas, which are the parts that live on the frame.
+    SCH_BASE_FRAME* frame = dynamic_cast<SCH_BASE_FRAME*>( m_toolMgr->GetToolHolder() );
     m_isLibEditor = frame && frame->IsType( FRAME_SCH_SYMBOL_EDITOR );
 }
 
@@ -160,7 +165,7 @@ void SCH_COMMIT::pushLibEdit( const wxString& aMessage, int aCommitFlags )
                     RECURSE_MODE::NO_RECURSE );
         }
 
-        if( SYMBOL_EDIT_FRAME* frame = static_cast<SYMBOL_EDIT_FRAME*>( m_toolMgr->GetToolHolder() ) )
+        if( SYMBOL_EDIT_FRAME* frame = dynamic_cast<SYMBOL_EDIT_FRAME*>( m_toolMgr->GetToolHolder() ) )
         {
             if( !( aCommitFlags & SKIP_UNDO ) )
             {
@@ -192,7 +197,7 @@ void SCH_COMMIT::pushSchEdit( const wxString& aMessage, int aCommitFlags )
     PICKED_ITEMS_LIST   undoList;
     KIGFX::VIEW*        view = m_toolMgr->GetView();
 
-    SCH_EDIT_FRAME*     frame = static_cast<SCH_EDIT_FRAME*>( m_toolMgr->GetToolHolder() );
+    SCH_EDIT_FRAME*     frame = dynamic_cast<SCH_EDIT_FRAME*>( m_toolMgr->GetToolHolder() );
     SCH_SCREEN*         currentScreen = frame ? frame->GetScreen() : nullptr;
     SCH_SELECTION_TOOL* selTool = m_toolMgr->GetTool<SCH_SELECTION_TOOL>();
     SCH_GROUP*          enteredGroup = selTool ? selTool->GetEnteredGroup() : nullptr;
@@ -603,12 +608,12 @@ void SCH_COMMIT::Push( const wxString& aMessage, int aCommitFlags )
     else
         pushSchEdit( aMessage, aCommitFlags );
 
-    if( SCH_BASE_FRAME* frame = static_cast<SCH_BASE_FRAME*>( m_toolMgr->GetToolHolder() ) )
+    if( SCH_BASE_FRAME* frame = dynamic_cast<SCH_BASE_FRAME*>( m_toolMgr->GetToolHolder() ) )
     {
         if( !( aCommitFlags & SKIP_SET_DIRTY ) )
             frame->OnModify();
 
-        if( frame && frame->GetCanvas() )
+        if( frame->GetCanvas() )
             frame->GetCanvas()->Refresh();
     }
 
@@ -621,7 +626,13 @@ EDA_ITEM* SCH_COMMIT::undoLevelItem( EDA_ITEM* aItem ) const
     EDA_ITEM* parent = aItem->GetParent();
 
     if( m_isLibEditor )
-        return static_cast<SYMBOL_EDIT_FRAME*>( m_toolMgr->GetToolHolder() )->GetCurSymbol();
+    {
+        SYMBOL_EDIT_FRAME* frame = dynamic_cast<SYMBOL_EDIT_FRAME*>( m_toolMgr->GetToolHolder() );
+
+        wxCHECK( frame, aItem );
+
+        return frame->GetCurSymbol();
+    }
 
     if( parent && parent->IsType( { SCH_SYMBOL_T, SCH_TABLE_T, SCH_SHEET_T, SCH_LABEL_LOCATE_ANY_T } ) )
         return parent;
@@ -634,7 +645,10 @@ EDA_ITEM* SCH_COMMIT::makeImage( EDA_ITEM* aItem ) const
 {
     if( m_isLibEditor )
     {
-        SYMBOL_EDIT_FRAME* frame = static_cast<SYMBOL_EDIT_FRAME*>( m_toolMgr->GetToolHolder() );
+        SYMBOL_EDIT_FRAME* frame = dynamic_cast<SYMBOL_EDIT_FRAME*>( m_toolMgr->GetToolHolder() );
+
+        wxCHECK( frame, aItem->Clone() );
+
         LIB_SYMBOL*        symbol = frame->GetCurSymbol();
         std::vector<KIID>  selected;
 

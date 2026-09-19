@@ -188,7 +188,7 @@ protected:
             return;
 
         SCH_PIN* pin = dynamic_cast<SCH_PIN*>( sel.Front() );
-        SCH_EDIT_FRAME* frame = static_cast<SCH_EDIT_FRAME*>( toolMgr->GetToolHolder() );
+        SCH_EDIT_FRAME* frame = dynamic_cast<SCH_EDIT_FRAME*>( toolMgr->GetToolHolder() );
 
         if( !pin || !frame )
             return;
@@ -268,16 +268,14 @@ protected:
         }
 
         SCH_SELECTION_TOOL* selTool = static_cast<SCH_SELECTION_TOOL*>( m_tool );
-        EDA_BASE_FRAME*     baseFrame = static_cast<EDA_BASE_FRAME*>( toolMgr->GetToolHolder() );
+        SCH_EDIT_FRAME*     frame = dynamic_cast<SCH_EDIT_FRAME*>( toolMgr->GetToolHolder() );
 
-        if( !selTool || !baseFrame || !baseFrame->IsType( FRAME_SCH ) )
+        if( !selTool || !frame )
         {
-            wxLogTrace( "KICAD_NET_CHAIN_MENU", "[NetChainMenu] abort: selTool=%p baseFrame=%p", (void*) selTool,
-                        (void*) baseFrame );
+            wxLogTrace( "KICAD_NET_CHAIN_MENU", "[NetChainMenu] abort: selTool=%p frame=%p", (void*) selTool,
+                        (void*) frame );
             return;
         }
-
-        SCH_EDIT_FRAME* frame = static_cast<SCH_EDIT_FRAME*>( baseFrame );
 
         const SCH_SELECTION& sel = selTool->GetSelection();
 
@@ -563,7 +561,12 @@ static std::vector<KICAD_T> tableCellTypes = { SCH_TABLECELL_T };
 
 bool SCH_SELECTION_TOOL::Init()
 {
-    m_frame = getEditFrame<SCH_BASE_FRAME>();
+    // Checked, because the tool holder is not necessarily a frame; see
+    // SCH_TOOL_BASE::Init() for why declining is the right answer when it is not.
+    m_frame = dynamic_cast<SCH_BASE_FRAME*>( m_toolMgr->GetToolHolder() );
+
+    if( !m_frame )
+        return false;
 
     SYMBOL_VIEWER_FRAME* symbolViewerFrame = dynamic_cast<SYMBOL_VIEWER_FRAME*>( m_frame );
     SYMBOL_EDIT_FRAME*   symbolEditorFrame = dynamic_cast<SYMBOL_EDIT_FRAME*>( m_frame );
@@ -755,7 +758,7 @@ bool SCH_SELECTION_TOOL::Init()
 
 void SCH_SELECTION_TOOL::Reset( RESET_REASON aReason )
 {
-    m_frame = getEditFrame<SCH_BASE_FRAME>();
+    m_frame = dynamic_cast<SCH_BASE_FRAME*>( m_toolMgr->GetToolHolder() );
 
     if( aReason != TOOL_BASE::REDRAW )
     {

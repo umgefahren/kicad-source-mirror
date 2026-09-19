@@ -23,7 +23,7 @@ For the design, start with **`01-plan.md`**.
 | `03-build-notes.md` | Configuring and building the C++ tree, with the exact dependency list and timings | Anyone building |
 | `04-host-seam.md` | The C++ host that owns a schematic session without a `wxFrame`, the C ABI and the shared library Rust links, and what feeding `TOOL_MANAGER` from Rust would still take | Anyone continuing the migration |
 | `05-porting-guide.md` | **How to do this again for pcbnew.** What is reusable unchanged, what is genuinely different about a board editor, and the traps — including the two designs we got wrong and had to redo | Read before starting the next editor |
-| `06-what-is-missing.md` | **What this is not, and what an editor still needs.** What the C++ bridge does and does not yet carry, stage by stage, with Stages 1 and 2 done | Read first if you are judging scope |
+| `06-what-is-missing.md` | **What this is not, and what an editor still needs.** What the C++ bridge does and does not yet carry, stage by stage, with Stages 1, 2 and 3 done | Read first if you are judging scope |
 
 Two more places hold the parts that are code rather than prose:
 
@@ -74,11 +74,14 @@ press and tool activation goes to a null sink. `06-what-is-missing.md` covers th
 properly, stage by stage.
 
 **Input is not yet wired into `TOOL_MANAGER`** — that is the next milestone of
-substance, and `04-host-seam.md` records what it would take. Its prerequisite is
-not the one it appears to be: `GetToolCanvas()` is largely a red herring, while
-eight unchecked `static_cast<SCH_EDIT_FRAME*>` of the tool holder are undefined
-behaviour for any non-frame host. See `05-porting-guide.md` §4.8. What is not done
-is stated in each document rather than left for a reader to discover.
+substance, and `04-host-seam.md` records what it would take. Its prerequisite was
+not the one it appeared to be: `GetToolCanvas()` is largely a red herring, while
+unchecked downcasts of the tool holder were undefined behaviour for any non-frame
+host. Those are now fixed (Stage 3), and fixing them turned up the thing the cast
+list hid — with no frame, every eeschema tool declines to initialise, so input
+work has to decide what `m_frame` is for a non-frame host before it starts. See
+`05-porting-guide.md` §4.8. What is not done is stated in each document rather
+than left for a reader to discover.
 
 What *is* verified, on this branch:
 
@@ -104,7 +107,15 @@ What *is* verified, on this branch:
   `06-what-is-missing.md` Stage 2 has the table. That work also uncovered a unit
   bug in `SCH_HOST`'s viewport that had made the C++ cull rectangle 52 metres
   wide; fixing it changed no recorded output.
-* The eeschema and common QA suites both pass in full. The single pre-existing
+* **A `TOOL_MANAGER` whose holder is not a `wxFrame` is defined behaviour.** All
+  sixteen unchecked downcasts of the holder in eeschema are checked, and the tools
+  that need a frame decline to initialise rather than trusting a pointer that is
+  not one — which `TOOL_MANAGER` already handles by dropping them. Four tests in
+  `qa_eeschema` install such a holder; restoring the old cast in `sch_commit.cpp`
+  makes one of them segfault. `06-what-is-missing.md` Stage 3 has what the cast
+  list missed.
+* The eeschema and common QA suites both pass in full — 1,703 and 1,477 cases. The
+  single pre-existing
   `ConnectivityExport/AllegroUsesPublishedNetsAndPreservesDeviceFiles` failure
   recorded earlier on this branch no longer reproduces; a flaky hang in
   `HttpLibPlugin` did, and is fixed (`03-build-notes.md` §6).

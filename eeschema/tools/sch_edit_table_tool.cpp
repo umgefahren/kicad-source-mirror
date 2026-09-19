@@ -37,7 +37,9 @@ SCH_EDIT_TABLE_TOOL::SCH_EDIT_TABLE_TOOL() :
 
 bool SCH_EDIT_TABLE_TOOL::Init()
 {
-    SCH_TOOL_BASE::Init();
+    // Declines a tool holder that is not this tool's frame; see SCH_TOOL_BASE::Init().
+    if( !SCH_TOOL_BASE::Init() )
+        return false;
 
     addMenus( m_selectionTool->GetToolMenu().GetMenu() );
 

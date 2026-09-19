@@ -1062,12 +1062,18 @@ static bool highlightNet( TOOL_MANAGER* aToolMgr, const VECTOR2D& aPosition )
 {
     wxLogTrace( "KICAD_SCH_HIGHLIGHT", "highlightNet: pos=(%f,%f) clear=%d", aPosition.x, aPosition.y,
                 ( aPosition == CLEAR ) );
-    SCH_EDIT_FRAME*     editFrame     = static_cast<SCH_EDIT_FRAME*>( aToolMgr->GetToolHolder() );
+    SCH_EDIT_FRAME*     editFrame     = dynamic_cast<SCH_EDIT_FRAME*>( aToolMgr->GetToolHolder() );
     SCH_SELECTION_TOOL* selTool       = aToolMgr->GetTool<SCH_SELECTION_TOOL>();
     SCH_EDITOR_CONTROL* editorControl = aToolMgr->GetTool<SCH_EDITOR_CONTROL>();
     std::optional<wxString> connName;
     SCH_ITEM*           item          = nullptr;
     bool                retVal        = true;
+
+    // Net highlighting is a frame-side affair from end to end — status text, cross
+    // probing, the net navigator — so there is nothing to do without one, and everything
+    // below dereferences all three of these.
+    if( !editFrame || !selTool || !editorControl )
+        return false;
 
     if( aPosition != CLEAR )
     {
@@ -1217,7 +1223,7 @@ int SCH_EDITOR_CONTROL::HighlightNetChain( const TOOL_EVENT& aEvent )
 
 int SCH_EDITOR_CONTROL::RemoveFromNetChain( const TOOL_EVENT& aEvent )
 {
-    SCH_EDIT_FRAME*       editFrame = static_cast<SCH_EDIT_FRAME*>( m_toolMgr->GetToolHolder() );
+    SCH_EDIT_FRAME*       editFrame = dynamic_cast<SCH_EDIT_FRAME*>( m_toolMgr->GetToolHolder() );
     if( !editFrame )
         return 0;
 
@@ -1573,7 +1579,10 @@ int SCH_EDITOR_CONTROL::HighlightNetCursor( const TOOL_EVENT& aEvent )
 
 int SCH_EDITOR_CONTROL::ReplaceTerminalPin( const TOOL_EVENT& aEvent )
 {
-    SCH_EDIT_FRAME* editFrame = static_cast<SCH_EDIT_FRAME*>( m_toolMgr->GetToolHolder() );
+    SCH_EDIT_FRAME* editFrame = dynamic_cast<SCH_EDIT_FRAME*>( m_toolMgr->GetToolHolder() );
+
+    wxCHECK( editFrame, 0 );
+
     const auto change = aEvent.Parameter<SCH_CONNECTIVITY::NETCHAIN_MANAGER::TERMINAL_CHANGE>();
 
     if( editFrame->Schematic().NetChains().ReplaceNetChainTerminalPin( change ) )
@@ -1599,7 +1608,10 @@ int SCH_EDITOR_CONTROL::NameNetChain( const TOOL_EVENT& aEvent )
     if( !pin )
         return 0;
 
-    SCH_EDIT_FRAME* editFrame = static_cast<SCH_EDIT_FRAME*>( m_toolMgr->GetToolHolder() );
+    SCH_EDIT_FRAME* editFrame = dynamic_cast<SCH_EDIT_FRAME*>( m_toolMgr->GetToolHolder() );
+
+    wxCHECK( editFrame, 0 );
+
     auto& chains = editFrame->Schematic().NetChains();
     const auto netName = pin->GetConnectionName( &editFrame->GetCurrentSheet() );
 
@@ -1651,7 +1663,10 @@ int SCH_EDITOR_CONTROL::CreateNetChainBetweenPins( const TOOL_EVENT& aEvent )
     if( !pinA || !pinB )
         return 0;
 
-    SCH_EDIT_FRAME* editFrame = static_cast<SCH_EDIT_FRAME*>( m_toolMgr->GetToolHolder() );
+    SCH_EDIT_FRAME* editFrame = dynamic_cast<SCH_EDIT_FRAME*>( m_toolMgr->GetToolHolder() );
+
+    wxCHECK( editFrame, 0 );
+
     auto& chains = editFrame->Schematic().NetChains();
     const SCH_SHEET_PATH& path = editFrame->GetCurrentSheet();
 
@@ -1768,7 +1783,9 @@ int SCH_EDITOR_CONTROL::CreateNetChainBetweenPins( const TOOL_EVENT& aEvent )
 
 int SCH_EDITOR_CONTROL::ShowCreateNetChain( const TOOL_EVENT& aEvent )
 {
-    SCH_EDIT_FRAME* editFrame = static_cast<SCH_EDIT_FRAME*>( m_toolMgr->GetToolHolder() );
+    SCH_EDIT_FRAME* editFrame = dynamic_cast<SCH_EDIT_FRAME*>( m_toolMgr->GetToolHolder() );
+
+    wxCHECK( editFrame, 0 );
 
     editFrame->RecalculateConnections( nullptr, NO_CLEANUP );
 

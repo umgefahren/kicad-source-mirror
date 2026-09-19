@@ -1662,6 +1662,17 @@ Enumerated, with separability:
 
 **High effort, low conceptual risk, one true blocker.**
 
+> **This verdict was wrong about which blocker, and the record is kept as written
+> rather than edited.** `GetToolCanvas()` is largely a red herring: returning
+> `nullptr` from it is already a production state in three implementations, and
+> `TOOL_DISPATCHER` null-checks it. The real hazard was sixteen unchecked
+> downcasts of `TOOL_MANAGER::GetToolHolder()` plus `TOOL_BASE::getEditFrame<T>()`,
+> which is how every tool's `m_frame` is set — undefined behaviour for any
+> non-frame host, and silent. That is fixed; see `05-porting-guide.md` §4.8 and
+> `06-what-is-missing.md` Stage 3. The second bullet below — the ~600 `m_frame->`
+> sites — is what the real blocker turns out to be, so the survey named it; it
+> just ranked it second.
+
 - The blocker is `TOOLS_HOLDER::GetToolCanvas() const = 0` returning `wxWindow*`. Fix it
   upstream-style (introduce an opaque `TOOL_CANVAS*` or drop the method) before anything else.
 - ~470 of the ~600 `m_frame->` call sites are model/settings access with no wx involvement;

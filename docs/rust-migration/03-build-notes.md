@@ -425,7 +425,7 @@ What was actually run, in that shell, with no extra `-D` flags:
 | `ninja -j14 kicommon` | clean |
 | `ninja -j14 eeschema qa_eeschema` | clean — `_eeschema.kiface` and `eeschema.app` produced |
 | `ninja -j10 qa_common` | clean |
-| `./qa/tests/eeschema/qa_eeschema` | 1699 cases, **no errors**, exit 0 |
+| `./qa/tests/eeschema/qa_eeschema` | 1703 cases, **no errors**, exit 0 (1699 before Stage 3 added four) |
 | `./qa/tests/common/qa_common` | 1477 cases, **no errors** — this includes the recording-GAL and draw-stream suites in `qa/tests/common/gal/`, which §4 records as never having been run |
 | `cd rust && cargo test --workspace` | 224 passed, 1 ignored, plus the 10 live-host checks |
 | `ninja kicad_sch_host` | the host shared library, 26 exported symbols |

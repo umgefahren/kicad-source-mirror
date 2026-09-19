@@ -180,8 +180,10 @@ rendering half of M3: rendering works end to end on all 466 schematics in the
 tree, and the Rust binary loads the host library, opens a real `.kicad_sch`
 through it — `--schematic FILE.kicad_sch` — and re-records the frame from that
 live session whenever the view moves. What has not started is the *input* half of
-M3: nothing a user does reaches `TOOL_MANAGER`. **See `06-what-is-missing.md`**
-for precisely where it stops and what the remaining stages are.
+M3: nothing a user does reaches `TOOL_MANAGER`. Its C++-side prerequisite has
+landed, though — a `TOOL_MANAGER` pointed at something that is not a `wxFrame` is
+now defined behaviour rather than undefined. **See `06-what-is-missing.md`** for
+precisely where it stops and what the remaining stages are.
 
 One prediction in this document is worth revisiting in the light of that. The
 plan said to call the host "per frame"; the code asks only when the answer could
@@ -204,8 +206,11 @@ on, applied one level up.
 * Feeding input into `TOOL_MANAGER`. This is the next milestone of substance
   rather than a structural obstacle: `TOOL_MANAGER` has no wx dependency,
   `TOOL_EVENT` is a plain value type, and only `TOOL_DISPATCHER` is bound to wx.
-  What is needed is a dispatcher that builds `TOOL_EVENT`s from gpui input.
-  `docs/rust-migration/04-host-seam.md` records what it would take.
+  What is needed is a dispatcher that builds `TOOL_EVENT`s from gpui input — and,
+  it turns out, a decision about what `m_frame` is for a host that is not a
+  `wxFrame`, because since Stage 3 every eeschema tool declines such a holder
+  rather than running off a bogus pointer. `docs/rust-migration/04-host-seam.md`
+  §6 and `06-what-is-missing.md` Stage 4 record what it would take.
 
 ## Related documents
 
