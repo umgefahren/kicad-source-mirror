@@ -1043,7 +1043,10 @@ int SCH_SELECTION_TOOL::Main( const TOOL_EVENT& aEvent )
                 }
             }
 
-            if( !selCancelled )
+            // TOOL_INTERACTIVE only builds a TOOL_MENU when Pgm().IsGUI(), so a holder
+            // with no window has none. Right-clicking is then simply not a gesture that
+            // opens anything, rather than a null dereference.
+            if( !selCancelled && m_menu )
                 m_menu->ShowContextMenu( m_selection );
         }
         else if( evt->IsDblClick( BUT_LEFT ) )

@@ -904,6 +904,93 @@ BOOST_AUTO_TEST_CASE( AClickSelectsTheItemUnderIt )
 
 
 /**
+ * Right-clicking does not crash, which is a lower bar than it sounds.
+ *
+ * `TOOL_INTERACTIVE` only builds a `TOOL_MENU` when `Pgm().IsGUI()`, so every tool
+ * running here holds a null `m_menu`. Three of them — the selection, move and wire
+ * tools, which were the first three converted — called
+ * `m_menu->ShowContextMenu()` on a right click without testing it, and a right
+ * click on the canvas of the gpui editor segfaulted in `SCH_SELECTION_TOOL`.
+ *
+ * It survived review and a green suite because nothing dispatched a right click:
+ * every input test here presses `BUT_LEFT`. The bug was in the first tool
+ * converted, not in the eleven that followed — the later ones guard it — so this
+ * case covers the gesture rather than any one tool, and is a right click at three
+ * places a menu would differ: over an item, over empty space, and mid-drag.
+ */
+BOOST_AUTO_TEST_CASE( ARightClickOpensNoMenuAndDoesNotCrash )
+{
+    std::unique_ptr<SCH_HOST> host = loadedHost();
+
+    const VECTOR2I onItem = firstWireMidpoint( *host );
+
+    const auto rightClickAt =
+            [&]( const VECTOR2I& aWorld )
+            {
+                HOST_INPUT_EVENT event;
+
+                event.position = host->View().ToScreen( VECTOR2D( aWorld ) );
+
+                event.type = HOST_INPUT_TYPE::POINTER_MOTION;
+                host->DispatchInput( event );
+
+                event.type = HOST_INPUT_TYPE::POINTER_DOWN;
+                event.button = BUT_RIGHT;
+                host->DispatchInput( event );
+
+                event.type = HOST_INPUT_TYPE::POINTER_UP;
+                host->DispatchInput( event );
+            };
+
+    // Over an item, with nothing selected: the selection tool selects under the
+    // cursor and then would open a menu on it.
+    rightClickAt( onItem );
+
+    // Over an item that is already selected, which is the other branch.
+    rightClickAt( onItem );
+
+    // Over empty space.
+    rightClickAt( onItem + VECTOR2I( schIUScale.mmToIU( 40 ), schIUScale.mmToIU( 40 ) ) );
+
+    // And during a left-button drag, which is the move tool's own right-click
+    // branch rather than the selection tool's.
+    {
+        HOST_INPUT_EVENT event;
+        event.position = host->View().ToScreen( VECTOR2D( onItem ) );
+        event.type = HOST_INPUT_TYPE::POINTER_MOTION;
+        host->DispatchInput( event );
+
+        event.type = HOST_INPUT_TYPE::POINTER_DOWN;
+        event.button = BUT_LEFT;
+        host->DispatchInput( event );
+
+        event.type = HOST_INPUT_TYPE::POINTER_MOTION;
+        event.position = host->View().ToScreen(
+                VECTOR2D( onItem + VECTOR2I( schIUScale.mmToIU( 5 ), 0 ) ) );
+        host->DispatchInput( event );
+
+        event.type = HOST_INPUT_TYPE::POINTER_DOWN;
+        event.button = BUT_RIGHT;
+        host->DispatchInput( event );
+
+        event.type = HOST_INPUT_TYPE::POINTER_UP;
+        host->DispatchInput( event );
+
+        event.type = HOST_INPUT_TYPE::POINTER_UP;
+        event.button = BUT_LEFT;
+        host->DispatchInput( event );
+    }
+
+    // Reaching here at all is the assertion. That the session is still usable
+    // afterwards is the second one.
+    BOOST_CHECK( host->GetSchematic() != nullptr );
+
+    clickAt( *host, onItem );
+    BOOST_CHECK_EQUAL( host->GetSelectionCount(), 1u );
+}
+
+
+/**
  * Clicking empty space clears the selection, which is the other half of the
  * behaviour and the half a partially-wired tool still gets right by accident.
  */

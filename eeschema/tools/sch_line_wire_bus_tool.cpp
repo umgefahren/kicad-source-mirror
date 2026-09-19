@@ -1159,7 +1159,11 @@ int SCH_LINE_WIRE_BUS_TOOL::doDrawSegments( const TOOL_EVENT& aTool, SCH_COMMIT&
                 m_toolMgr->VetoContextMenuMouseWarp();
 
             contextMenuPos = cursorPos;
-            m_menu->ShowContextMenu( m_selectionTool->GetSelection() );
+            // TOOL_INTERACTIVE only builds a TOOL_MENU when Pgm().IsGUI(), so a holder
+            // with no window has none. Right-clicking is then simply not a gesture that
+            // opens anything, rather than a null dereference.
+            if( m_menu )
+                m_menu->ShowContextMenu( m_selectionTool->GetSelection() );
         }
         else if( evt->Category() == TC_COMMAND && evt->Action() == TA_CHOICE_MENU_CHOICE )
         {
