@@ -108,6 +108,10 @@ fn main() {
             live::an_unhandled_action_is_reported,
         ),
         (
+            "zoom to fit through the tool framework moves the camera",
+            live::zoom_to_fit_through_the_tool_framework_moves_the_camera,
+        ),
+        (
             "a click over the ABI selects the item under it",
             live::a_click_selects_the_item_under_it,
         ),
@@ -828,9 +832,15 @@ mod live {
         // tool exists to run it, so an invented name proves nothing either way. This
         // check used to use "eeschema.InteractiveSelection.selectionActivate", which
         // is not a name in the tree at all — it resolved to nothing and passed for
-        // the wrong reason.
+        // the wrong reason. It then used "common.Control.zoomFitScreen", which stopped
+        // being such a name when Stage 4b step 2 gave COMMON_TOOLS a CANVAS_HOLDER to
+        // run on: it is now handled, and is asserted as such below.
+        //
+        // COMMON_CONTROL is the tool that still declines a holder with no window — it
+        // opens the preferences dialog, the library tables and the project manager,
+        // all of which are windows.
         let declined = session
-            .run_action("common.Control.zoomFitScreen")
+            .run_action("common.Control.showProjectManager")
             .expect("a real action with no tool behind it is not an error either");
         assert!(!declined.handled);
 
@@ -840,6 +850,74 @@ mod live {
             .run_action("common.InteractiveSelection")
             .expect("activating the selection tool");
         assert!(handled.handled);
+    }
+
+    /// Zoom to fit, run through the tool framework, moves the camera — and the move
+    /// survives the next frame.
+    ///
+    /// This is the whole of Stage 4b step 2 in one case. `COMMON_TOOLS` is the tool
+    /// that zooms, and until it had a `CANVAS_HOLDER` to run on it declined a holder
+    /// with no window, so a headless editor had no zoom at all.
+    ///
+    /// The second half matters as much as the first. The canvas used to push its own
+    /// camera into the session on every recording pass, unconditionally, so a view a
+    /// *tool* moved was overwritten before anyone saw it. The session is the authority
+    /// now, and a tool-driven zoom is something the canvas adopts.
+    pub fn zoom_to_fit_through_the_tool_framework_moves_the_camera() {
+        let mut session = Session::open(&kitchen_sink()).expect("the fixture loads");
+
+        session
+            .set_viewport(&FIXTURE_VIEWPORT)
+            .expect("pointing the camera");
+
+        let before = session.viewport().expect("the camera reads back");
+
+        let zoomed = session
+            .run_action("common.Control.zoomFitScreen")
+            .expect("zoom to fit is not an error");
+
+        assert!(
+            zoomed.handled,
+            "COMMON_TOOLS should be running on this holder and should claim zoomFitScreen"
+        );
+
+        let after = session.viewport().expect("the camera reads back");
+
+        assert_ne!(
+            (after.scale, after.center_x, after.center_y),
+            (before.scale, before.center_x, before.center_y),
+            "zoom to fit should have moved the camera"
+        );
+
+        // And it is a *fit* rather than merely a change. The ABI has its own
+        // zoom-to-fit, which frames the same page by a different route, so the two
+        // landing in the same place is the assertion — without pinning the exact
+        // number, because COMMON_TOOLS applies per-program margins the ABI call does
+        // not and the two are not meant to agree to the last digit.
+        session.zoom_to_fit().expect("the ABI's own zoom to fit");
+
+        let abi = session.viewport().expect("the camera reads back");
+        let ratio = after.scale / abi.scale;
+
+        assert!(
+            (0.7..=1.4).contains(&ratio),
+            "the tool framed the page at {} and the ABI at {}, which is not the same view",
+            after.scale,
+            abi.scale
+        );
+
+        // Put it back where the tool left it, and read it twice: the session holds
+        // the camera, so nothing has to be re-asserted to keep it.
+        session
+            .run_action("common.Control.zoomFitScreen")
+            .expect("zoom to fit again");
+
+        let after = session.viewport().expect("the camera reads back");
+        let again = session.viewport().expect("the camera reads back");
+        assert_eq!(
+            (again.scale, again.center_x, again.center_y),
+            (after.scale, after.center_x, after.center_y)
+        );
     }
 
     /// A click on a known wire selects it, over the real ABI.

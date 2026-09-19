@@ -182,6 +182,17 @@ struct Loaded {
 /// document's job to install the frame rather than to return it.
 struct SchematicSession {
     session: SharedSession,
+
+    /// The viewport the session last reported, or `None` before the first frame.
+    ///
+    /// This is what makes the *session* the authority on where the view is rather
+    /// than the canvas. Comparing the canvas's camera against it says who moved the
+    /// view since the last frame: if they differ the user did, by dragging or
+    /// scrolling, and the canvas is pushed; if they agree nobody on this side did,
+    /// so whatever the session now says is adopted instead. Without the second case
+    /// a `zoom to fit` run through the tool framework would be overwritten by the
+    /// canvas on the very next frame, which is exactly what used to happen.
+    granted: Option<Viewport>,
 }
 
 impl LiveDocument for SchematicSession {
@@ -201,15 +212,43 @@ impl LiveDocument for SchematicSession {
             "the session is busy: something is asking for a frame from inside one".to_string()
         })?;
 
-        session
-            .set_viewport(&Viewport {
-                width_px: viewport.width.max(1.0) as u32,
-                height_px: viewport.height.max(1.0) as u32,
-                center_x: viewport.center.x,
-                center_y: viewport.center.y,
-                scale: viewport.scale,
-            })
-            .map_err(|error| format!("viewport: {error}"))?;
+        let width_px = viewport.width.max(1.0) as u32;
+        let height_px = viewport.height.max(1.0) as u32;
+
+        // Who moved the view since the last frame decides which way it travels now.
+        // The canvas differing from what the session last granted means the user
+        // dragged or scrolled; the two agreeing means they did not, and a tool may
+        // have. The window changing size is the canvas's to report either way.
+        let moved_here = self.granted.is_none_or(|granted| {
+            granted.center_x != viewport.center.x
+                || granted.center_y != viewport.center.y
+                || granted.scale != viewport.scale
+        });
+        let resized = self
+            .granted
+            .is_none_or(|granted| granted.width_px != width_px || granted.height_px != height_px);
+
+        if moved_here || resized {
+            // On a bare resize the centre and scale are the session's own, echoed
+            // back unchanged, so that growing the window does not quietly re-assert
+            // a camera the user never touched.
+            let (center_x, center_y, scale) = if moved_here {
+                (viewport.center.x, viewport.center.y, viewport.scale)
+            } else {
+                let granted = self.granted.expect( "resized implies a previous grant" );
+                (granted.center_x, granted.center_y, granted.scale)
+            };
+
+            session
+                .set_viewport(&Viewport {
+                    width_px,
+                    height_px,
+                    center_x,
+                    center_y,
+                    scale,
+                })
+                .map_err(|error| format!("viewport: {error}"))?;
+        }
 
         // The session does not always grant what was asked for: `VIEW::SetScale`
         // clamps to eeschema's zoom limits and `VIEW::SetCenter` clamps to its pan
@@ -235,6 +274,8 @@ impl LiveDocument for SchematicSession {
                 .camera_mut()
                 .set_center([granted.center_x, granted.center_y]);
         }
+
+        self.granted = Some(granted);
 
         let frame = session
             .render()
@@ -292,6 +333,7 @@ fn load_schematic(path: &Path, width: u32, height: u32) -> Result<Loaded, String
         stream,
         document: Some(shared_document(SchematicSession {
             session: session.clone(),
+            granted: None,
         })),
         session: Some(session),
         source: DocumentSource::Schematic {
