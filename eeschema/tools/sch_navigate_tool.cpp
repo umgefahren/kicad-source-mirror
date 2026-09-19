@@ -137,13 +137,6 @@ int SCH_NAVIGATE_TOOL::Up( const TOOL_EVENT& aEvent )
 
 int SCH_NAVIGATE_TOOL::Forward( const TOOL_EVENT& aEvent )
 {
-    // Showing another sheet means swapping the canvas over to that sheet's screen, and
-    // that is SCH_EDIT_FRAME's; SCHEMATIC_HOLDER has no equivalent. Moving the document's
-    // current sheet without it would leave the editor displaying the old one, so decline
-    // rather than half-navigate. See ::runsWithoutAFrame.
-    if( !m_frame )
-        return 0;
-
     if( CanGoForward() )
     {
         m_navIndex++;
@@ -165,10 +158,6 @@ int SCH_NAVIGATE_TOOL::Forward( const TOOL_EVENT& aEvent )
 
 int SCH_NAVIGATE_TOOL::Back( const TOOL_EVENT& aEvent )
 {
-    // See ::Forward: displaying the sheet we step back to needs a frame.
-    if( !m_frame )
-        return 0;
-
     if( CanGoBack() )
     {
         m_navIndex--;
@@ -369,14 +358,6 @@ void SCH_NAVIGATE_TOOL::changeSheet( const SCH_SHEET_PATH& aPath )
 
     wxCHECK( schematic, /* void */ );
 
-    // Everything below moves the document's current sheet and then asks the editor to
-    // show it, and only SCH_EDIT_FRAME can do the second half: SCHEMATIC_HOLDER has no
-    // way to swap the canvas over to another sheet's screen. Changing the sheet without
-    // showing it would leave the editor displaying the old one and the history pointing
-    // at the new, so decline before touching anything. See ::runsWithoutAFrame.
-    if( !m_frame )
-        return;
-
     m_toolMgr->RunAction( ACTIONS::cancelInteractive );
     m_toolMgr->RunAction( ACTIONS::selectionClear );
 
@@ -386,12 +367,12 @@ void SCH_NAVIGATE_TOOL::changeSheet( const SCH_SHEET_PATH& aPath )
 
     pushToHistory( aPath );
 
-    // A window: keyboard focus is one's, and there is nothing to clear without it. Guarded
-    // rather than assumed, so that this body is already correct on the day the early
-    // return above can be deleted.
+    // A window: keyboard focus is one's, and there is nothing to clear without it.
     if( m_frame )
         m_frame->ClearFocus();
 
-    schematic->SetCurrentSheet( aPath );
-    m_frame->DisplayCurrentSheet();
+    // Moves the document's current sheet *and* swaps the editor over to that sheet's
+    // screen. It is one call because doing only the first would leave the editor showing
+    // the old sheet while the history pointed at the new one.
+    m_editor->DisplaySheet( aPath );
 }

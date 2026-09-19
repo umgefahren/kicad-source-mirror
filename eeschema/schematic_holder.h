@@ -34,6 +34,7 @@ class SCH_RENDER_SETTINGS;
 class SCH_SCREEN;
 class SCH_SELECTION_TOOL;
 class SCH_GLOBALLABEL;
+class SCH_SHEET_PATH;
 
 struct SCH_SELECTION_FILTER_OPTIONS;
 
@@ -120,6 +121,20 @@ public:
     virtual SCHEMATIC* GetSchematic() const { return nullptr; }
 
     virtual SCH_SELECTION_TOOL* GetSelectionTool() { return nullptr; }
+
+    /**
+     * Make \a aPath the current sheet, and show it.
+     *
+     * The two halves are one call because they are inseparable: moving the document's
+     * current sheet without swapping whatever draws the editor over to that sheet's
+     * screen leaves the two disagreeing about which sheet is being edited, and every
+     * caller that has ever done the first has immediately done the second.
+     *
+     * The default is false — a holder that edits one screen, such as the symbol editor,
+     * has nowhere to navigate to. After a true return, ::GetScreen is \a aPath's last
+     * screen, `GetSchematic()->CurrentSheet()` is \a aPath, and the editor is showing it.
+     */
+    virtual bool DisplaySheet( const SCH_SHEET_PATH& aPath ) { return false; }
 
     virtual void IntersheetRefUpdate( SCH_GLOBALLABEL* aItem ) {}
 

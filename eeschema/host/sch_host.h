@@ -163,6 +163,16 @@ public:
      */
     bool SetCurrentSheetIndex( std::size_t aIndex );
 
+    /**
+     * @copydoc SCHEMATIC_HOLDER::DisplaySheet
+     *
+     * The path is resolved to a position in ::BuildSheetListSortedByPageNumbers, which is
+     * the order this host indexes sheets in and the order a UI pages through them, and
+     * then ::SetCurrentSheetIndex does the work. A path this schematic does not contain
+     * is declined rather than clamped.
+     */
+    bool DisplaySheet( const SCH_SHEET_PATH& aPath ) override;
+
     std::size_t GetCurrentSheetIndex() const { return m_currentSheetIndex; }
 
     /// Number of items on the current sheet's screen.

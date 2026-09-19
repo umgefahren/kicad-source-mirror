@@ -468,6 +468,15 @@ public:
     void DisplayCurrentSheet();
 
     /**
+     * @copydoc SCHEMATIC_HOLDER::DisplaySheet
+     *
+     * The pair ::SetCurrentSheet then ::DisplayCurrentSheet, which is what every caller
+     * of the two did by hand before this existed. Always succeeds: this frame can show
+     * any sheet of the schematic it holds.
+     */
+    bool DisplaySheet( const SCH_SHEET_PATH& aPath ) override;
+
+    /**
      * Use the wxWidgets print code to draw an image of the current sheet onto the clipboard.
      */
     void DrawCurrentSheetToClipboard();

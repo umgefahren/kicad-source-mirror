@@ -945,6 +945,25 @@ bool SCH_HOST::SetCurrentSheetIndex( std::size_t aIndex )
 }
 
 
+bool SCH_HOST::DisplaySheet( const SCH_SHEET_PATH& aPath )
+{
+    if( !m_schematic )
+        return false;
+
+    // The same list ::displayCurrentSheet indexes into, so the index this finds is the
+    // one that names aPath for the rest of the session.
+    SCH_SHEET_LIST sheets = m_schematic->BuildSheetListSortedByPageNumbers();
+
+    for( std::size_t i = 0; i < sheets.size(); ++i )
+    {
+        if( sheets[i] == aPath )
+            return SetCurrentSheetIndex( i );
+    }
+
+    return false;
+}
+
+
 void SCH_HOST::displayCurrentSheet()
 {
     if( !m_schematic )

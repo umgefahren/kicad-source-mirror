@@ -2444,6 +2444,15 @@ void SCH_EDIT_FRAME::UpdateItem( EDA_ITEM* aItem, bool isAddOrDelete, bool aUpda
 }
 
 
+bool SCH_EDIT_FRAME::DisplaySheet( const SCH_SHEET_PATH& aPath )
+{
+    SetCurrentSheet( aPath );
+    DisplayCurrentSheet();
+
+    return true;
+}
+
+
 void SCH_EDIT_FRAME::DisplayCurrentSheet()
 {
     wxCHECK( m_toolManager, /* void */ );
