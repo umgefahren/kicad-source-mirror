@@ -908,6 +908,58 @@ BOOST_AUTO_TEST_CASE( ASelectedItemChangesWhatIsRecorded )
 
 
 /**
+ * A drag selects everything inside the box it draws, which is the other half of
+ * selection and the half that runs its own event loop.
+ *
+ * `SCH_SELECTION_TOOL::selectMultiple()` puts a `SELECTION_AREA` in the view,
+ * `Wait()`s on drag events, and calls `ForceRefreshCanvas()` per motion so the box
+ * follows the pointer. None of that needs a window; all of it needs the host to keep
+ * delivering events into a nested loop.
+ */
+BOOST_AUTO_TEST_CASE( ADragSelectsEverythingInsideIt )
+{
+    std::unique_ptr<SCH_HOST> host = loadedHost();
+
+    const BOX2I items = host->GetDocumentBBox( false );
+
+    BOOST_REQUIRE( items.GetWidth() > 0 );
+
+    HOST_INPUT_EVENT event;
+    event.button = BUT_LEFT;
+
+    // A box around everything on the sheet, drawn from outside one corner to outside
+    // the other so that nothing is clipped by the drag's own start point landing on an
+    // item (which would move it instead).
+    const VECTOR2D from = host->View().ToScreen(
+            VECTOR2D( items.GetLeft() - 500000, items.GetTop() - 500000 ) );
+    const VECTOR2D to = host->View().ToScreen(
+            VECTOR2D( items.GetRight() + 500000, items.GetBottom() + 500000 ) );
+
+    event.type = HOST_INPUT_TYPE::POINTER_MOTION;
+    event.position = from;
+    host->DispatchInput( event );
+
+    event.type = HOST_INPUT_TYPE::POINTER_DOWN;
+    host->DispatchInput( event );
+
+    // Several steps, because the drag threshold is a distance and the tool's loop has
+    // to see motion after the press to know it is a drag rather than a click.
+    for( int step = 1; step <= 8; ++step )
+    {
+        event.type = HOST_INPUT_TYPE::POINTER_MOTION;
+        event.position = from + ( to - from ) * ( step / 8.0 );
+        host->DispatchInput( event );
+    }
+
+    event.type = HOST_INPUT_TYPE::POINTER_UP;
+    event.position = to;
+    host->DispatchInput( event );
+
+    BOOST_CHECK_GT( host->GetSelectionCount(), 1u );
+}
+
+
+/**
  * The cursor shape the tools ask for is recorded for a consumer that owns the real
  * pointer. gpui cannot be told "become a crosshair" by C++, so the host keeps the
  * request and the UI reads it.
