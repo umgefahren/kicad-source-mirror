@@ -3,26 +3,37 @@
 This document exists because the previous ones describe what was built, and a
 reader can finish them with the wrong impression of what that adds up to.
 
-**What exists today is a schematic editor for four tools' worth of editing.** A
-user can open a real `.kicad_sch`, select items by clicking or dragging a box,
-move them, draw a wire, undo and redo any of it, and save a file that KiCad
-reopens. Everything else eeschema can do — the other seventeen tool classes, all
-124 dialogs — is still frame-bound, and **wxWidgets has not been removed from
-anything**: the wx schematic editor is untouched and is still the only complete
-way to edit a schematic.
+**What exists today is a schematic editor for everything eeschema can do without
+opening a dialog.** A user can open a real `.kicad_sch`, select items by clicking
+or dragging a box, move them, rotate and mirror and delete them, draw wires,
+place junctions, no-connects, labels and sheet pins, cut and paste, undo and redo
+any of it, and save a file that KiCad reopens.
 
-> **Stages 1, 2, 3, 4 and 4b are done.**
+**What it cannot do is anything that is a dialog**, and that is most of what an
+editor is: placing a symbol needs the library chooser, editing an item's
+properties needs its properties dialog, ERC needs `DIALOG_ERC`, find needs
+somewhere to type into. All 124 of those are still wxWidgets, so **wxWidgets has
+not been removed from anything** and the wx schematic editor is still the only
+complete way to edit a schematic. The dialogs are Stage 5, and Stage 5 is a
+project rather than a stage.
+
+> **Stages 1, 2, 3, 4 and 4b are done, and 4b now covers the whole eeschema
+> roster.**
 > `kicad-eeschema-gpui --schematic FILE.kicad_sch` loads the file through
 > eeschema's own reader, keeps the session open for the window's lifetime, asks it
 > for a frame whenever the view moves or the document changes, and hands it every
-> pointer move, click, drag, scroll and key press as a `TOOL_EVENT` — which
-> `SCH_SELECTION_TOOL`, `SCH_MOVE_TOOL` and `SCH_LINE_WIRE_BUS_TOOL` now receive,
-> because they ask the holder for a `SCHEMATIC_HOLDER` rather than for a window.
+> pointer move, click, drag, scroll and key press as a `TOOL_EVENT`.
 >
-> What is left is the rest of the roster, and it is a long tail rather than a
-> blocker: the mechanism is settled and the remaining cost is measured per tool in
-> [Stage 4b](#stage-4b--the-frame-hoist-done-for-four-tools). Four of the seventeen
-> need between one and six methods each.
+> Every tool class in `eeschema/tools/` now answers `runsWithoutAFrame()` except
+> `SCH_DESIGN_BLOCK_CONTROL`, which is a library pane and a properties dialog end
+> to end. What still declines is `common/`'s roster — `COMMON_TOOLS`,
+> `COMMON_CONTROL`, `ZOOM_TOOL`, `PICKER_TOOL`, `GROUP_TOOL`, `EMBED_TOOL` — which
+> every KiCad program inherits and which is not eeschema's alone to hoist.
+>
+> **Registering is not the same as working, and this document is careful about the
+> difference.** A tool that runs here may still decline every action it owns,
+> because the action *is* a dialog. See
+> [what each converted tool actually does](#what-each-converted-tool-actually-does).
 
 ## Exactly where it stops
 
@@ -382,7 +393,7 @@ simply install a holder and expect tools.
 > Stage 4b rerouted them, for three tools, and the 600 turned out to be the wrong
 > unit: most of those sites are `GetScreen()`, `AddToScreen()` and `UpdateItem()`
 > repeated, so the interface is about twenty methods and the conversions are
-> mechanical. See [Stage 4b](#stage-4b--the-frame-hoist-done-for-four-tools).
+> mechanical. See [Stage 4b](#stage-4b--the-frame-hoist-done-for-the-whole-eeschema-roster).
 
 Stage 4a went on to install exactly such a holder and register exactly that roster,
 and this is what happened: all twenty-one classes are dropped by `InitTools()` and
@@ -441,7 +452,7 @@ one `SCH_HOST` already meets.
 ## Stage 4 — A non-wx tool dispatcher (the input seam is done)
 
 **Estimated "the real work". The dispatcher half took about a day; the `m_frame`
-half is [Stage 4b](#stage-4b--the-frame-hoist-done-for-four-tools), which took
+half is [Stage 4b](#stage-4b--the-frame-hoist-done-for-the-whole-eeschema-roster), which took
 about two days and is what makes the events below reach anything.**
 
 Everything from a gpui event to `TOOL_MANAGER::ProcessEvent` now exists and is
@@ -639,7 +650,7 @@ with each other and both were wrong.
 | `ksch_editor_state::tool_name` was never `""`: `TOOLS_HOLDER::CurrentToolName()` answers an empty stack with the selection tool's name | the test asserted the pointer was non-null |
 | the shell tracks one press at a time, so with two buttons held the release of the first was dropped — and a host with per-button state then believed it held for the rest of the session, turning every later move into a drag from a stale origin | nothing had ever pressed two buttons; this is the failure the dispatcher gave up wx's mouse-state poll on the promise that "the host delivers every up" |
 
-## Stage 4b — The frame hoist (done, for four tools)
+## Stage 4b — The frame hoist (done, for the whole eeschema roster)
 
 **Estimated "the largest single piece of the project". It was the largest, and it
 came in smaller than the aggregate estimate for the reason Stage 4a predicted: the
@@ -814,31 +825,121 @@ as well, for a UI that wants a status code rather than a fire-and-forget action.
 `qa_eeschema` is 1,735 cases green (1,716 before this stage), `qa_common` 1,513,
 `qa_pcbnew` green — the base-class changes touch it — and `ctest -L rust` 4/4.
 
-### What is left after 4b
+### The rest of the roster, converted
 
-The mechanism is settled, so what remains is measured rather than estimated. Every
-remaining tool needs the same two things: `runsWithoutAFrame()` returning true, and
-its `m_frame->` sites routed to `m_editor` or guarded.
+The table below is what the estimate said each remaining tool would cost, and what
+it actually cost. All of them are now done.
 
-| Tool | lines | `m_frame->` sites | distinct methods | notes |
-|---|---:|---:|---:|---|
-| `SCH_DESIGN_BLOCK_CONTROL` | 174 | 0 | 0 | declines in its own `Init()`; design blocks need a library and a dialog |
-| `EE_GRAPHIC_TOOL` | 1,053 | 1 | 1 | `PushTool`, which `TOOLS_HOLDER` answers |
-| `SCH_EDIT_TABLE_TOOL` | 242 | 1 | 1 | `GetCurrentSheet`, which the schematic answers |
-| `SCH_ALIGN_TOOL` | 419 | 4 | 2 | `GetScreen`, `Schematic` — both already on the interface |
-| `SCH_POINT_EDITOR` | 1,802 | 14 | 6 | plus `SetMsgPanel`, which is a window |
-| `SCH_INSPECTION_TOOL` | 1,437 | 13 | 8 | ERC; most of its output is a dialog |
-| `SCH_FIND_REPLACE_TOOL` | 580 | 28 | 9 | the dialog is the tool |
-| `SCH_NAVIGATE_TOOL` | 322 | 33 | 11 | sheet navigation; wants `SCH_HOST::SetCurrentSheetIndex` |
-| `SCH_DRAWING_TOOLS` | 3,519 | 134 | 31 | placing symbols needs the library chooser |
-| `SCH_EDIT_TOOL` | 4,161 | 164 | 31 | rotate, mirror, delete, properties |
-| `SCH_EDITOR_CONTROL` | 3,885 | 180 | 61 | cross-probing, netlists, the whole File menu |
-| `COMMON_TOOLS`, `ZOOM_TOOL`, `PICKER_TOOL`, `GROUP_TOOL`, `PROPERTIES_TOOL`, `EMBED_TOOL`, `COMMON_CONTROL` | — | — | — | in `common/`; need a `TOOLS_HOLDER`-level hoist, so not eeschema's alone |
+**The estimate's method was wrong, and in a way worth recording.** It counted
+`grep -c "m_frame->"`. That is not how several of these tools reach their frame:
+`SCH_TOOL_BASE::frame()` is `getEditFrame<T>()`, which is an unchecked
+`static_cast` of the tool holder — undefined behaviour on a holder that is not a
+frame, and invisible to that grep. `EE_GRAPHIC_TOOL` was listed at one site and
+has thirty-three. The lesson for the next editor is in
+`05-porting-guide.md`: count the *methods* a tool asks its frame for, and count
+`frame()` as a site.
 
-The first four are between an afternoon and a day each and would add rotate-free
-graphic drawing, table editing and alignment. `SCH_EDIT_TOOL` is the one that makes
-the editor feel complete and is a week's work. `SCH_EDITOR_CONTROL` is mostly Stage
-5, because most of those 61 methods open a dialog.
+| Tool | estimated sites | actual | what it cost |
+|---|---:|---:|---|
+| `SCH_ALIGN_TOOL` | 4 | 4 | as estimated |
+| `SCH_EDIT_TABLE_TOOL` | 1 | 2 | plus `getScreen()` in the header |
+| `EE_GRAPHIC_TOOL` | 1 | 33 | 32 through `frame()` |
+| `SCH_POINT_EDITOR` | 14 | 21 | plus a helper class holding `EDA_DRAW_FRAME&` |
+| `SCH_NAVIGATE_TOOL` | 33 | 35 | needed one interface addition; see below |
+| `SCH_FIND_REPLACE_TOOL` | 28 | ~30 | converts, then declines; see below |
+| `SCH_INSPECTION_TOOL` | 13 | ~35 | converts, then declines; see below |
+| `SCH_DRAWING_TOOLS` | 134 | 149 | 15 through `frame()` |
+| `SCH_EDIT_TOOL` | 164 | ~170 | 4 through `frame()` |
+| `SCH_EDITOR_CONTROL` | 180 | ~186 | 6 through `getEditFrame` |
+| `SCH_DESIGN_BLOCK_CONTROL` | 0 | — | **not converted**, correctly: a library pane and a dialog |
+| `COMMON_TOOLS`, `ZOOM_TOOL`, `PICKER_TOOL`, `GROUP_TOOL`, `EMBED_TOOL`, `COMMON_CONTROL` | — | — | **not converted**: in `common/`, needs a `TOOLS_HOLDER`-level hoist, so not eeschema's alone |
+
+`PROPERTIES_TOOL` is in that last row's list in the source but is not in it here,
+because it never needed converting: it is a bare `TOOL_INTERACTIVE` with no
+`Init()` of its own, so it has run on `SCH_HOST` since before any of this.
+
+One interface method was added, for `SCH_NAVIGATE_TOOL`:
+`SCHEMATIC_HOLDER::DisplaySheet( const SCH_SHEET_PATH& )`. Changing sheet is
+`SetCurrentSheet` followed by `DisplayCurrentSheet`, and doing only the first
+leaves the editor showing the sheet it has left, so it is one call rather than
+two. Both implementations already existed; what was missing was the seam.
+
+### What each converted tool actually does
+
+Registering and working are different claims. These tools run on a holder with no
+window; what each one can *do* there varies, and the split is always the same —
+the model work runs, the dialogs decline.
+
+| Tool | runs headless | declines, because it is a window |
+|---|---|---|
+| `SCH_SELECTION_TOOL` | all of it | — |
+| `SCH_MOVE_TOOL` | all of it | info-bar hint, net-collision preview |
+| `SCH_LINE_WIRE_BUS_TOOL` | all of it | — |
+| `SCH_ALIGN_TOOL` | all of it | the Align submenu |
+| `SCH_EDIT_TABLE_TOOL` | row, column and cell edits | table properties, CSV export |
+| `SCH_POINT_EDITOR` | every drag | message panel, cursor shape, menu |
+| `EE_GRAPHIC_TOOL` | arcs, Béziers, elliptical arcs | text-box content, graphics import |
+| `SCH_NAVIGATE_TOOL` | all eight navigation actions | hypertext links |
+| `SCH_DRAWING_TOOLS` | junctions, no-connects, bus entries, labels, hierarchical labels, directive labels, sheet pins, tables, rule areas, images | placing a symbol, importing or drawing a sheet, syncing sheet pins, free text |
+| `SCH_EDIT_TOOL` | rotate, mirror, swap, repeat, delete, autoplace, justify, lock, label/text conversion | every properties dialog |
+| `SCH_EDITOR_CONTROL` | clipboard, undo, redo, appearance toggles | 44 actions; the File menu, netlists, annotation, cross-probing |
+| `SCH_INSPECTION_TOOL` | **nothing** | see below |
+| `SCH_FIND_REPLACE_TOOL` | **nothing** | see below |
+
+The last two convert cleanly and then decline everything, and saying why is more
+useful than the conversion:
+
+* **`SCH_INSPECTION_TOOL` computes nothing.** There is no compute/report seam here
+  to hoist. ERC lives inside `DIALOG_ERC`, which owns the `ERC_TESTER` run and the
+  marker provider; the symbol check needs a `UNITS_PROVIDER`, which a
+  `SCHEMATIC_HOLDER` is not; the marker actions walk the dialog's list rather than
+  the document. A headless caller drives `ERC_TESTER` and `CheckLibSymbol()`
+  itself, and does not come through this tool.
+* **`SCH_FIND_REPLACE_TOOL` is blocked on one thing.** `EDA_SEARCH_DATA` is owned
+  by `EDA_DRAW_FRAME` and filled in by `DIALOG_SCH_FIND`; neither the interface nor
+  the tool has a copy, so there is nowhere for search terms to come from. The walk
+  over screens, sheets and items is document work and is fully converted, so the
+  day the terms can arrive from somewhere other than a wxDialog, `FindNext`,
+  `ReplaceAndFindNext` and `ReplaceAll` work unchanged.
+
+### What the next person should add, in order
+
+Four things were wanted during this work and deliberately not added, because each
+is a judgement about the interface rather than a mechanical conversion:
+
+1. **`DeleteJunction( SCH_COMMIT*, SCH_ITEM* )`** — the biggest. About 80 lines in
+   `eeschema/bus-wire-junction.cpp` that use only `GetScreen()`, `AddToScreen`,
+   `RemoveFromScreen` and the selection tool, all already on the interface. Without
+   it a headless delete leaves stale junctions and unmerged wires.
+2. **A search-data seam** for `SCH_FIND_REPLACE_TOOL`, as above. It is the
+   difference between that tool registering and that tool working.
+3. **`SelectBodyStyle( SCH_SYMBOL*, int, SCH_COMMIT* )`** —
+   `eeschema/picksymbol.cpp:200`, uses only `GetScreen()` and the tool manager.
+4. **A units provider** — `GetUserUnits()` or a `UNITS_PROVIDER*`. `CheckLibSymbol()`
+   needs one to format pin coordinates, and `EE_GRAPHIC_TOOL` currently falls back
+   to `EDA_UNITS::UNSCALED` for its on-canvas dimension labels.
+
+### One behaviour that differs without a window
+
+`SCH_DRAWING_TOOLS::DrawTable` commits the table as dragged out rather than
+opening `DIALOG_TABLE_PROPERTIES` to amend it first. That is a different *outcome*
+rather than lost feedback, and it is the only one — everywhere else a missing
+window costs feedback or refuses the action. It is on a path the GUI does not
+have: with a frame the dialog still gates the commit. Discarding the drawn table
+was the alternative and is worse for a headless caller.
+
+### A bug this found in the GUI
+
+`SCHEMATIC_HOLDER::GetSchematic()` is documented as the route a converted tool
+takes to the document, and Stage 4b's own commits use it that way. **No frame
+overrode it.** `SCH_EDIT_FRAME` declares `SCHEMATIC& Schematic()` and nothing
+else, so every frame answered the base class's `return nullptr`.
+
+That is a null dereference in the wx editor, not only headless:
+`sch_move_tool.cpp` does `m_editor->GetSchematic()->Hierarchy()` unguarded when a
+move includes a sheet. One line on `SCH_EDIT_FRAME` fixes it. It went unnoticed
+because every existing use sits on a path the QA suite does not drive — which is
+the same reason the recording GAL needed `EveryRenderStateSetterIsRecorded`.
 
 Three smaller things this stage deliberately left:
 
@@ -855,6 +956,15 @@ Three smaller things this stage deliberately left:
 **Done when:** a user can select, move, draw a wire, undo it, and save a file that
 KiCad reopens unchanged. **All five, verified in `qa_eeschema` and again over the C
 ABI from Rust.**
+
+Verified after the roster conversion, on this branch, in this container:
+`qa_eeschema` 1,735 cases with the one pre-existing
+`ConnectivityExport/AllegroUsesPublishedNetsAndPreservesDeviceFiles` failure --
+which fails in isolation and whose exporter this branch does not touch --
+`qa_common` 1,521 green, and the Rust workspace green including all 16
+`kicad-sch-sys` tests against the linked host, of which two drive the tools
+through the real C ABI: a click that selects the item under it, and an edit
+undone, redone, saved and reloaded.
 
 
 ## Stage 5 — Dialogs, and who owns `main()`
@@ -883,8 +993,10 @@ one this document used to call "the largest single piece of the project" — cam
 at about two. All of 1, 2, 3, 4a and 4b are done.
 
 Between them they turn a viewer of a recorded frame into something a user can edit
-a schematic with, for four tools' worth of editing, with no wxFrame anywhere on the
-path.
+a schematic with, for everything that is not a dialog, with no wxFrame anywhere on
+the path. The roster conversion that finished 4b cost about a day on top of that,
+most of it in two tools; the other eleven were mechanical once the first four had
+settled what the interface was.
 
 Every one of them spent most of its time on something that was not in the plan,
 and it was the same kind of thing every time: a claim that two layers made

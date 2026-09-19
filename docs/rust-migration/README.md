@@ -7,14 +7,19 @@ and tools exactly where they are.
 
 **If you are evaluating what this actually delivers, read
 [`06-what-is-missing.md`](06-what-is-missing.md) first.** What exists is a schematic
-editor for **four tools' worth of editing**: it opens real `.kicad_sch` files
-through the C++ host, redraws from the live document, and a user can select items by
-clicking or dragging a box, move them, draw a wire, undo and redo any of it, and
-save a file that KiCad reopens — all with no `wxFrame` anywhere on the path.
-Seventeen of eeschema's twenty-one tool classes still decline such a context, and
-all 124 dialogs are untouched, so **wxWidgets has not been removed from anything**
-and the wx editor is still the only complete way to edit a schematic. That document
-says exactly which tools run, what each remaining one costs, and why.
+editor for **everything eeschema can do without opening a dialog**: it opens real
+`.kicad_sch` files through the C++ host, redraws from the live document, and a user
+can select items by clicking or dragging a box, move, rotate, mirror and delete
+them, draw wires, place junctions, no-connects, labels and sheet pins, cut and
+paste, undo and redo any of it, and save a file that KiCad reopens — all with no
+`wxFrame` anywhere on the path. Every tool class in `eeschema/tools/` now runs in
+such a context bar one, and `common/`'s shared tools are the remaining hold-out.
+
+What it cannot do is anything that *is* a dialog, which is most of what an editor
+is: placing a symbol, editing any item's properties, ERC, find and replace. All 124
+dialogs are untouched, so **wxWidgets has not been removed from anything** and the
+wx editor is still the only complete way to edit a schematic. That document says
+exactly which tools run, what each one can and cannot do there, and why.
 
 For the design, start with **`01-plan.md`**.
 
@@ -57,9 +62,10 @@ properties need the C++ document model it is not yet connected to. They are
 labelled that way on purpose: a panel showing plausible placeholder data beside
 real data is worse than one admitting what it does not have.
 
-Clicking an item selects it, dragging one moves it, `W` draws a wire, ⌘Z undoes and
-⌘S saves. Almost nothing else in the menus does anything yet, and
-`06-what-is-missing.md` says which tool each missing thing is waiting on.
+Clicking an item selects it, dragging one moves it, `W` draws a wire, `R` rotates,
+`Del` deletes, `J` places a junction, `L` places a label, ⌘X/⌘V cut and paste, ⌘Z
+undoes and ⌘S saves. What does nothing is every menu item that opens a dialog, and
+`06-what-is-missing.md` says which of those is waiting on what.
 
 ## The shape of it, in one paragraph
 
@@ -75,18 +81,21 @@ and it is the C++ one.
 ## Honest status
 
 This step delivers the rendering and presentation seam, the input path over it, and
-the editing loop for four tools. Concretely: the Rust application opens a
-`.kicad_sch`, draws it, re-records it from the live document whenever the view moves
-*or a tool changes something*, and a user can select, move, draw a wire, undo, redo
+the editing loop for eeschema's whole tool roster. Concretely: the Rust application
+opens a `.kicad_sch`, draws it, re-records it from the live document whenever the
+view moves *or a tool changes something*, and a user can select, move, rotate,
+mirror, delete, draw wires, place junctions and labels, cut and paste, undo, redo
 and save.
 
-**What is missing is the rest of eeschema.** Seventeen of the twenty-one tool
-classes still learn their `m_frame` from the tool holder and decline when the holder
-is not a frame, so `InitTools()` drops them: no rotate, no delete, no properties, no
-symbol placement, no ERC, no netlist, no find and replace. All 124 dialogs are
-untouched. `06-what-is-missing.md` Stage 4b measures what each remaining tool costs
-— four of them need between one and six methods, and `SCH_EDITOR_CONTROL` needs
-sixty-one, most of which open a dialog.
+**What is missing is every dialog.** `SCH_DESIGN_BLOCK_CONTROL` is the one tool
+class that still declines a non-frame holder, and `common/`'s shared tools —
+`COMMON_TOOLS`, `ZOOM_TOOL`, `PICKER_TOOL`, `GROUP_TOOL`, `EMBED_TOOL`,
+`COMMON_CONTROL` — need a `TOOLS_HOLDER`-level hoist that is pcbnew's and
+gerbview's decision as much as eeschema's. Beyond that the tools all *run*, but the
+ones whose work is a dialog decline the action: no symbol placement, no properties,
+no ERC, no find and replace. All 124 dialogs are untouched.
+`06-what-is-missing.md` Stage 4b says which tool does what, and what the next four
+interface additions would buy.
 
 Four predictions this branch falsified rather than confirmed, because they are the
 useful part:
