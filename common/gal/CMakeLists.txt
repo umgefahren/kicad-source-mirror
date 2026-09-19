@@ -21,6 +21,11 @@ set( GAL_SRCS
 
     ../view/view.cpp
     ../view/view_controls.cpp
+    # A VIEW_CONTROLS for a host that owns its own pointer, rather than polling the
+    # OS for one. Lives here rather than beside wx_view_controls.cpp in libcommon
+    # because it needs nothing libcommon has, and keeping it in the wx-free library
+    # is what stops it acquiring a dependency by accident.
+    ../view/host_view_controls.cpp
     ../view/view_group.cpp
     ../view/view_overlay.cpp
     ../view/zoom_controller.cpp
