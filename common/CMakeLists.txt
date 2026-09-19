@@ -864,6 +864,7 @@ set( COMMON_SRCS
     table_io.cpp
     textentry_tricks.cpp
     undo_redo_container.cpp
+    undo_redo_holder.cpp
     validators.cpp
     drawing_sheet/ds_painter.cpp
     view/wx_view_controls.cpp

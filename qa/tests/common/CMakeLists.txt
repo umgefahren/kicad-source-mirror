@@ -102,6 +102,7 @@ set( QA_COMMON_SRCS
     test_priority_thread_pool_task.cpp
     test_snapping_options.cpp
     test_string_utils.cpp
+    test_undo_redo_holder.cpp
     test_richio.cpp
     test_template_fieldnames.cpp
     test_text_attributes.cpp

@@ -580,8 +580,6 @@ protected:
     COLOR4D              m_gridColor;         // Grid color
     COLOR4D              m_drawBgColor;       // The background color of the draw canvas; BLACK for
                                               // Pcbnew, BLACK or WHITE for Eeschema
-    int                  m_undoRedoCountMax;  // Default Undo/Redo command Max depth, to be handed
-                                              // to screens
     bool                 m_polarCoords;       // For those frames that support polar coordinates
 
     // Show the drawing sheet (border & title block).
