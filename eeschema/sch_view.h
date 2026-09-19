@@ -102,6 +102,25 @@ public:
     void Update( const KIGFX::VIEW_ITEM* aItem, int aUpdateFlags ) const override;
     void Update( const KIGFX::VIEW_ITEM* aItem ) const override;
 
+    /**
+     * Mark a schematic item, and whatever is drawn from it, for repaint.
+     *
+     * This is the body of SCHEMATIC_HOLDER::UpdateItem(), which every editing context —
+     * SCH_BASE_FRAME and SCH_HOST — has to do identically. It lives here rather than on
+     * one of them because the rules are about the view and the R-tree, not about who owns
+     * them: sheet pins are drawn by their parent, symbols and tables redraw their
+     * children, and a group's children have to be re-indexed with it.
+     *
+     * @param aItem          the item that changed.
+     * @param aScreen        the screen holding it, or null to skip the R-tree update.
+     * @param aIsAddOrDelete true when the item is arriving or leaving, in which case it is
+     *                       not itself marked — VIEW::Add/Remove has done that.
+     * @param aUpdateRtree   re-index the item in @p aScreen. Careful: this invalidates
+     *                       R-tree iterators, so it cannot be done while iterating.
+     */
+    void UpdateSchItem( EDA_ITEM* aItem, SCH_SCREEN* aScreen, bool aIsAddOrDelete,
+                        bool aUpdateRtree );
+
     void Cleanup();
 
     /**

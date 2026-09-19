@@ -107,6 +107,10 @@ fn main() {
             "an action no tool handles is reported, not an error",
             live::an_unhandled_action_is_reported,
         ),
+        (
+            "a click over the ABI selects the item under it",
+            live::a_click_selects_the_item_under_it,
+        ),
     ];
 
     let mut failed = 0;
@@ -253,8 +257,36 @@ mod live {
     }
 
     /// Compare two sorted lists of text, reporting the first difference.
+    ///
+    /// When the *lengths* differ, "first difference at index N" is a misleading way to
+    /// say it: everything after an insertion is shifted, so the first mismatch is
+    /// usually not where the extra entry is. So that case reports the multiset
+    /// difference instead, which names what was added or lost.
     fn same_text(what: &str, live: &[String], golden: &[String]) {
-        assert_eq!(live.len(), golden.len(), "{what}: count");
+        if live.len() != golden.len() {
+            let mut counts: std::collections::BTreeMap<&str, i64> = Default::default();
+
+            for entry in live {
+                *counts.entry(entry.as_str()).or_default() += 1;
+            }
+
+            for entry in golden {
+                *counts.entry(entry.as_str()).or_default() -= 1;
+            }
+
+            let mut report = String::new();
+
+            for (entry, delta) in counts.iter().filter(|(_, delta)| **delta != 0) {
+                let side = if *delta > 0 { "only live  " } else { "only golden" };
+                report.push_str(&format!("\n  {side} x{}  {entry}", delta.abs()));
+            }
+
+            panic!(
+                "{what}: {} live entries against {} golden ones:{report}",
+                live.len(),
+                golden.len()
+            );
+        }
 
         if let Some((at, (live, golden))) = live
             .iter()
@@ -303,6 +335,66 @@ mod live {
         );
     }
 
+    /// The frame body, allowing exactly one kind of difference from the fixture.
+    ///
+    /// The fixtures in `qa/data/draw_streams/` were recorded before `SCH_HOST` had a
+    /// tool framework. A host with one has overlay *targets* in use, because the
+    /// tools put view items on them — `SCH_SELECTION_TOOL`'s selection group and
+    /// entered-group overlay, `EE_GRID_HELPER`'s axis cross and snap point — and
+    /// `KIGFX::VIEW` brackets a layer it has items on with a `SetTarget` and a
+    /// `SetLayerDepth` whether or not any of them is visible. So a live frame today
+    /// carries four state commands the fixture does not, and draws nothing extra.
+    ///
+    /// Rather than tolerate a count, this says which commands may differ and holds
+    /// everything else to equality: nothing that draws may appear or disappear, and
+    /// nothing the fixture paints may be missing. Regenerating the fixtures would
+    /// also close the gap, and is worse — `generate.sh` on a different standard
+    /// library reshuffles group ids (`docs/rust-migration/04-host-seam.md` §8), so it
+    /// would mix a real four-command change with a spurious one.
+    fn same_painted_frame(live: &[String], golden: &[String]) {
+        let is_target_or_depth =
+            |entry: &String| entry.starts_with("SetTarget") || entry.starts_with("SetLayerDepth");
+
+        let live_drawn: Vec<String> = live
+            .iter()
+            .filter(|entry| !is_target_or_depth(entry))
+            .cloned()
+            .collect();
+        let golden_drawn: Vec<String> = golden
+            .iter()
+            .filter(|entry| !is_target_or_depth(entry))
+            .cloned()
+            .collect();
+
+        same_text("painted frame, less target and depth", &live_drawn, &golden_drawn);
+
+        // The state commands themselves: the fixture's must all still be there, and
+        // the extras may only be the overlay brackets described above.
+        let extra: Vec<&String> = live
+            .iter()
+            .filter(|entry| is_target_or_depth(entry))
+            .filter(|entry| !golden.contains(entry))
+            .collect();
+
+        // An overlay bracket is a target switch and the layer's depth, and the depths
+        // are ones the fixture never reached because it never entered those layers.
+        assert!(
+            extra.iter().all(|entry| {
+                entry.starts_with("SetTarget { target: Overlay }")
+                    || entry.starts_with("SetLayerDepth")
+            }),
+            "the only new frame state a tool framework may add is an overlay bracket, got {extra:?}"
+        );
+
+        let missing: Vec<&String> = golden
+            .iter()
+            .filter(|entry| is_target_or_depth(entry))
+            .filter(|entry| !live.contains(entry))
+            .collect();
+
+        assert!(missing.is_empty(), "the live frame lost frame state: {missing:?}");
+    }
+
     pub fn a_live_render_paints_the_recorded_fixture() {
         let (session, live) = record(&kitchen_sink());
 
@@ -327,7 +419,7 @@ mod live {
         );
 
         // And the picture, which is what the ordering does not change.
-        same_text("painted frame", &painted(&live), &painted(&golden));
+        same_painted_frame(&painted(&live), &painted(&golden));
         same_text("retained bodies", &bodies(&live), &bodies(&golden));
 
         drop(session);
@@ -597,10 +689,11 @@ mod live {
             })
             .expect("a pointer move is accepted");
 
-        // No eeschema tool runs on a holder that is not a frame, so nothing claims
-        // a motion event. That is the state of the seam, asserted rather than
-        // described.
-        assert!(!outcome.handled);
+        // The selection tool is running — it is the one tool that initialises on a
+        // holder that is not a frame — so a motion event now has a recipient. What
+        // is asserted is only that the call succeeded and the cursor moved; whether
+        // a given tool claims a given event is that tool's business.
+        let _ = outcome;
 
         let after = session.editor_state().expect("the editor state");
 
@@ -715,10 +808,117 @@ mod live {
             .expect("an unknown action is not an error");
         assert!(!missing.handled);
 
+        // A *registered* name with no tool behind it, which is the case worth
+        // asserting: every TOOL_ACTION in the process is registered whether or not a
+        // tool exists to run it, so an invented name proves nothing either way. This
+        // check used to use "eeschema.InteractiveSelection.selectionActivate", which
+        // is not a name in the tree at all — it resolved to nothing and passed for
+        // the wrong reason.
         let declined = session
-            .run_action("eeschema.InteractiveSelection.selectionActivate")
+            .run_action("common.Control.zoomFitScreen")
             .expect("a real action with no tool behind it is not an error either");
         assert!(!declined.handled);
+
+        // And one that does have a tool behind it, so "not handled" above means
+        // something other than "this never reports handled".
+        let handled = session
+            .run_action("common.InteractiveSelection")
+            .expect("activating the selection tool");
+        assert!(handled.handled);
+    }
+
+    /// A click on a known wire selects it, over the real ABI.
+    ///
+    /// This is Stage 4b's round trip from the Rust side: screen pixels in,
+    /// `selection_count` out, with a real `SCH_SELECTION_TOOL` hit-testing a real
+    /// `SCH_SCREEN` in between. The C++ half is covered by `qa_eeschema`'s
+    /// `SchHostSelection`; what this adds is that it survives the boundary.
+    ///
+    /// The target comes from the fixture rather than from an API, because the ABI
+    /// carries no item geometry: `api_kitchen_sink.kicad_sch` holds a wire from
+    /// (102.87, 77.47) to (90.17, 77.47) millimetres, and eeschema's internal unit
+    /// is 100 nm, so a millimetre is 10,000 of them.
+    pub fn a_click_selects_the_item_under_it() {
+        const MM: f64 = 10_000.0;
+        let target = (96.52 * MM, 77.47 * MM);
+
+        let mut session = Session::open(&kitchen_sink()).expect("the fixture loads");
+
+        session.set_viewport(&FIXTURE_VIEWPORT).expect("a viewport");
+        session.zoom_to_fit().expect("framing the page");
+
+        // The camera as the session granted it — which is not necessarily what was
+        // asked for, because VIEW::SetScale clamps to eeschema's zoom limits.
+        let camera = session.viewport().expect("reading the camera back");
+
+        // World to screen, from the camera contract alone: the session draws
+        // `center` at the middle of the viewport, `scale` is pixels per internal
+        // unit, and eeschema's view is not mirrored on either axis.
+        let screen = (
+            (target.0 - camera.center_x) * camera.scale + f64::from(camera.width_px) / 2.0,
+            (target.1 - camera.center_y) * camera.scale + f64::from(camera.height_px) / 2.0,
+        );
+
+        assert_eq!(
+            session.editor_state().expect("editor state").selection_count,
+            0
+        );
+
+        for event in [
+            InputEvent::PointerMotion {
+                screen,
+                modifiers: Modifiers::default(),
+            },
+            InputEvent::PointerDown {
+                screen,
+                button: PointerButton::Left,
+                modifiers: Modifiers::default(),
+            },
+            InputEvent::PointerUp {
+                screen,
+                button: PointerButton::Left,
+                modifiers: Modifiers::default(),
+            },
+        ] {
+            session.dispatch_input(&event).expect("the gesture crosses");
+        }
+
+        let state = session.editor_state().expect("editor state");
+
+        assert_eq!(
+            state.selection_count, 1,
+            "clicking the wire at {target:?} (screen {screen:?}) should select it"
+        );
+
+        // Selecting draws a shadow, so the frame the consumer is holding is stale.
+        // KSCH_INPUT_REDRAW is the only notice it gets, and until Stage 4b nothing
+        // in eeschema ever set it.
+        let mut redrawn = false;
+
+        for event in [
+            InputEvent::PointerDown {
+                screen: (1.0, 1.0),
+                button: PointerButton::Left,
+                modifiers: Modifiers::default(),
+            },
+            InputEvent::PointerUp {
+                screen: (1.0, 1.0),
+                button: PointerButton::Left,
+                modifiers: Modifiers::default(),
+            },
+        ] {
+            redrawn |= session
+                .dispatch_input(&event)
+                .expect("the gesture crosses")
+                .redraw;
+        }
+
+        assert!(redrawn, "clearing a selection should ask for a redraw");
+        assert_eq!(
+            session.editor_state().expect("editor state").selection_count,
+            0,
+            "a click on nothing clears the selection"
+        );
     }
 
     /// The main-thread rule, as a check rather than a comment.

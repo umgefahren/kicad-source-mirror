@@ -26,6 +26,7 @@
 #include <libraries/library_table.h>
 #include <sch_draw_panel.h>
 #include <sch_screen.h>
+#include <schematic_holder.h>
 #include <schematic_settings.h>
 #include <variant_symbol_utils.h>
 
@@ -122,7 +123,7 @@ public:
     SCH_DRAW_PANEL* GetCanvas() const override;
     SCH_SCREEN* GetScreen() const override;
 
-    EESCHEMA_SETTINGS* eeconfig() const;
+    EESCHEMA_SETTINGS* eeconfig() const override;
 
     SYMBOL_EDITOR_SETTINGS* libeditconfig() const;
 
@@ -131,14 +132,35 @@ public:
     void LoadSettings( APP_SETTINGS_BASE* aCfg ) override;
     void SaveSettings( APP_SETTINGS_BASE* aCfg ) override;
 
-    SCH_RENDER_SETTINGS* GetRenderSettings();
+    SCH_RENDER_SETTINGS* GetRenderSettings() override;
 
     COLOR4D GetDrawBgColor() const override;
 
     /**
      * Allow some frames to show/hide hidden pins.  The default impl shows all pins.
      */
-    virtual bool GetShowAllPins() const { return true; }
+    bool GetShowAllPins() const override { return true; }
+
+    /**
+     * EDA_DRAW_FRAME and SCHEMATIC_HOLDER each declare one of these, and they are two
+     * distinct virtuals with the same signature. Declaring one here says which a frame
+     * means — it overrides both — and keeps the call unambiguous for a caller holding
+     * either base.
+     */
+    EDA_ITEM* ResolveItem( const KIID& aId, bool aAllowNullptrReturn = false ) const override
+    {
+        return EDA_DRAW_FRAME::ResolveItem( aId, aAllowNullptrReturn );
+    }
+
+    bool GetOverrideLocks() const override { return EDA_DRAW_FRAME::GetOverrideLocks(); }
+
+    /**
+     * Repaint now. See SCHEMATIC_HOLDER::ForceRefreshCanvas() for why this is not
+     * TOOLS_HOLDER::RefreshCanvas(), which posts a paint event instead.
+     */
+    void ForceRefreshCanvas() override;
+
+    void SetCurrentCursor( KICURSOR aCursor ) override;
 
     void SetPageSettings( const PAGE_INFO& aPageSettings ) override;
     const PAGE_INFO& GetPageSettings () const override;
@@ -227,8 +249,8 @@ public:
     /**
      * Mark an item for refresh.
      */
-    virtual void UpdateItem( EDA_ITEM* aItem, bool isAddOrDelete = false,
-                             bool aUpdateRtree = false );
+    void UpdateItem( EDA_ITEM* aItem, bool isAddOrDelete = false,
+                     bool aUpdateRtree = false ) override;
 
     /**
      * Mark selected items for refresh.
@@ -292,7 +314,7 @@ public:
 
     void GetLibraryItemsForListDialog( wxArrayString& aHeaders, std::vector<wxArrayString>& aItemsToDisplay );
 
-    void HighlightSelectionFilter( const SCH_SELECTION_FILTER_OPTIONS& aOptions );
+    void HighlightSelectionFilter( const SCH_SELECTION_FILTER_OPTIONS& aOptions ) override;
 
 protected:
     void handleActivateEvent( wxActivateEvent& aEvent ) override;

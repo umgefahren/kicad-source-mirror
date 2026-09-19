@@ -20,29 +20,128 @@
 #pragma once
 
 class EDA_ITEM;
+class EESCHEMA_SETTINGS;
+class KIID;
+class SCH_RENDER_SETTINGS;
 class SCH_SCREEN;
 class SCH_SELECTION_TOOL;
 class SCH_GLOBALLABEL;
 
+struct SCH_SELECTION_FILTER_OPTIONS;
+
+enum class KICURSOR;
+
 /**
- * This is a bridge class to help the schematic be able to affect SCH_EDIT_FRAME
- * without doing anything too wild in terms of passing callbacks constantly in numerous files
+ * What a schematic tool needs from whatever is editing the schematic.
  *
- * The long term goal would be to fix the internal structure and make the relationship between
- * frame and schematic less intertwined
+ * This started as a bridge class letting the schematic affect SCH_EDIT_FRAME without
+ * passing callbacks through numerous files, with the stated long-term goal of making the
+ * relationship between frame and schematic less intertwined. It is now also the seam a
+ * tool reaches the document through, so that "the thing editing the schematic" and "a
+ * wxFrame" can be two different objects: SCH_BASE_FRAME implements this, and so does
+ * SCH_HOST, which has no window at all.
+ *
+ * The rule for what belongs here is what makes that possible: the document, the settings
+ * that decide how selection and drawing behave, and notifications a canvas *owner* can
+ * act on. Anything that is inherently a window — a dialog, an info bar, keyboard focus,
+ * hypertext navigation — deliberately does not, and a tool reaching for one of those
+ * downcasts to the frame it needs and does nothing when the answer is null.
+ *
+ * Two notes for whoever converts the next tool:
+ *
+ * * The tool framework already answers some of what looks like frame access.
+ *   `TOOL_BASE::getView()` and `getViewControls()` come from `TOOL_MANAGER`, so
+ *   `m_frame->GetCanvas()->GetView()` is not a reason to need a frame; and
+ *   `TOOL_MANAGER::GetToolHolder()` answers `ToolStackIsEmpty()`, `GetDragAction()` and
+ *   the rest of `TOOLS_HOLDER`.
+ * * ::SetCurrentCursor and ::ForceRefreshCanvas are here rather than on `TOOLS_HOLDER`
+ *   because that base class is inherited by every KiCad program and this is eeschema's
+ *   change to make. pcbnew's tools reach for the same two through
+ *   `m_frame->GetCanvas()`, so if a second editor needs them they belong one level up.
  */
 class SCHEMATIC_HOLDER
 {
 public:
+    virtual ~SCHEMATIC_HOLDER() = default;
+
+    // ------------------------------------------------------------------ the document
+
     /**
      * Add an item to the screen (and view)
      * aScreen is the screen the item is located on, if not the current screen
      */
     virtual void AddToScreen( EDA_ITEM* aItem, SCH_SCREEN* aScreen = nullptr ) = 0;
 
-    virtual SCH_SELECTION_TOOL* GetSelectionTool() { return nullptr; }
-
     virtual void RemoveFromScreen( EDA_ITEM* aItem, SCH_SCREEN* aScreen ) = 0;
 
+    /**
+     * The screen being edited.
+     *
+     * Note for implementers that are also an EDA_DRAW_FRAME: that class declares a
+     * `GetScreen()` of its own returning a `BASE_SCREEN*`, so a single declaration in the
+     * derived class overrides both — the return type is covariant with each.
+     */
+    virtual SCH_SCREEN* GetScreen() const = 0;
+
+    /**
+     * Fetch an item by KIID, or null if this holder has no such item.
+     *
+     * `EDA_DRAW_FRAME` declares an identical virtual, so a frame has to declare one
+     * itself to say which it means; see SCH_BASE_FRAME.
+     */
+    virtual EDA_ITEM* ResolveItem( const KIID& aId, bool aAllowNullptrReturn = false ) const = 0;
+
+    /**
+     * Mark an item, and whatever is drawn from it, for repaint.
+     *
+     * @param isAddOrDelete true when the item is arriving or leaving the view.
+     * @param aUpdateRtree  re-index the item in the screen. This invalidates R-tree
+     *                      iterators, so it cannot be done while iterating one.
+     */
+    virtual void UpdateItem( EDA_ITEM* aItem, bool isAddOrDelete = false,
+                             bool aUpdateRtree = false ) = 0;
+
+    virtual SCH_SELECTION_TOOL* GetSelectionTool() { return nullptr; }
+
     virtual void IntersheetRefUpdate( SCH_GLOBALLABEL* aItem ) {}
+
+    // ------------------------------------------------------------------- the settings
+
+    /**
+     * The eeschema application settings, or null where there are none — the symbol
+     * editor answers null, and tools written against it test for that.
+     */
+    virtual EESCHEMA_SETTINGS* eeconfig() const = 0;
+
+    virtual SCH_RENDER_SETTINGS* GetRenderSettings() = 0;
+
+    /// Whether hidden pins are shown. Only some editors let this be false.
+    virtual bool GetShowAllPins() const { return true; }
+
+    /// Whether locked items can be selected and edited anyway.
+    virtual bool GetOverrideLocks() const { return false; }
+
+    // --------------------------------------------------- feedback that is not a window
+
+    /**
+     * Repaint now rather than posting a paint event.
+     *
+     * This is `EDA_DRAW_PANEL_GAL::ForceRefresh()`'s contract, and the synchronous half
+     * of it is load bearing: a tool that changes what is on screen inside its own event
+     * loop — a selection box, a drag preview — draws nothing until the loop next idles
+     * otherwise. It is distinct from `TOOLS_HOLDER::RefreshCanvas()`, which posts.
+     *
+     * A holder that does not own the frame clock cannot repaint synchronously and
+     * records the request instead, which is what SCH_HOST does.
+     */
+    virtual void ForceRefreshCanvas() {}
+
+    /// Set the pointer's shape, to say what a click here would do.
+    virtual void SetCurrentCursor( KICURSOR aCursor ) {}
+
+    /**
+     * Report which selection-filter categories rejected everything under the cursor, so
+     * the user finds out why their click selected nothing.
+     */
+    virtual void HighlightSelectionFilter( const SCH_SELECTION_FILTER_OPTIONS& aOptions ) {}
 };

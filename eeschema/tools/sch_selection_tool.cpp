@@ -484,7 +484,7 @@ static void passEvent( TOOL_EVENT* const aEvent, const TOOL_ACTION* const aAllow
 
 SCH_SELECTION_TOOL::SCH_SELECTION_TOOL() :
         SELECTION_TOOL( "common.InteractiveSelection" ),
-        m_frame( nullptr ),
+        m_editor( nullptr ),
         m_nonModifiedCursor( KICURSOR::ARROW ),
         m_isSymbolEditor( false ),
         m_isSymbolViewer( false ),
@@ -563,13 +563,13 @@ bool SCH_SELECTION_TOOL::Init()
 {
     // Checked, because the tool holder is not necessarily a frame; see
     // SCH_TOOL_BASE::Init() for why declining is the right answer when it is not.
-    m_frame = dynamic_cast<SCH_BASE_FRAME*>( m_toolMgr->GetToolHolder() );
+    m_editor = dynamic_cast<SCHEMATIC_HOLDER*>( m_toolMgr->GetToolHolder() );
 
-    if( !m_frame )
+    if( !m_editor )
         return false;
 
-    SYMBOL_VIEWER_FRAME* symbolViewerFrame = dynamic_cast<SYMBOL_VIEWER_FRAME*>( m_frame );
-    SYMBOL_EDIT_FRAME*   symbolEditorFrame = dynamic_cast<SYMBOL_EDIT_FRAME*>( m_frame );
+    SYMBOL_VIEWER_FRAME* symbolViewerFrame = dynamic_cast<SYMBOL_VIEWER_FRAME*>( m_editor );
+    SYMBOL_EDIT_FRAME*   symbolEditorFrame = dynamic_cast<SYMBOL_EDIT_FRAME*>( m_editor );
 
     if( symbolEditorFrame )
     {
@@ -581,6 +581,25 @@ bool SCH_SELECTION_TOOL::Init()
     {
         m_isSymbolViewer = symbolViewerFrame != nullptr;
     }
+
+    buildContextMenu();
+
+    m_disambiguateTimer.SetOwner( this );
+    Connect( m_disambiguateTimer.GetId(), wxEVT_TIMER,
+             wxTimerEventHandler( SCH_SELECTION_TOOL::onDisambiguationExpire ), nullptr, this );
+
+    return true;
+}
+
+
+void SCH_SELECTION_TOOL::buildContextMenu()
+{
+    // TOOL_INTERACTIVE only builds a TOOL_MENU — and therefore a wxMenu — when
+    // Pgm().IsGUI(), so a console-mode process such as the headless schematic host has
+    // no menu to fill in. Everything below is right-click presentation; the tool works
+    // without it.
+    if( !m_menu )
+        return;
 
     // clang-format off
     auto linesSelection =        SCH_CONDITIONS::MoreThan( 0 ) && SCH_CONDITIONS::OnlyTypes( lineTypes );
@@ -612,7 +631,7 @@ bool SCH_SELECTION_TOOL::Init()
     auto belowRootSheetCondition =
             [this]( const SELECTION& aSel )
             {
-                SCH_EDIT_FRAME* editFrame = dynamic_cast<SCH_EDIT_FRAME*>( m_frame );
+                SCH_EDIT_FRAME* editFrame = dynamic_cast<SCH_EDIT_FRAME*>( m_editor );
 
                 return editFrame && editFrame->GetCurrentSheet().Last() != &editFrame->Schematic().Root();
             };
@@ -620,7 +639,7 @@ bool SCH_SELECTION_TOOL::Init()
     auto haveHighlight =
             [this]( const SELECTION& sel )
             {
-                SCH_EDIT_FRAME* editFrame = dynamic_cast<SCH_EDIT_FRAME*>( m_frame );
+                SCH_EDIT_FRAME* editFrame = dynamic_cast<SCH_EDIT_FRAME*>( m_editor );
 
                 return editFrame && !editFrame->GetHighlightedConnection().IsEmpty();
             };
@@ -628,7 +647,9 @@ bool SCH_SELECTION_TOOL::Init()
     auto haveSymbol =
             [this]( const SELECTION& sel )
             {
-                return m_isSymbolEditor && static_cast<SYMBOL_EDIT_FRAME*>( m_frame )->GetCurSymbol();
+                SYMBOL_EDIT_FRAME* symbolEditor = dynamic_cast<SYMBOL_EDIT_FRAME*>( m_editor );
+
+                return symbolEditor && symbolEditor->GetCurSymbol();
             };
 
     auto groupEnterCondition =
@@ -649,7 +670,7 @@ bool SCH_SELECTION_TOOL::Init()
     auto allowPinSwaps =
             [this]( const SELECTION& )
             {
-                return m_frame->eeconfig() && m_frame->eeconfig()->m_Input.allow_unconstrained_pin_swaps;
+                return m_editor->eeconfig() && m_editor->eeconfig()->m_Input.allow_unconstrained_pin_swaps;
             };
 
     auto& menu = m_menu->GetMenu();
@@ -745,20 +766,16 @@ bool SCH_SELECTION_TOOL::Init()
     menu.AddMenu( netChainMenu.get(),                   ( pinSelection || wireOrBusInSignal || symbolSelection ) && SCH_CONDITIONS::Idle, 400 );
 
     menu.AddSeparator( 1000 );
-    m_frame->AddStandardSubMenus( *m_menu.get() );
+
+    if( SCH_BASE_FRAME* frame = dynamic_cast<SCH_BASE_FRAME*>( m_editor ) )
+        frame->AddStandardSubMenus( *m_menu.get() );
     // clang-format on
-
-    m_disambiguateTimer.SetOwner( this );
-    Connect( m_disambiguateTimer.GetId(), wxEVT_TIMER,
-             wxTimerEventHandler( SCH_SELECTION_TOOL::onDisambiguationExpire ), nullptr, this );
-
-    return true;
 }
 
 
 void SCH_SELECTION_TOOL::Reset( RESET_REASON aReason )
 {
-    m_frame = dynamic_cast<SCH_BASE_FRAME*>( m_toolMgr->GetToolHolder() );
+    m_editor = dynamic_cast<SCHEMATIC_HOLDER*>( m_toolMgr->GetToolHolder() );
 
     if( aReason != TOOL_BASE::REDRAW )
     {
@@ -777,8 +794,8 @@ void SCH_SELECTION_TOOL::Reset( RESET_REASON aReason )
     {
         getView()->GetPainter()->GetSettings()->SetHighlight( false );
 
-        SYMBOL_EDIT_FRAME*   symbolEditFrame = dynamic_cast<SYMBOL_EDIT_FRAME*>( m_frame );
-        SYMBOL_VIEWER_FRAME* symbolViewerFrame = dynamic_cast<SYMBOL_VIEWER_FRAME*>( m_frame );
+        SYMBOL_EDIT_FRAME*   symbolEditFrame = dynamic_cast<SYMBOL_EDIT_FRAME*>( m_editor );
+        SYMBOL_VIEWER_FRAME* symbolViewerFrame = dynamic_cast<SYMBOL_VIEWER_FRAME*>( m_editor );
 
         if( symbolEditFrame )
         {
@@ -802,7 +819,7 @@ void SCH_SELECTION_TOOL::Reset( RESET_REASON aReason )
 
 int SCH_SELECTION_TOOL::Main( const TOOL_EVENT& aEvent )
 {
-    m_frame->GetCanvas()->SetCurrentCursor( KICURSOR::ARROW );
+    m_editor->SetCurrentCursor( KICURSOR::ARROW );
 
     KIID lastRolloverItemId = niluuid;
     EE_GRID_HELPER grid( m_toolMgr );
@@ -855,11 +872,11 @@ int SCH_SELECTION_TOOL::Main( const TOOL_EVENT& aEvent )
         // on left click, a selection is made, depending on modifiers ALT, SHIFT, CTRL:
         setModifiersState( evt->Modifier( MD_SHIFT ), evt->Modifier( MD_CTRL ), evt->Modifier( MD_ALT ) );
 
-        MOUSE_DRAG_ACTION drag_action = m_frame->GetDragAction();
+        MOUSE_DRAG_ACTION drag_action = m_toolMgr->GetToolHolder()->GetDragAction();
 
         if( evt->IsMouseDown( BUT_LEFT ) )
         {
-            if( !m_frame->ToolStackIsEmpty() )
+            if( !m_toolMgr->GetToolHolder()->ToolStackIsEmpty() )
             {
                 // Avoid triggering when running under other tools
             }
@@ -892,7 +909,7 @@ int SCH_SELECTION_TOOL::Main( const TOOL_EVENT& aEvent )
 
             m_disambiguateTimer.Stop();
 
-            if( SCH_EDIT_FRAME* schframe = dynamic_cast<SCH_EDIT_FRAME*>( m_frame ) )
+            if( SCH_EDIT_FRAME* schframe = dynamic_cast<SCH_EDIT_FRAME*>( m_editor ) )
                 schframe->ClearFocus();
 
             // Collect items at the clicked location (doesn't select them yet)
@@ -967,12 +984,18 @@ int SCH_SELECTION_TOOL::Main( const TOOL_EVENT& aEvent )
                 }
                 else if( collector[0]->HasHoveredHypertext() )
                 {
-                    collector[ 0 ]->DoHypertextAction( m_frame, evt->Position() );
-                    selCancelled = true;
+                    // Following a hyperlink opens a dialog, a browser or another sheet,
+                    // all of which need a real window. Without one the click falls
+                    // through to an ordinary selection rather than doing nothing.
+                    if( EDA_DRAW_FRAME* drawFrame = dynamic_cast<EDA_DRAW_FRAME*>( m_editor ) )
+                    {
+                        collector[0]->DoHypertextAction( drawFrame, evt->Position() );
+                        selCancelled = true;
+                    }
                 }
                 else if( collector[0]->IsNetHighlighted() )
                 {
-                    if( SCH_EDIT_FRAME* schframe = dynamic_cast<SCH_EDIT_FRAME*>( m_frame ) )
+                    if( SCH_EDIT_FRAME* schframe = dynamic_cast<SCH_EDIT_FRAME*>( m_editor ) )
                     {
                         NET_NAVIGATOR_ITEM_DATA itemData( schframe->GetCurrentSheet(), collector[0] );
 
@@ -984,7 +1007,7 @@ int SCH_SELECTION_TOOL::Main( const TOOL_EVENT& aEvent )
             if( !selCancelled )
             {
                 if( collector.GetCount() == 0 && preFilterCount > 0 )
-                    m_frame->HighlightSelectionFilter( rejected );
+                    m_editor->HighlightSelectionFilter( rejected );
 
                 selectPoint( collector, evt->Position(), nullptr, nullptr, m_additive, m_subtractive, m_exclusive_or );
                 m_selection.SetIsHover( false );
@@ -1028,7 +1051,7 @@ int SCH_SELECTION_TOOL::Main( const TOOL_EVENT& aEvent )
             m_disambiguateTimer.Stop();
 
             // double click? Display the properties window
-            if( SCH_EDIT_FRAME* schframe = dynamic_cast<SCH_EDIT_FRAME*>( m_frame ) )
+            if( SCH_EDIT_FRAME* schframe = dynamic_cast<SCH_EDIT_FRAME*>( m_editor ) )
                 schframe->ClearFocus();
 
             if( m_selection.Empty() )
@@ -1066,7 +1089,7 @@ int SCH_SELECTION_TOOL::Main( const TOOL_EVENT& aEvent )
 
             // drag with LMB? Select multiple objects (or at least draw a selection box) or
             // drag them
-            if( SCH_EDIT_FRAME* schframe = dynamic_cast<SCH_EDIT_FRAME*>( m_frame ) )
+            if( SCH_EDIT_FRAME* schframe = dynamic_cast<SCH_EDIT_FRAME*>( m_editor ) )
                 schframe->ClearFocus();
 
             SCH_COLLECTOR collector;
@@ -1115,7 +1138,10 @@ int SCH_SELECTION_TOOL::Main( const TOOL_EVENT& aEvent )
             {
                 if( m_isSymbolEditor )
                 {
-                    if( static_cast<SYMBOL_EDIT_FRAME*>( m_frame )->IsSymbolAlias() )
+                    SYMBOL_EDIT_FRAME* symbolEditor =
+                            dynamic_cast<SYMBOL_EDIT_FRAME*>( m_editor );
+
+                    if( symbolEditor && symbolEditor->IsSymbolAlias() )
                     {
                         m_selection = RequestSelection( { SCH_FIELD_T } );
                     }
@@ -1159,8 +1185,8 @@ int SCH_SELECTION_TOOL::Main( const TOOL_EVENT& aEvent )
                 if( evt->HasPosition() && selectionContains( evt->DragOrigin() ) )
                 {
                     // drag_is_move option exists only in schematic editor, not in symbol editor
-                    // (m_frame->eeconfig() returns nullptr in Symbol Editor)
-                    if( m_isSymbolEditor || m_frame->eeconfig()->m_Input.drag_is_move )
+                    // (m_editor->eeconfig() returns nullptr in Symbol Editor)
+                    if( m_isSymbolEditor || m_editor->eeconfig()->m_Input.drag_is_move )
                         m_toolMgr->RunAction( SCH_ACTIONS::move );
                     else
                         m_toolMgr->RunAction( SCH_ACTIONS::drag );
@@ -1210,6 +1236,12 @@ int SCH_SELECTION_TOOL::Main( const TOOL_EVENT& aEvent )
         {
             m_disambiguateTimer.Stop();
 
+            // Every id handled below comes from a wx context menu, so the editor is a
+            // schematic frame by construction. The cast is checked anyway: "by
+            // construction" is exactly what the unchecked downcasts of the tool holder
+            // that this file used to contain were also relying on.
+            SCH_EDIT_FRAME* menuFrame = dynamic_cast<SCH_EDIT_FRAME*>( m_editor );
+
             // context sub-menu selection?  Handle unit selection or bus unfolding
             if( *evt->GetCommandId() >= ID_POPUP_SCH_SELECT_UNIT
                 && *evt->GetCommandId() <= ID_POPUP_SCH_SELECT_UNIT_END )
@@ -1217,8 +1249,8 @@ int SCH_SELECTION_TOOL::Main( const TOOL_EVENT& aEvent )
                 SCH_SYMBOL* symbol = dynamic_cast<SCH_SYMBOL*>( m_selection.Front() );
                 int unit = *evt->GetCommandId() - ID_POPUP_SCH_SELECT_UNIT;
 
-                if( symbol )
-                    static_cast<SCH_EDIT_FRAME*>( m_frame )->SelectUnit( symbol, unit );
+                if( symbol && menuFrame )
+                    menuFrame->SelectUnit( symbol, unit );
             }
             else if( *evt->GetCommandId() >= ID_POPUP_SCH_PLACE_UNIT
                      && *evt->GetCommandId() <= ID_POPUP_SCH_PLACE_UNIT_END )
@@ -1238,8 +1270,8 @@ int SCH_SELECTION_TOOL::Main( const TOOL_EVENT& aEvent )
                 SCH_SYMBOL* symbol = dynamic_cast<SCH_SYMBOL*>( m_selection.Front() );
                 int bodyStyle = ( *evt->GetCommandId() - ID_POPUP_SCH_SELECT_BODY_STYLE ) + 1;
 
-                if( symbol && symbol->GetBodyStyle() != bodyStyle )
-                    static_cast<SCH_EDIT_FRAME*>( m_frame )->SelectBodyStyle( symbol, bodyStyle );
+                if( symbol && menuFrame && symbol->GetBodyStyle() != bodyStyle )
+                    menuFrame->SelectBodyStyle( symbol, bodyStyle );
             }
             else if( *evt->GetCommandId() >= ID_POPUP_SCH_ALT_PIN_FUNCTION
                      && *evt->GetCommandId() <= ID_POPUP_SCH_ALT_PIN_FUNCTION_END )
@@ -1247,15 +1279,16 @@ int SCH_SELECTION_TOOL::Main( const TOOL_EVENT& aEvent )
                 SCH_PIN* pin = dynamic_cast<SCH_PIN*>( m_selection.Front() );
                 wxString alt = *evt->Parameter<wxString*>();
 
-                if( pin )
-                    static_cast<SCH_EDIT_FRAME*>( m_frame )->SetAltPinFunction( pin, alt );
+                if( pin && menuFrame )
+                    menuFrame->SetAltPinFunction( pin, alt );
             }
             else if( *evt->GetCommandId() >= ID_POPUP_SCH_PIN_TRICKS_START
                      && *evt->GetCommandId() <= ID_POPUP_SCH_PIN_TRICKS_END
                      && !m_isSymbolEditor
-                     && !m_isSymbolViewer )
+                     && !m_isSymbolViewer
+                     && menuFrame )
             {
-                SCH_EDIT_FRAME* sch_frame = static_cast<SCH_EDIT_FRAME*>( m_frame );
+                SCH_EDIT_FRAME* sch_frame = menuFrame;
 
                 // Keep track of new items so we make them the new selection at the end
                 EDA_ITEMS  newItems;
@@ -1305,7 +1338,7 @@ int SCH_SELECTION_TOOL::Main( const TOOL_EVENT& aEvent )
 
                         wire->SetEndPoint( item->GetPosition() + stub );
 
-                        m_frame->AddToScreen( wire, sch_frame->GetScreen() );
+                        m_editor->AddToScreen( wire, sch_frame->GetScreen() );
                         commit.Added( wire, sch_frame->GetScreen() );
                         newItems.push_back( wire );
                     }
@@ -1460,7 +1493,7 @@ int SCH_SELECTION_TOOL::Main( const TOOL_EVENT& aEvent )
             getViewControls()->SetAutoPan( false );
             getViewControls()->CaptureCursor( false );
 
-            if( SCH_EDIT_FRAME* schframe = dynamic_cast<SCH_EDIT_FRAME*>( m_frame ) )
+            if( SCH_EDIT_FRAME* schframe = dynamic_cast<SCH_EDIT_FRAME*>( m_editor ) )
                 schframe->ClearFocus();
 
             if( !GetSelection().Empty() )
@@ -1477,7 +1510,7 @@ int SCH_SELECTION_TOOL::Main( const TOOL_EVENT& aEvent )
                 {
                     SCH_EDITOR_CONTROL* editor = m_toolMgr->GetTool<SCH_EDITOR_CONTROL>();
 
-                    if( editor && m_frame->eeconfig()->m_Input.esc_clears_net_highlight )
+                    if( editor && m_editor->eeconfig()->m_Input.esc_clears_net_highlight )
                         editor->ClearHighlight( *evt );
                 }
             }
@@ -1486,11 +1519,11 @@ int SCH_SELECTION_TOOL::Main( const TOOL_EVENT& aEvent )
         {
             // Passing reactivation would nest another selection loop and retain its view items.
             evt->SetPassEvent( false );
-            m_frame->GetCanvas()->SetCurrentCursor( KICURSOR::ARROW );
+            m_editor->SetCurrentCursor( KICURSOR::ARROW );
         }
         else if( evt->Action() == TA_UNDO_REDO_PRE )
         {
-            if( SCH_EDIT_FRAME* schframe = dynamic_cast<SCH_EDIT_FRAME*>( m_frame ) )
+            if( SCH_EDIT_FRAME* schframe = dynamic_cast<SCH_EDIT_FRAME*>( m_editor ) )
                 schframe->ClearFocus();
         }
         else if( evt->IsMotion() && !m_isSymbolEditor && evt->FirstResponder() == this )
@@ -1532,33 +1565,33 @@ int SCH_SELECTION_TOOL::Main( const TOOL_EVENT& aEvent )
 
         if( lastRolloverItemId != niluuid && lastRolloverItemId != rolloverItemId )
         {
-            EDA_ITEM* item = m_frame->ResolveItem( lastRolloverItemId );
+            EDA_ITEM* item = m_editor->ResolveItem( lastRolloverItemId );
 
             item->SetIsRollover( false, { 0, 0 } );
 
             if( item->Type() == SCH_FIELD_T || item->Type() == SCH_TABLECELL_T )
-                m_frame->GetCanvas()->GetView()->Update( item->GetParent() );
+                getView()->Update( item->GetParent() );
             else
-                m_frame->GetCanvas()->GetView()->Update( item );
+                getView()->Update( item );
         }
 
         SCH_ITEM* rolloverItem = nullptr;
 
         if( rolloverItemId != niluuid )
         {
-            rolloverItem = static_cast<SCH_ITEM*>( m_frame->ResolveItem( rolloverItemId ) );
+            rolloverItem = static_cast<SCH_ITEM*>( m_editor->ResolveItem( rolloverItemId ) );
 
             rolloverItem->SetIsRollover( true, getViewControls()->GetMousePosition() );
 
             if( rolloverItem->Type() == SCH_FIELD_T || rolloverItem->Type() == SCH_TABLECELL_T )
-                m_frame->GetCanvas()->GetView()->Update( rolloverItem->GetParent() );
+                getView()->Update( rolloverItem->GetParent() );
             else
-                m_frame->GetCanvas()->GetView()->Update( rolloverItem );
+                getView()->Update( rolloverItem );
         }
 
         lastRolloverItemId = rolloverItemId;
 
-        if( m_frame->ToolStackIsEmpty() )
+        if( m_toolMgr->GetToolHolder()->ToolStackIsEmpty() )
         {
             if( displayWireCursor )
             {
@@ -1662,7 +1695,7 @@ OPT_TOOL_EVENT SCH_SELECTION_TOOL::autostartEvent( TOOL_EVENT* aEvent, EE_GRID_H
 {
     VECTOR2I pos = aGrid.ResolveSnap( aEvent->Position(), aGrid.GetItemGrid( aItem ) ).position;
 
-    if( m_frame->eeconfig()->m_Drawing.auto_start_wires
+    if( m_editor->eeconfig()->m_Drawing.auto_start_wires
             && !m_toolMgr->GetTool<SCH_POINT_EDITOR>()->HasPoint()
             && aItem->IsPointClickableAnchor( pos ) )
     {
@@ -1708,8 +1741,8 @@ OPT_TOOL_EVENT SCH_SELECTION_TOOL::autostartEvent( TOOL_EVENT* aEvent, EE_GRID_H
             if( !pin || !pin->IsPointClickableAnchor( pos ) )
                 return OPT_TOOL_EVENT();
 
-            if( !pin->IsVisible() && !(   m_frame->eeconfig()->m_Appearance.show_hidden_pins
-                                       || m_frame->GetRenderSettings()->m_ShowHiddenPins ) )
+            if( !pin->IsVisible() && !(   m_editor->eeconfig()->m_Appearance.show_hidden_pins
+                                       || m_editor->GetRenderSettings()->m_ShowHiddenPins ) )
             {
                 return OPT_TOOL_EVENT();
             }
@@ -1745,20 +1778,20 @@ int SCH_SELECTION_TOOL::disambiguateCursor( const TOOL_EVENT& aEvent )
 
 void SCH_SELECTION_TOOL::OnIdle( wxIdleEvent& aEvent )
 {
-    if( m_frame->ToolStackIsEmpty() && !m_multiple )
+    if( m_toolMgr->GetToolHolder()->ToolStackIsEmpty() && !m_multiple )
     {
         wxMouseState keyboardState = wxGetMouseState();
 
         setModifiersState( keyboardState.ShiftDown(), keyboardState.ControlDown(), keyboardState.AltDown() );
 
         if( m_additive )
-            m_frame->GetCanvas()->SetCurrentCursor( KICURSOR::ADD );
+            m_editor->SetCurrentCursor( KICURSOR::ADD );
         else if( m_subtractive )
-            m_frame->GetCanvas()->SetCurrentCursor( KICURSOR::SUBTRACT );
+            m_editor->SetCurrentCursor( KICURSOR::SUBTRACT );
         else if( m_exclusive_or )
-            m_frame->GetCanvas()->SetCurrentCursor( KICURSOR::XOR );
+            m_editor->SetCurrentCursor( KICURSOR::XOR );
         else
-            m_frame->GetCanvas()->SetCurrentCursor( m_nonModifiedCursor );
+            m_editor->SetCurrentCursor( m_nonModifiedCursor );
     }
 }
 
@@ -1775,11 +1808,12 @@ bool SCH_SELECTION_TOOL::CollectHits( SCH_COLLECTOR& aCollector, const VECTOR2I&
     int pixelThreshold = KiROUND( getView()->ToWorld( HITTEST_THRESHOLD_PIXELS ) );
     int gridThreshold = KiROUND( getView()->GetGAL()->GetGridSize().EuclideanNorm() / 2.0 );
     aCollector.m_Threshold = std::max( pixelThreshold, gridThreshold );
-    aCollector.m_ShowPinElectricalTypes = m_frame->GetRenderSettings()->m_ShowPinsElectricalType;
+    aCollector.m_ShowPinElectricalTypes = m_editor->GetRenderSettings()->m_ShowPinsElectricalType;
 
     if( m_isSymbolEditor )
     {
-        LIB_SYMBOL* symbol = static_cast<SYMBOL_EDIT_FRAME*>( m_frame )->GetCurSymbol();
+        SYMBOL_EDIT_FRAME* symbolEditor = dynamic_cast<SYMBOL_EDIT_FRAME*>( m_editor );
+        LIB_SYMBOL*        symbol = symbolEditor ? symbolEditor->GetCurSymbol() : nullptr;
 
         if( !symbol )
             return false;
@@ -1788,11 +1822,11 @@ bool SCH_SELECTION_TOOL::CollectHits( SCH_COLLECTOR& aCollector, const VECTOR2I&
     }
     else
     {
-        aCollector.Collect( m_frame->GetScreen(), aScanTypes, aWhere, m_unit, m_bodyStyle );
+        aCollector.Collect( m_editor->GetScreen(), aScanTypes, aWhere, m_unit, m_bodyStyle );
 
         // If pins are disabled in the filter, they will be removed later.  Let's add the parent
         // so that people can use pins to select symbols in this case.
-        if( ( m_frame->eeconfig() && m_frame->eeconfig()->m_Selection.select_pin_selects_symbol ) || !m_filter.pins )
+        if( ( m_editor->eeconfig() && m_editor->eeconfig()->m_Selection.select_pin_selects_symbol ) || !m_filter.pins )
         {
             int originalCount = aCollector.GetCount();
 
@@ -1816,7 +1850,7 @@ bool SCH_SELECTION_TOOL::CollectHits( SCH_COLLECTOR& aCollector, const VECTOR2I&
 void SCH_SELECTION_TOOL::narrowSelection( SCH_COLLECTOR& collector, const VECTOR2I& aWhere, bool aCheckLocked,
                                           bool aSelectedOnly, SCH_SELECTION_FILTER_OPTIONS* aRejected )
 {
-    SYMBOL_EDIT_FRAME* symbolEditorFrame = dynamic_cast<SYMBOL_EDIT_FRAME*>( m_frame );
+    SYMBOL_EDIT_FRAME* symbolEditorFrame = dynamic_cast<SYMBOL_EDIT_FRAME*>( m_editor );
 
     for( int i = collector.GetCount() - 1; i >= 0; --i )
     {
@@ -1999,7 +2033,7 @@ bool SCH_SELECTION_TOOL::selectPoint( SCH_COLLECTOR& aCollector, const VECTOR2I&
         return true;
     }
 
-    m_frame->GetCanvas()->ForceRefresh();
+    m_editor->ForceRefreshCanvas();
     return false;
 }
 
@@ -2020,8 +2054,7 @@ bool SCH_SELECTION_TOOL::SelectPoint( const VECTOR2I& aWhere, const std::vector<
 
     if( collector.GetCount() == 0 && preFilterCount > 0 )
     {
-        if( SCH_BASE_FRAME* frame = dynamic_cast<SCH_BASE_FRAME*>( m_frame ) )
-            frame->HighlightSelectionFilter( rejected );
+        m_editor->HighlightSelectionFilter( rejected );
 
         if( !aAdd && !aSubtract && !aExclusiveOr && m_selection.GetSize() > 0 )
         {
@@ -2091,7 +2124,7 @@ int SCH_SELECTION_TOOL::SelectAll( const TOOL_EVENT& aEvent )
     m_multiple = false;
 
     m_toolMgr->ProcessEvent( EVENTS::SelectedEvent );
-    m_frame->GetCanvas()->ForceRefresh();
+    m_editor->ForceRefreshCanvas();
     return 0;
 }
 
@@ -2132,7 +2165,7 @@ int SCH_SELECTION_TOOL::UnselectAll( const TOOL_EVENT& aEvent )
     m_multiple = false;
 
     m_toolMgr->ProcessEvent( EVENTS::UnselectedEvent );
-    m_frame->GetCanvas()->ForceRefresh();
+    m_editor->ForceRefreshCanvas();
     return 0;
 }
 
@@ -2159,7 +2192,7 @@ void SCH_SELECTION_TOOL::GuessSelectionCandidates( SCH_COLLECTOR& collector, con
             if( item->HitTest( aPos, pixelThreshold ) )
                 exactHits.insert( item );
         }
-        else if( symbol && m_frame->eeconfig()->m_Selection.select_pin_selects_symbol )
+        else if( symbol && m_editor->eeconfig()->m_Selection.select_pin_selects_symbol )
         {
             if( symbol->GetBodyAndPinsBoundingBox().Contains( aPos ) )
                 exactHits.insert( item );
@@ -2171,7 +2204,7 @@ void SCH_SELECTION_TOOL::GuessSelectionCandidates( SCH_COLLECTOR& collector, con
         else
         {
 
-            if( m_frame->GetRenderSettings()->m_ShowPinsElectricalType )
+            if( m_editor->GetRenderSettings()->m_ShowPinsElectricalType )
                 item->SetFlags( SHOW_ELEC_TYPE );
 
             if( item->HitTest( aPos, 0 ) )
@@ -2615,7 +2648,7 @@ void SCH_SELECTION_TOOL::updateReferencePoint()
 int SCH_SELECTION_TOOL::SetSelectPoly( const TOOL_EVENT& aEvent )
 {
     m_selectionMode = SELECTION_MODE::INSIDE_LASSO;
-    m_frame->GetCanvas()->SetCurrentCursor( KICURSOR::SELECT_LASSO );
+    m_editor->SetCurrentCursor( KICURSOR::SELECT_LASSO );
     m_toolMgr->PostAction( ACTIONS::selectionTool );
     return 0;
 }
@@ -2624,7 +2657,7 @@ int SCH_SELECTION_TOOL::SetSelectPoly( const TOOL_EVENT& aEvent )
 int SCH_SELECTION_TOOL::SetSelectRect( const TOOL_EVENT& aEvent )
 {
     m_selectionMode = SELECTION_MODE::INSIDE_RECTANGLE;
-    m_frame->GetCanvas()->SetCurrentCursor( KICURSOR::ARROW );
+    m_editor->SetCurrentCursor( KICURSOR::ARROW );
     m_toolMgr->PostAction( ACTIONS::selectionTool );
     return 0;
 }
@@ -2647,7 +2680,7 @@ bool SCH_SELECTION_TOOL::selectMultiple()
 {
     // Block selection not allowed in symbol viewer frame: no actual code to handle
     // a selection, so return to avoid to draw a selection rectangle, and to avoid crashes.
-    if( m_frame->IsType( FRAME_T::FRAME_SCH_VIEWER ) )
+    if( m_isSymbolViewer )
         return false;
 
     bool cancelled = false;     // Was the tool canceled while it was running?
@@ -2668,7 +2701,7 @@ bool SCH_SELECTION_TOOL::selectMultiple()
         if( view->IsMirroredX() )
             isGreedy = !isGreedy;
 
-        m_frame->GetCanvas()->SetCurrentCursor( isGreedy ? KICURSOR::SELECT_LASSO
+        m_editor->SetCurrentCursor( isGreedy ? KICURSOR::SELECT_LASSO
                                                          : KICURSOR::SELECT_WINDOW );
 
         if( evt->IsCancelInteractive() || evt->IsActivate() )
@@ -2734,7 +2767,7 @@ bool SCH_SELECTION_TOOL::selectLasso()
     points.SetClosed( true );
 
     SELECTION_MODE selectionMode = SELECTION_MODE::TOUCHING_LASSO;
-    m_frame->GetCanvas()->SetCurrentCursor( KICURSOR::SELECT_LASSO );
+    m_editor->SetCurrentCursor( KICURSOR::SELECT_LASSO );
 
     while( TOOL_EVENT* evt = Wait() )
     {
@@ -2747,12 +2780,12 @@ bool SCH_SELECTION_TOOL::selectLasso()
         if( isClockwise )
         {
             selectionMode = SELECTION_MODE::INSIDE_LASSO;
-            m_frame->GetCanvas()->SetCurrentCursor( KICURSOR::SELECT_WINDOW );
+            m_editor->SetCurrentCursor( KICURSOR::SELECT_WINDOW );
         }
         else
         {
             selectionMode = SELECTION_MODE::TOUCHING_LASSO;
-            m_frame->GetCanvas()->SetCurrentCursor( KICURSOR::SELECT_LASSO );
+            m_editor->SetCurrentCursor( KICURSOR::SELECT_LASSO );
         }
 
         if( evt->IsCancelInteractive() || evt->IsActivate() )
@@ -2884,7 +2917,7 @@ void SCH_SELECTION_TOOL::SelectMultiple( KIGFX::PREVIEW::SELECTION_AREA& aArea, 
     SCH_COLLECTOR       pinsCollector;
     std::set<EDA_ITEM*> group_items;
 
-    for( EDA_ITEM* item : m_frame->GetScreen()->Items().OfType( SCH_GROUP_T ) )
+    for( EDA_ITEM* item : m_editor->GetScreen()->Items().OfType( SCH_GROUP_T ) )
     {
         SCH_GROUP* group = static_cast<SCH_GROUP*>( item );
 
@@ -3004,7 +3037,7 @@ void SCH_SELECTION_TOOL::SelectMultiple( KIGFX::PREVIEW::SELECTION_AREA& aArea, 
         item->SetFlags( SELECTION_CANDIDATE );
         flaggedItems.push_back( item );
 
-        if( m_frame->GetRenderSettings()->m_ShowPinsElectricalType )
+        if( m_editor->GetRenderSettings()->m_ShowPinsElectricalType )
             item->SetFlags( SHOW_ELEC_TYPE );
 
         if( item->Type() == SCH_LINE_T )
@@ -3042,7 +3075,7 @@ void SCH_SELECTION_TOOL::SelectMultiple( KIGFX::PREVIEW::SELECTION_AREA& aArea, 
 
     for( EDA_ITEM* item : pinsCollector )
     {
-        if( m_frame->GetRenderSettings()->m_ShowPinsElectricalType )
+        if( m_editor->GetRenderSettings()->m_ShowPinsElectricalType )
             item->SetFlags( SHOW_ELEC_TYPE );
 
         // If the pin lives inside a group that is already being selected, don't also select the pin.
@@ -3158,7 +3191,7 @@ void SCH_SELECTION_TOOL::FilterCollectorForHierarchy( SCH_COLLECTOR& aCollector,
 
 void SCH_SELECTION_TOOL::FilterSelectionForLockedItems()
 {
-    if( m_frame && m_frame->GetOverrideLocks() )
+    if( m_editor && m_editor->GetOverrideLocks() )
         return;
 
     std::vector<EDA_ITEM*> toRemove;
@@ -3319,7 +3352,7 @@ EDA_ITEM* SCH_SELECTION_TOOL::GetNode( const VECTOR2I& aPosition )
     for( int threshold : { 0, thresholdMax/4, thresholdMax/2, thresholdMax } )
     {
         collector.m_Threshold = threshold;
-        collector.Collect( m_frame->GetScreen(), connectedTypes, aPosition );
+        collector.Collect( m_editor->GetScreen(), connectedTypes, aPosition );
 
         if( collector.GetCount() > 0 )
             break;
@@ -3342,12 +3375,12 @@ std::set<SCH_ITEM*>
 SCH_SELECTION_TOOL::expandConnectionWithGraph( const SCH_SELECTION& aItems,
                                                STOP_CONDITION aStopCondition )
 {
-    SCH_EDIT_FRAME* editFrame = dynamic_cast<SCH_EDIT_FRAME*>( m_frame );
+    SCH_EDIT_FRAME* editFrame = dynamic_cast<SCH_EDIT_FRAME*>( m_editor );
 
     if( m_isSymbolEditor || m_isSymbolViewer || !editFrame )
         return {};
 
-    SCH_SCREEN*            screen = m_frame->GetScreen();
+    SCH_SCREEN*            screen = m_editor->GetScreen();
     SCH_SHEET_PATH&        currentSheet = editFrame->GetCurrentSheet();
     std::vector<SCH_ITEM*> startItems;
     std::set<SCH_ITEM*>    added;
@@ -3570,7 +3603,7 @@ std::set<SCH_ITEM*> SCH_SELECTION_TOOL::expandConnectionGraphically( const SCH_S
 
         SCH_ITEM* schItem = static_cast<SCH_ITEM*>( item );
 
-        std::set<SCH_ITEM*> conns = m_frame->GetScreen()->MarkConnections( schItem, schItem->IsConnectable() );
+        std::set<SCH_ITEM*> conns = m_editor->GetScreen()->MarkConnections( schItem, schItem->IsConnectable() );
 
         // Make sure we don't add things the user has disabled in the selection filter
         for( SCH_ITEM* connItem : conns )
@@ -3616,7 +3649,7 @@ int SCH_SELECTION_TOOL::SelectConnection( const TOOL_EVENT& aEvent )
 
     if( !connectableSelection.Empty() && ADVANCED_CFG::GetCfg().m_ConnectivityEngine )
     {
-        SCH_EDIT_FRAME* frame = dynamic_cast<SCH_EDIT_FRAME*>( m_frame );
+        SCH_EDIT_FRAME* frame = dynamic_cast<SCH_EDIT_FRAME*>( m_editor );
 
         if( frame && !frame->RecalculateConnections( nullptr, NO_CLEANUP ) )
             return 0;
@@ -3911,7 +3944,7 @@ void SCH_SELECTION_TOOL::ZoomFitCrossProbeBBox( const BOX2I& aBBox )
 void SCH_SELECTION_TOOL::SyncSelection( const std::optional<SCH_SHEET_PATH>& targetSheetPath,
                                         SCH_ITEM* focusItem, const std::vector<SCH_ITEM*>& items )
 {
-    SCH_EDIT_FRAME* editFrame = dynamic_cast<SCH_EDIT_FRAME*>( m_frame );
+    SCH_EDIT_FRAME* editFrame = dynamic_cast<SCH_EDIT_FRAME*>( m_editor );
 
     if( !editFrame )
         return;
@@ -3934,12 +3967,12 @@ void SCH_SELECTION_TOOL::SyncSelection( const std::optional<SCH_SHEET_PATH>& tar
 
         if( path != editFrame->Schematic().CurrentSheet() )
         {
-            m_frame->GetToolManager()->RunAction<SCH_SHEET_PATH*>( SCH_ACTIONS::changeSheet, &path );
+            m_toolMgr->RunAction<SCH_SHEET_PATH*>( SCH_ACTIONS::changeSheet, &path );
             changedSheet = true;
         }
     }
 
-    if( changedSheet && targetZoomValid && !m_frame->eeconfig()->m_CrossProbing.zoom_to_fit )
+    if( changedSheet && targetZoomValid && !m_editor->eeconfig()->m_CrossProbing.zoom_to_fit )
     {
         getView()->SetScale( targetZoom );
         getView()->SetCenter( targetCenter );
@@ -3953,8 +3986,8 @@ void SCH_SELECTION_TOOL::SyncSelection( const std::optional<SCH_SHEET_PATH>& tar
         SCH_ITEM* parent = dynamic_cast<SCH_ITEM*>( item->GetParent() );
 
         // Make sure we only select items on the current screen
-        if( m_frame->GetScreen()->CheckIfOnDrawList( item )
-            || ( parent && m_frame->GetScreen()->CheckIfOnDrawList( parent ) ) )
+        if( m_editor->GetScreen()->CheckIfOnDrawList( item )
+            || ( parent && m_editor->GetScreen()->CheckIfOnDrawList( parent ) ) )
         {
             select( item );
         }
@@ -3964,9 +3997,9 @@ void SCH_SELECTION_TOOL::SyncSelection( const std::optional<SCH_SHEET_PATH>& tar
 
     if( bbox.GetWidth() != 0 && bbox.GetHeight() != 0 )
     {
-        if( m_frame->eeconfig()->m_CrossProbing.center_on_items )
+        if( m_editor->eeconfig()->m_CrossProbing.center_on_items )
         {
-            if( m_frame->eeconfig()->m_CrossProbing.zoom_to_fit )
+            if( m_editor->eeconfig()->m_CrossProbing.zoom_to_fit )
                 ZoomFitCrossProbeBBox( bbox );
 
             editFrame->FocusOnItem( focusItem );
@@ -3989,7 +4022,8 @@ void SCH_SELECTION_TOOL::RebuildSelection()
 
     if( m_isSymbolEditor )
     {
-        LIB_SYMBOL* start = static_cast<SYMBOL_EDIT_FRAME*>( m_frame )->GetCurSymbol();
+        SYMBOL_EDIT_FRAME* symbolEditor = dynamic_cast<SYMBOL_EDIT_FRAME*>( m_editor );
+        LIB_SYMBOL*        start = symbolEditor ? symbolEditor->GetCurSymbol() : nullptr;
 
         for( SCH_ITEM& item : start->GetDrawItems() )
         {
@@ -4012,7 +4046,7 @@ void SCH_SELECTION_TOOL::RebuildSelection()
     }
     else
     {
-        for( SCH_ITEM* item : m_frame->GetScreen()->Items() )
+        for( SCH_ITEM* item : m_editor->GetScreen()->Items() )
         {
             // If the field and symbol are selected, only use the symbol
             if( item->IsSelected() )
@@ -4062,7 +4096,7 @@ bool SCH_SELECTION_TOOL::Selectable( const EDA_ITEM* aItem, const VECTOR2I* aPos
 {
     // NOTE: in the future this is where Eeschema layer/itemtype visibility will be handled
 
-    SYMBOL_EDIT_FRAME* symEditFrame = dynamic_cast<SYMBOL_EDIT_FRAME*>( m_frame );
+    SYMBOL_EDIT_FRAME* symEditFrame = dynamic_cast<SYMBOL_EDIT_FRAME*>( m_editor );
 
     // Do not allow selection of anything except fields when the current symbol in the symbol
     // editor is a derived symbol.
@@ -4084,10 +4118,10 @@ bool SCH_SELECTION_TOOL::Selectable( const EDA_ITEM* aItem, const VECTOR2I* aPos
                 return false;
         }
 
-        if( !pin->IsVisible() && !m_frame->GetShowAllPins() )
+        if( !pin->IsVisible() && !m_editor->GetShowAllPins() )
             return false;
 
-        if( ( m_frame->eeconfig() && m_frame->eeconfig()->m_Selection.select_pin_selects_symbol ) || !m_filter.pins )
+        if( ( m_editor->eeconfig() && m_editor->eeconfig()->m_Selection.select_pin_selects_symbol ) || !m_filter.pins )
         {
             // Pin anchors have to be allowed for auto-starting wires.
             if( aPos )
@@ -4106,7 +4140,7 @@ bool SCH_SELECTION_TOOL::Selectable( const EDA_ITEM* aItem, const VECTOR2I* aPos
     }
 
     case SCH_DIRECTIVE_LABEL_T:
-        if( !m_frame->eeconfig()->m_Appearance.show_directive_labels )
+        if( !m_editor->eeconfig()->m_Appearance.show_directive_labels )
             return false;
 
         break;
@@ -4114,7 +4148,7 @@ bool SCH_SELECTION_TOOL::Selectable( const EDA_ITEM* aItem, const VECTOR2I* aPos
     case SCH_RULE_AREA_T:
         // A rule area that exists solely to carry directive labels is hidden along with those
         // labels, so it must not remain selectable while invisible.
-        if( !m_frame->eeconfig()->m_Appearance.show_directive_labels
+        if( !m_editor->eeconfig()->m_Appearance.show_directive_labels
                 && static_cast<const SCH_RULE_AREA*>( aItem )->IsDirectiveLabelOnlyArea() )
         {
             return false;
@@ -4330,7 +4364,7 @@ bool SCH_SELECTION_TOOL::selectionContains( const VECTOR2I& aPoint ) const
 
 int SCH_SELECTION_TOOL::SelectNext( const TOOL_EVENT& aEvent )
 {
-    SCH_EDIT_FRAME* editFrame = dynamic_cast<SCH_EDIT_FRAME*>( m_frame );
+    SCH_EDIT_FRAME* editFrame = dynamic_cast<SCH_EDIT_FRAME*>( m_editor );
 
     if( !editFrame || !editFrame->GetNetNavigator() || m_selection.Size() == 0 )
         return 0;
@@ -4351,7 +4385,7 @@ int SCH_SELECTION_TOOL::SelectNext( const TOOL_EVENT& aEvent )
 
 int SCH_SELECTION_TOOL::SelectPrevious( const TOOL_EVENT& aEvent )
 {
-    SCH_EDIT_FRAME* editFrame = dynamic_cast<SCH_EDIT_FRAME*>( m_frame );
+    SCH_EDIT_FRAME* editFrame = dynamic_cast<SCH_EDIT_FRAME*>( m_editor );
 
     if( !editFrame || !editFrame->GetNetNavigator() || m_selection.Size() == 0 )
         return 0;

@@ -19,6 +19,7 @@
 #include <kiface_base.h>
 #include <pgm_base.h>
 #include <project.h>
+#include <settings/app_settings.h>
 #include <settings/color_settings.h>
 #include <settings/settings_manager.h>
 #include <sch_painter.h>
@@ -28,6 +29,7 @@
 #include <sch_view.h>
 #include <schematic.h>
 #include <tool/action_manager.h>
+#include <tool/actions.h>
 #include <tool/common_control.h>
 #include <tool/common_tools.h>
 #include <tool/embed_tool.h>
@@ -70,7 +72,8 @@ SCH_HOST::SCH_HOST() :
         m_schematic( nullptr ),
         m_currentSheetIndex( 0 ),
         m_viewportSize( 1920, 1080 ),
-        m_redrawRequested( false )
+        m_redrawRequested( false ),
+        m_cursor( KICURSOR::ARROW )
 {
     buildCanvas();
     setupTools();
@@ -189,7 +192,68 @@ void SCH_HOST::buildCanvas()
     m_view->SetLayerDisplayOnly( LAYER_NET_COLOR_HIGHLIGHT );
     m_view->SetLayerDisplayOnly( LAYER_DANGLING );
 
+    // The on-canvas UI layers, which SCH_DRAW_PANEL does not name and so leaves on its
+    // default target. They carry the tools' transient previews — CONSTRUCTION_GEOM puts
+    // its snap guides on LAYER_UI_START deliberately, to be drawn over the axis cross —
+    // and the loop above would otherwise have made them cached, which is wrong twice: it
+    // costs a retained group per preview item whether or not anything is previewing, and
+    // the geometry it would retain changes on every pointer move.
+    for( int ii = LAYER_UI_START; ii < LAYER_UI_END; ++ii )
+    {
+        m_view->SetLayerTarget( ii, KIGFX::TARGET_OVERLAY );
+        m_view->SetLayerDisplayOnly( ii );
+    }
+
     m_view->UpdateAllLayersOrder();
+
+    initGrid();
+}
+
+
+void SCH_HOST::initGrid()
+{
+    // KIGFX::GAL's constructor sets every graphics default it has and leaves m_gridSize at
+    // VECTOR2D()'s zero, because in a GUI COMMON_TOOLS::Reset() always fills it in from the
+    // window settings. That tool declines a non-frame holder, so nothing here would — and a
+    // zero grid is not merely "no grid": GRID_HELPER divides the cursor position by it, so
+    // the first tool that snaps gets an infinity and KiROUND asserts on it. Found by
+    // running a selection, which is the first thing that snaps.
+    //
+    // The values are the user's own, read exactly as COMMON_TOOLS::Reset() reads them, so
+    // there is no second idea of what eeschema's grid is.
+    EESCHEMA_SETTINGS* cfg = eeconfig();
+
+    if( !cfg )
+        return;
+
+    GRID_SETTINGS& gridSettings = cfg->m_Window.grid;
+
+    if( gridSettings.grids.empty() )
+        gridSettings.grids = cfg->DefaultGridSizeList();
+
+    std::vector<VECTOR2D> grids;
+
+    for( const GRID& gridDef : gridSettings.grids )
+    {
+        double x = EDA_UNIT_UTILS::UI::DoubleValueFromString( schIUScale, EDA_UNITS::MM, gridDef.x );
+        double y = EDA_UNIT_UTILS::UI::DoubleValueFromString( schIUScale, EDA_UNITS::MM, gridDef.y );
+
+        grids.emplace_back( x, y );
+    }
+
+    if( grids.empty() )
+        return;
+
+    const int index = std::clamp( gridSettings.last_size_idx, 0,
+                                  static_cast<int>( grids.size() ) - 1 );
+
+    // SetGridSize clamps to at least one internal unit, so this cannot reinstate the zero.
+    m_gal->SetGridSize( grids[index] );
+    m_gal->SetGridVisibility( gridSettings.show );
+
+    // Eeschema has no movable grid origin: SCH_BASE_FRAME::GetGridOrigin() returns a
+    // constant zero for every schematic frame.
+    m_gal->SetGridOrigin( VECTOR2D( 0, 0 ) );
 }
 
 
@@ -227,12 +291,14 @@ void SCH_HOST::registerTools()
 {
     // The roster SCH_EDIT_FRAME::setupTools() registers, in its order.
     //
-    // Every one of these declines a holder that is not a SCH_BASE_FRAME (or, for the
-    // ones in common/, an EDA_DRAW_FRAME), so InitTools() unregisters and deletes all
-    // of them and GetTool<T>() is null for each. That is deliberate and it is tested:
-    // `qa/tests/eeschema/test_sch_host.cpp` asserts the roster is registered and that
-    // none of it survives, so the day a tool is taught to run without a frame it
-    // starts working here with no further wiring, and the test says so by failing.
+    // SCH_SELECTION_TOOL asks the holder for a SCHEMATIC_HOLDER rather than for a frame,
+    // so it initialises here and runs. Every other one still learns its `m_frame` from the
+    // holder and returns false when the holder is not its frame type, so InitTools()
+    // unregisters and deletes it and GetTool<T>() is null.
+    //
+    // They are all registered anyway: converting a tool is then a change to that tool and
+    // nothing here. `qa/tests/eeschema/test_sch_host.cpp` pins which ones survive, so the
+    // day another is converted the test says so by failing.
     m_toolManager->RegisterTool( new COMMON_CONTROL );
     m_toolManager->RegisterTool( new COMMON_TOOLS );
     m_toolManager->RegisterTool( new ZOOM_TOOL );
@@ -300,9 +366,9 @@ VECTOR2D SCH_HOST::GetCursorPosition() const
 
 SELECTION& SCH_HOST::GetCurrentSelection()
 {
-    // Same answer SCH_EDIT_FRAME gives: the selection belongs to the selection tool.
-    // Null until a selection tool can run on a non-frame holder, and then this starts
-    // reporting real items with no change here.
+    // Same answer SCH_EDIT_FRAME gives: the selection belongs to the selection tool. The
+    // empty fallback is still reachable — the tool only exists once InitTools() has run —
+    // so it stays rather than being replaced by a dereference.
     if( SCH_SELECTION_TOOL* tool = m_toolManager->GetTool<SCH_SELECTION_TOOL>() )
         return tool->GetSelection();
 
@@ -329,6 +395,91 @@ bool SCH_HOST::TakeRedrawRequest()
 SCH_RENDER_SETTINGS& SCH_HOST::RenderSettings() const
 {
     return *m_painter->GetSettings();
+}
+
+
+void SCH_HOST::AddToScreen( EDA_ITEM* aItem, SCH_SCREEN* aScreen )
+{
+    // Same shape as SCH_BASE_FRAME::AddToScreen, including the guard: a null item reaches
+    // boost::ptr_vector and raises boost::bad_pointer, which nothing here handles.
+    wxCHECK( aItem, /* void */ );
+
+    SCH_SCREEN* screen = aScreen ? aScreen : GetScreen();
+
+    wxCHECK( screen, /* void */ );
+
+    if( aItem->Type() != SCH_TABLECELL_T )
+        screen->Append( static_cast<SCH_ITEM*>( aItem ) );
+
+    if( screen == GetScreen() )
+    {
+        m_view->Add( aItem );
+        UpdateItem( aItem, true );
+    }
+}
+
+
+void SCH_HOST::RemoveFromScreen( EDA_ITEM* aItem, SCH_SCREEN* aScreen )
+{
+    wxCHECK( aItem, /* void */ );
+
+    SCH_SCREEN* screen = aScreen ? aScreen : GetScreen();
+
+    wxCHECK( screen, /* void */ );
+
+    if( screen == GetScreen() )
+        m_view->Remove( aItem );
+
+    if( aItem->Type() != SCH_TABLECELL_T )
+        screen->Remove( static_cast<SCH_ITEM*>( aItem ) );
+
+    if( screen == GetScreen() )
+        UpdateItem( aItem, true );
+}
+
+
+void SCH_HOST::UpdateItem( EDA_ITEM* aItem, bool aIsAddOrDelete, bool aUpdateRtree )
+{
+    wxCHECK( aItem, /* void */ );
+
+    // The rules about what redraws with what are SCH_VIEW's, shared with the frame, so
+    // that the two editing contexts cannot drift.
+    m_view->UpdateSchItem( aItem, GetScreen(), aIsAddOrDelete, aUpdateRtree );
+}
+
+
+EDA_ITEM* SCH_HOST::ResolveItem( const KIID& aId, bool aAllowNullptrReturn ) const
+{
+    if( !m_schematic )
+        return nullptr;
+
+    return m_schematic->ResolveItem( aId, nullptr, aAllowNullptrReturn );
+}
+
+
+SCH_SELECTION_TOOL* SCH_HOST::GetSelectionTool()
+{
+    return m_toolManager ? m_toolManager->GetTool<SCH_SELECTION_TOOL>() : nullptr;
+}
+
+
+EESCHEMA_SETTINGS* SCH_HOST::eeconfig() const
+{
+    // SCH_BASE_FRAME reads this from EDA_BASE_FRAME::config(), which resolves to the
+    // kiface's settings; ::ensureKifaceSettings has already guaranteed there are some.
+    return dynamic_cast<EESCHEMA_SETTINGS*>( Kiface().KifaceSettings() );
+}
+
+
+SCH_RENDER_SETTINGS* SCH_HOST::GetRenderSettings()
+{
+    return m_painter->GetSettings();
+}
+
+
+bool SCH_HOST::GetShowAllPins() const
+{
+    return RenderSettings().m_ShowHiddenPins;
 }
 
 
@@ -400,6 +551,11 @@ bool SCH_HOST::LoadFile( const wxString& aFileName )
         return false;
     }
 
+    // What SCH_EDIT_FRAME's constructor does with the same call: the schematic reaches
+    // back through this for the handful of things only the editing context knows — the
+    // selection tool, adding and removing items from the screen, intersheet references.
+    m_schematic->SetSchematicHolder( this );
+
     m_currentSheetIndex = 0;
     displayCurrentSheet();
     ZoomToFit();
@@ -410,6 +566,14 @@ bool SCH_HOST::LoadFile( const wxString& aFileName )
     m_toolManager->SetEnvironment( m_schematic, m_view.get(), m_viewControls.get(),
                                    Kiface().KifaceSettings(), this );
     m_toolManager->ResetTools( TOOL_BASE::MODEL_RELOAD );
+
+    // "Run the selection tool, it is supposed to be always active", as
+    // SCH_EDIT_FRAME::setupTools() puts it. It posts the action because it is still
+    // building a frame; here the document has just arrived and the tools have been reset,
+    // so the action can simply run. Without this the tool is registered and initialised
+    // but its Main() loop is not waiting on anything, and no click reaches it.
+    if( m_toolManager->GetTool<SCH_SELECTION_TOOL>() )
+        m_toolManager->RunAction( ACTIONS::selectionActivate );
 
     return true;
 }

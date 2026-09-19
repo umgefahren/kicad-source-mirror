@@ -16,12 +16,14 @@
 #include <memory>
 #include <vector>
 
+#include <gal/cursors.h>
 #include <gal/gal_display_options.h>
 #include <gal/recording/draw_stream_abi.h>
 #include <gal/recording/recording_gal.h>
 #include <math/box2.h>
 #include <math/vector2d.h>
 #include <sch_sheet_path.h>
+#include <schematic_holder.h>
 #include <tool/tools_holder.h>
 #include <wx/string.h>
 
@@ -82,14 +84,17 @@ struct SCH_HOST_SHEET_INFO
  * like: it is already a production state, which SIMULATOR_FRAME and
  * MERGETOOL_FRAME both rely on.
  *
- * What is *not* yet true is that a tool runs. Every eeschema tool declines a
- * holder that is not a `SCH_BASE_FRAME`, deliberately and testably — see
- * `docs/rust-migration/06-what-is-missing.md` Stage 3 — because `m_frame` is its
- * route to the screen, the selection, the undo stack and every dialog. So
- * ::RegisterTools registers eeschema's roster, `TOOL_MANAGER::InitTools()` drops
- * all of it, and the only thing input reaches today is the hotkey lookup. Making
- * a tool run is a question about what `m_frame` means for a non-frame host, and
- * `docs/rust-migration/04-host-seam.md` §6 records the two answers and their cost.
+ * It is *also* a SCHEMATIC_HOLDER, which is what makes a tool able to run here at
+ * all: that interface is the document, the settings and the canvas notifications a
+ * schematic tool needs, and `SCH_BASE_FRAME` is only one of the two things that can
+ * supply them. `SCH_SELECTION_TOOL` asks for a SCHEMATIC_HOLDER rather than a frame
+ * and therefore initialises on this holder and runs.
+ *
+ * The rest of the roster still declines, because each one still learns its `m_frame`
+ * from the holder and returns false when the holder is not its frame type — see
+ * `docs/rust-migration/06-what-is-missing.md` Stage 4b for which tool is next and
+ * what it needs. ::registerTools registers all of them regardless, so a tool
+ * converted upstream of here starts working with no wiring changes.
  *
  * ## What is still deliberately absent
  *
@@ -100,7 +105,7 @@ struct SCH_HOST_SHEET_INFO
  *
  * Not thread safe, and neither is anything it owns. One session per thread.
  */
-class SCH_HOST : public TOOLS_HOLDER
+class SCH_HOST : public TOOLS_HOLDER, public SCHEMATIC_HOLDER
 {
 public:
     SCH_HOST();
@@ -137,7 +142,7 @@ public:
     // ------------------------------------------------------------- document
 
     SCHEMATIC*  GetSchematic() const { return m_schematic; }
-    SCH_SCREEN* GetScreen() const;
+    SCH_SCREEN* GetScreen() const override;
 
     const SCH_SHEET_PATH& GetCurrentSheet() const { return m_currentSheet; }
 
@@ -297,6 +302,53 @@ public:
 
     wxString ConfigBaseName() override { return wxT( "SchHost" ); }
 
+    // ---------------------------------------------------- SCHEMATIC_HOLDER
+
+    void AddToScreen( EDA_ITEM* aItem, SCH_SCREEN* aScreen = nullptr ) override;
+    void RemoveFromScreen( EDA_ITEM* aItem, SCH_SCREEN* aScreen ) override;
+
+    void UpdateItem( EDA_ITEM* aItem, bool aIsAddOrDelete = false,
+                     bool aUpdateRtree = false ) override;
+
+    EDA_ITEM* ResolveItem( const KIID& aId, bool aAllowNullptrReturn = false ) const override;
+
+    SCH_SELECTION_TOOL* GetSelectionTool() override;
+
+    EESCHEMA_SETTINGS* eeconfig() const override;
+
+    SCH_RENDER_SETTINGS* GetRenderSettings() override;
+
+    /**
+     * Whether an invisible pin can be selected, which has to agree with whether one is
+     * *drawn*.
+     *
+     * SCH_EDIT_FRAME answers from the application settings; this answers from the render
+     * settings, because ::initRenderSettings deliberately overrides the setting to match
+     * what the CLI exporters show. Reading the config here would let the user click a pin
+     * that is not on the screen.
+     */
+    bool GetShowAllPins() const override;
+
+    /**
+     * Records the request instead of repainting.
+     *
+     * A frame repaints synchronously; this host does not own the frame clock — the
+     * consumer on the far side of the ABI does — so the honest answer is the same one
+     * `RefreshCanvas()` gives, and ::TakeRedrawRequest is how the consumer collects it.
+     */
+    void ForceRefreshCanvas() override { RefreshCanvas(); }
+
+    /**
+     * Records the cursor a tool asked for, for a consumer that owns the real pointer.
+     *
+     * `HOST_VIEW_CONTROLS` already covers *where* the cursor is; this is what shape it
+     * should be, which is the tools' way of saying what a click would do here.
+     */
+    void SetCurrentCursor( KICURSOR aCursor ) override { m_cursor = aCursor; }
+
+    /// The shape the tools last asked the pointer to take.
+    KICURSOR GetCurrentCursor() const { return m_cursor; }
+
     // ---------------------------------------------------------- collaborators
 
     KIGFX::RECORDING_GAL&      Gal() { return *m_gal; }
@@ -322,6 +374,14 @@ private:
 
     /// Build the GAL/view/painter quartet. Called once, from the constructor.
     void buildCanvas();
+
+    /**
+     * Give the GAL a grid, which it does not have by default and which the tools divide by.
+     *
+     * Read from the user's eeschema settings exactly as COMMON_TOOLS::Reset() reads them —
+     * that tool would do this in a frame, and declines here.
+     */
+    void initGrid();
 
     /// Re-read the sheet list into m_sheets after a load or a sheet change.
     void rebuildSheetList();
@@ -376,6 +436,9 @@ private:
 
     /// Set by RefreshCanvas(), cleared by TakeRedrawRequest().
     bool m_redrawRequested;
+
+    /// The shape a tool last asked the pointer to take. See SetCurrentCursor().
+    KICURSOR m_cursor;
 };
 
 #endif // KICAD_EESCHEMA_HOST_SCH_HOST_H

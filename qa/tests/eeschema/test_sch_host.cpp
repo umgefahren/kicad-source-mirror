@@ -38,6 +38,7 @@
 #include <base_units.h>
 #include <gal/recording/draw_stream.h>
 #include <sch_host/sch_host_abi.h>
+#include <sch_line.h>
 #include <sch_screen.h>
 #include <schematic.h>
 #include <wx/filename.h>
@@ -509,11 +510,11 @@ BOOST_AUTO_TEST_SUITE_END()
  * The event translation itself is tested without eeschema in
  * `qa/tests/common/test_host_input.cpp`. What is asserted here is the wiring —
  * that a pointer position pushed in at one end is the cursor the tools would read
- * at the other — and the one uncomfortable fact this stage inherited: the tool
- * roster is registered and none of it survives, because every eeschema tool
- * declines a holder that is not a frame. That is deliberate (Stage 3) and is
- * pinned here so that the day a tool learns to run without one, this test fails
- * and says so.
+ * at the other — and which of the tool roster survives a holder that is not a
+ * frame. That used to be none of it; it is now the selection tool, which asks for
+ * a SCHEMATIC_HOLDER rather than for a frame. Everything else still declines, and
+ * the roster is pinned here so that converting another one fails this test and
+ * says so.
  */
 BOOST_FIXTURE_TEST_SUITE( SchHostInput, SCH_HOST_SETTINGS_FIXTURE )
 
@@ -536,15 +537,18 @@ BOOST_AUTO_TEST_CASE( TheHostIsItsOwnToolHolder )
 
 
 /**
- * The honest state of Stage 4, in one assertion.
+ * Exactly which of the roster runs on a holder that is not a frame.
  *
- * Every one of these classes sets `m_frame` from the tool holder and returns false
- * when the holder is not its frame type, so `TOOL_MANAGER::InitTools()` unregisters
- * and deletes all of them. Input therefore reaches the framework and stops there.
- * Making any one of them run is a decision about what `m_frame` means for a host
- * that is not a frame — see `docs/rust-migration/06-what-is-missing.md` Stage 4.
+ * `SCH_SELECTION_TOOL` does, because what it asks the holder for is a
+ * SCHEMATIC_HOLDER — the document, the settings and the canvas notifications — and
+ * not a window. Every other class here still sets `m_frame` from the holder and
+ * returns false when the holder is not its frame type, so
+ * `TOOL_MANAGER::InitTools()` unregisters and deletes it.
+ *
+ * Keep this list exhaustive rather than illustrative. It is what tells the next
+ * person converting a tool that it worked.
  */
-BOOST_AUTO_TEST_CASE( TheToolRosterIsRegisteredAndNoneOfItSurvivesYet )
+BOOST_AUTO_TEST_CASE( TheSelectionToolRunsHereAndTheRestOfTheRosterStillDeclines )
 {
     SCH_HOST host;
 
@@ -552,7 +556,8 @@ BOOST_AUTO_TEST_CASE( TheToolRosterIsRegisteredAndNoneOfItSurvivesYet )
 
     BOOST_REQUIRE( tools != nullptr );
 
-    BOOST_CHECK( tools->GetTool<SCH_SELECTION_TOOL>() == nullptr );
+    BOOST_CHECK( tools->GetTool<SCH_SELECTION_TOOL>() != nullptr );
+
     BOOST_CHECK( tools->GetTool<SCH_MOVE_TOOL>() == nullptr );
     BOOST_CHECK( tools->GetTool<SCH_LINE_WIRE_BUS_TOOL>() == nullptr );
     BOOST_CHECK( tools->GetTool<SCH_EDIT_TOOL>() == nullptr );
@@ -560,9 +565,10 @@ BOOST_AUTO_TEST_CASE( TheToolRosterIsRegisteredAndNoneOfItSurvivesYet )
     BOOST_CHECK( tools->GetTool<SCH_EDITOR_CONTROL>() == nullptr );
     BOOST_CHECK( tools->GetTool<SCH_POINT_EDITOR>() == nullptr );
 
-    // ...and with no selection tool, the holder's selection is the empty one rather
-    // than a dereference of nothing.
+    // The holder's selection is now the selection tool's own, and it is empty
+    // rather than absent.
     BOOST_CHECK_EQUAL( host.GetSelectionCount(), 0u );
+    BOOST_CHECK_EQUAL( host.GetSelectionTool(), tools->GetTool<SCH_SELECTION_TOOL>() );
 }
 
 
@@ -605,10 +611,15 @@ BOOST_AUTO_TEST_CASE( AHostPointerPositionBecomesTheCursorTheToolsWouldRead )
 
 
 /**
- * With no tool registered, nothing claims an event. Saying so is the point: the
- * dispatcher is wired and the tools are absent, and those are two separate facts.
+ * A whole gesture, plus a key and a cancel, over empty space. None of it is fatal
+ * and none of it edits the document — the selection tool that now receives it only
+ * selects — which is the check that matters for a UI forwarding its entire input
+ * stream.
+ *
+ * The positions are deliberately not over an item; ::AClickSelectsTheItemUnderIt
+ * covers the case where something is hit.
  */
-BOOST_AUTO_TEST_CASE( InputWithNoToolIsUnclaimedRatherThanFatal )
+BOOST_AUTO_TEST_CASE( AnUnproductiveGestureIsHarmless )
 {
     SCH_HOST host;
 
@@ -621,25 +632,27 @@ BOOST_AUTO_TEST_CASE( InputWithNoToolIsUnclaimedRatherThanFatal )
 
     event.type = HOST_INPUT_TYPE::POINTER_MOTION;
     event.position = VECTOR2D( 100, 50 );
-    BOOST_CHECK( !host.DispatchInput( event ) );
+    host.DispatchInput( event );
 
     event.type = HOST_INPUT_TYPE::POINTER_DOWN;
     event.button = BUT_LEFT;
-    BOOST_CHECK( !host.DispatchInput( event ) );
+    host.DispatchInput( event );
 
     event.type = HOST_INPUT_TYPE::POINTER_UP;
-    BOOST_CHECK( !host.DispatchInput( event ) );
+    host.DispatchInput( event );
 
     event.type = HOST_INPUT_TYPE::KEY_DOWN;
     event.button = BUT_NONE;
     event.keyCode = 'W';
-    BOOST_CHECK( !host.DispatchInput( event ) );
+    host.DispatchInput( event );
 
     event.type = HOST_INPUT_TYPE::CANCEL;
-    BOOST_CHECK( !host.DispatchInput( event ) );
+    host.DispatchInput( event );
 
-    // The document is untouched by all of it.
+    // The document is untouched by all of it, and nothing was selected because
+    // there is nothing at that corner of the page.
     BOOST_CHECK( !host.IsModified() );
+    BOOST_CHECK_EQUAL( host.GetSelectionCount(), 0u );
 }
 
 
@@ -654,6 +667,9 @@ BOOST_AUTO_TEST_CASE( InputWithNoToolIsUnclaimedRatherThanFatal )
  * answers "the name resolved", not "something ran it", and a test written against
  * an unregistered name passes either way. These are the real ids the shell's tool
  * buttons and menu items send.
+ *
+ * `common.InteractiveSelection` is the counter-example that keeps the rest honest:
+ * it is handled, because that tool now runs here.
  */
 BOOST_AUTO_TEST_CASE( AnUnhandledActionIsReportedRatherThanAsserted )
 {
@@ -661,8 +677,9 @@ BOOST_AUTO_TEST_CASE( AnUnhandledActionIsReportedRatherThanAsserted )
 
     BOOST_CHECK( !host.RunActionByName( "eeschema.InteractiveDrawingLineWireBus.drawWires" ) );
     BOOST_CHECK( !host.RunActionByName( "common.Control.zoomFitScreen" ) );
-    BOOST_CHECK( !host.RunActionByName( "common.InteractiveSelection" ) );
     BOOST_CHECK( !host.RunActionByName( "no.such.action" ) );
+
+    BOOST_CHECK( host.RunActionByName( "common.InteractiveSelection" ) );
 }
 
 
@@ -694,6 +711,215 @@ BOOST_AUTO_TEST_CASE( AToolMessageIsKeptForTheHostToShow )
     host.DisplayToolMsg( wxT( "Draw a wire" ) );
 
     BOOST_CHECK_EQUAL( host.GetToolMessage(), wxT( "Draw a wire" ) );
+}
+
+
+BOOST_AUTO_TEST_SUITE_END()
+
+
+/**
+ * Selection, driven through the host's input path by a real KiCad tool.
+ *
+ * This is the first thing the user does that reaches the document, and it is the
+ * round trip the whole seam exists for: screen pixels in one end, `SCH_ITEM`s
+ * flagged selected and a repaint request out the other, with no wxFrame anywhere in
+ * between. What makes it possible is that `SCH_SELECTION_TOOL::m_editor` is a
+ * SCHEMATIC_HOLDER — see `docs/rust-migration/06-what-is-missing.md` Stage 4b.
+ */
+BOOST_FIXTURE_TEST_SUITE( SchHostSelection, SCH_HOST_SETTINGS_FIXTURE )
+
+
+/// The midpoint of the first wire on the screen: on-grid at both ends, so on-grid in
+/// the middle, which keeps cursor snapping out of the way of the hit test.
+VECTOR2I firstWireMidpoint( SCH_HOST& aHost )
+{
+    SCH_SCREEN* screen = aHost.GetScreen();
+
+    BOOST_REQUIRE( screen );
+
+    for( SCH_ITEM* item : screen->Items().OfType( SCH_LINE_T ) )
+    {
+        SCH_LINE* line = static_cast<SCH_LINE*>( item );
+
+        if( line->GetLayer() == LAYER_WIRE )
+            return ( line->GetStartPoint() + line->GetEndPoint() ) / 2;
+    }
+
+    BOOST_FAIL( "fixture has no wire to click on" );
+    return VECTOR2I();
+}
+
+
+/// The down/up pair a UI sends for one left click at a world position.
+void clickAt( SCH_HOST& aHost, const VECTOR2I& aWorld )
+{
+    HOST_INPUT_EVENT event;
+
+    event.position = aHost.View().ToScreen( VECTOR2D( aWorld ) );
+
+    event.type = HOST_INPUT_TYPE::POINTER_MOTION;
+    aHost.DispatchInput( event );
+
+    event.type = HOST_INPUT_TYPE::POINTER_DOWN;
+    event.button = BUT_LEFT;
+    aHost.DispatchInput( event );
+
+    event.type = HOST_INPUT_TYPE::POINTER_UP;
+    aHost.DispatchInput( event );
+}
+
+
+std::unique_ptr<SCH_HOST> loadedHost( const wxString& aFixture = wxT( "api_kitchen_sink.kicad_sch" ) )
+{
+    auto host = std::make_unique<SCH_HOST>();
+
+    BOOST_REQUIRE_MESSAGE( host->LoadFile( eeschemaFixture( aFixture ) ),
+                           host->GetLastError().ToStdString() );
+
+    host->SetViewportSize( 1920, 1080 );
+    host->ZoomToFit();
+
+    return host;
+}
+
+
+/**
+ * The one that matters: a click at an item's position selects that item.
+ *
+ * Note what is *not* mocked. The position goes in as screen pixels and is turned
+ * into a world position by `HOST_VIEW_CONTROLS`, the hit test is
+ * `SCH_COLLECTOR`'s against the real `SCH_SCREEN`, and the item that comes back is
+ * the one on the schematic.
+ */
+BOOST_AUTO_TEST_CASE( AClickSelectsTheItemUnderIt )
+{
+    std::unique_ptr<SCH_HOST> host = loadedHost();
+
+    const VECTOR2I target = firstWireMidpoint( *host );
+
+    BOOST_CHECK_EQUAL( host->GetSelectionCount(), 0u );
+
+    clickAt( *host, target );
+
+    BOOST_REQUIRE_EQUAL( host->GetSelectionCount(), 1u );
+
+    EDA_ITEM* selected = host->GetCurrentSelection().Front();
+
+    BOOST_REQUIRE( selected );
+    BOOST_CHECK_EQUAL( selected->Type(), SCH_LINE_T );
+    BOOST_CHECK( selected->IsSelected() );
+
+    // The item selected is the one that was clicked, not merely something.
+    SCH_LINE* line = static_cast<SCH_LINE*>( selected );
+    BOOST_CHECK_EQUAL( ( line->GetStartPoint() + line->GetEndPoint() ) / 2, target );
+}
+
+
+/**
+ * Clicking empty space clears the selection, which is the other half of the
+ * behaviour and the half a partially-wired tool still gets right by accident.
+ */
+BOOST_AUTO_TEST_CASE( AClickOnNothingClearsTheSelection )
+{
+    std::unique_ptr<SCH_HOST> host = loadedHost();
+
+    clickAt( *host, firstWireMidpoint( *host ) );
+
+    BOOST_REQUIRE_EQUAL( host->GetSelectionCount(), 1u );
+
+    // Far outside the drawing, but still inside the viewport after a zoom to fit.
+    const BOX2I  bbox = host->GetDocumentBBox( true );
+    const VECTOR2I empty( bbox.GetLeft() + 10, bbox.GetTop() + 10 );
+
+    clickAt( *host, empty );
+
+    BOOST_CHECK_EQUAL( host->GetSelectionCount(), 0u );
+}
+
+
+/**
+ * Escape clears the selection too, over the same path a UI's key events take.
+ */
+BOOST_AUTO_TEST_CASE( CancelClearsTheSelection )
+{
+    std::unique_ptr<SCH_HOST> host = loadedHost();
+
+    clickAt( *host, firstWireMidpoint( *host ) );
+
+    BOOST_REQUIRE_EQUAL( host->GetSelectionCount(), 1u );
+
+    HOST_INPUT_EVENT cancel;
+    cancel.type = HOST_INPUT_TYPE::CANCEL;
+
+    host->DispatchInput( cancel );
+
+    BOOST_CHECK_EQUAL( host->GetSelectionCount(), 0u );
+}
+
+
+/**
+ * A selection is only visible if the consumer is told to re-record.
+ *
+ * `SCH_SELECTION_TOOL` says so by calling `ForceRefreshCanvas()`, which on a frame
+ * repaints synchronously and here sets the flag `ksch_session_dispatch_input`
+ * returns as `KSCH_INPUT_REDRAW`. Until this stage nothing in eeschema called it at
+ * all, so the flag existed and could never be set — which is why this is asserted
+ * rather than assumed.
+ */
+BOOST_AUTO_TEST_CASE( SelectingSomethingAsksTheConsumerToRedraw )
+{
+    std::unique_ptr<SCH_HOST> host = loadedHost();
+
+    // Clear whatever the load and the zoom-to-fit asked for.
+    host->TakeRedrawRequest();
+
+    clickAt( *host, firstWireMidpoint( *host ) );
+
+    BOOST_REQUIRE_EQUAL( host->GetSelectionCount(), 1u );
+    BOOST_CHECK( host->TakeRedrawRequest() );
+}
+
+
+/**
+ * The selection reaches the recorded frame, which is the only way a user sees it.
+ *
+ * `SCH_PAINTER` draws a shadow behind a selected item on LAYER_SELECTION_SHADOWS,
+ * so a frame recorded with something selected has geometry a frame recorded with
+ * nothing selected does not. Asserting on the command count rather than on a
+ * pixel keeps this a test of the seam rather than of the renderer.
+ */
+BOOST_AUTO_TEST_CASE( ASelectedItemChangesWhatIsRecorded )
+{
+    std::unique_ptr<SCH_HOST> host = loadedHost();
+
+    const kgds_stream_view clean = host->Render();
+    const std::size_t      cleanCommands = clean.frame_cmd_count + clean.group_cmd_count;
+
+    clickAt( *host, firstWireMidpoint( *host ) );
+
+    BOOST_REQUIRE_EQUAL( host->GetSelectionCount(), 1u );
+
+    const kgds_stream_view selected = host->Render();
+    const std::size_t      selectedCommands =
+            selected.frame_cmd_count + selected.group_cmd_count;
+
+    BOOST_CHECK_GT( selectedCommands, cleanCommands );
+}
+
+
+/**
+ * The cursor shape the tools ask for is recorded for a consumer that owns the real
+ * pointer. gpui cannot be told "become a crosshair" by C++, so the host keeps the
+ * request and the UI reads it.
+ */
+BOOST_AUTO_TEST_CASE( TheToolsCursorRequestIsRecorded )
+{
+    std::unique_ptr<SCH_HOST> host = loadedHost();
+
+    // SCH_SELECTION_TOOL::Main() sets this as the first thing it does, so the mere
+    // fact that it is the arrow means the tool's loop is running.
+    BOOST_CHECK_EQUAL( static_cast<int>( host->GetCurrentCursor() ),
+                       static_cast<int>( KICURSOR::ARROW ) );
 }
 
 
@@ -1037,9 +1263,6 @@ BOOST_AUTO_TEST_CASE( PointerInputMovesTheCursorReportedBack )
     std::uint32_t flags = 0xffffffffu;
     BOOST_REQUIRE_EQUAL( ksch_session_dispatch_input( session, &event, &flags ), KSCH_OK );
 
-    // No tool can run on a non-frame holder yet, so nothing claims a motion event.
-    BOOST_CHECK( ( flags & KSCH_INPUT_HANDLED ) == 0u );
-
     ksch_editor_state after = {};
     BOOST_REQUIRE_EQUAL( ksch_session_editor_state( session, &after ), KSCH_OK );
 
@@ -1062,10 +1285,8 @@ BOOST_AUTO_TEST_CASE( PointerInputMovesTheCursorReportedBack )
 
 
 /**
- * A whole click gesture, and a key, over the ABI. Nothing claims any of it while
- * the tool roster declines a non-frame holder, and nothing edits the document —
- * which is the state this stage leaves the seam in, stated as an assertion rather
- * than as a sentence in a document.
+ * A whole click gesture, and a key, over the ABI. The selection tool receives it;
+ * nothing edits the document, because selecting is all it does.
  */
 BOOST_AUTO_TEST_CASE( AClickGestureIsAcceptedAndChangesNothing )
 {
@@ -1136,12 +1357,18 @@ BOOST_AUTO_TEST_CASE( AnActionNoToolHandlesIsReportedRatherThanAnError )
     // every action in the process is registered, so a made-up name would prove
     // nothing about whether "handled" means handled.
     for( const char* name : { "eeschema.InteractiveDrawingLineWireBus.drawWires",
-                              "common.Control.zoomFitScreen", "common.InteractiveSelection" } )
+                              "common.Control.zoomFitScreen" } )
     {
         BOOST_CHECK_EQUAL( ksch_session_run_action( session, name, &flags ), KSCH_OK );
         BOOST_CHECK_MESSAGE( ( flags & KSCH_INPUT_HANDLED ) == 0u,
                              std::string( name ) + " cannot have been handled: no tool ran" );
     }
+
+    // And the one that does have a tool behind it, so that "unhandled" above means
+    // something other than "this never reports handled".
+    BOOST_CHECK_EQUAL( ksch_session_run_action( session, "common.InteractiveSelection", &flags ),
+                       KSCH_OK );
+    BOOST_CHECK( ( flags & KSCH_INPUT_HANDLED ) != 0u );
 
     ksch_session_destroy( session );
 }
