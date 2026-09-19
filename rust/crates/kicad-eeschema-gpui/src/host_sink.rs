@@ -112,6 +112,8 @@ pub struct HostInputSink {
     /// The last failure reported, so a dead session says so once instead of once
     /// per mouse move.
     last_failure: Option<String>,
+    status: Option<String>,
+    modified: bool,
 }
 
 impl HostInputSink {
@@ -122,6 +124,8 @@ impl HostInputSink {
             dirty: false,
             selection_count: 0,
             last_failure: None,
+            status: None,
+            modified: false,
         }
     }
 
@@ -163,6 +167,11 @@ impl HostInputSink {
         match session.run_action(name) {
             Ok(outcome) => {
                 drop(session);
+                self.status = if outcome.handled {
+                    None
+                } else {
+                    Some(format!("Not available in the GPUI editor: {name}"))
+                };
                 self.absorb(outcome);
             }
             Err(error) => {
@@ -262,6 +271,7 @@ impl HostInputSink {
         match session.editor_state() {
             Ok(state) => {
                 self.selection_count = state.selection_count as usize;
+                self.modified = state.modified;
                 drop(session);
                 self.last_failure = None;
             }
@@ -279,6 +289,7 @@ impl HostInputSink {
         }
 
         eprintln!("eeschema-gpui: {message}");
+        self.status = Some(message.clone());
         self.last_failure = Some(message);
     }
 }
@@ -407,6 +418,14 @@ impl InputSink for HostInputSink {
     fn selection_count(&self) -> usize {
         self.selection_count
     }
+
+    fn status_message(&self) -> Option<&str> {
+        self.status.as_deref()
+    }
+
+    fn modified(&self) -> Option<bool> {
+        Some(self.modified)
+    }
 }
 
 /// The shell's canvas-local screen point, as the ABI's pair of doubles.
@@ -532,6 +551,41 @@ mod tests {
 
     fn expect(event: InputEvent<'_>) -> String {
         format!("{event:?}")
+    }
+
+    #[test]
+    fn unhandled_actions_are_visible_and_success_clears_the_message() {
+        let mut fixture = fixture();
+        fixture.sink.run_action("common.Control.open");
+        assert!(
+            fixture
+                .sink
+                .status_message()
+                .unwrap()
+                .contains("Not available")
+        );
+        fixture.recorder.borrow_mut().outcome.handled = true;
+        fixture.sink.run_action("common.Control.save");
+        assert!(fixture.sink.status_message().is_none());
+    }
+
+    #[test]
+    fn unsaved_state_follows_the_document_after_edit_and_save() {
+        let mut fixture = Fixture::with(
+            InputOutcome {
+                handled: true,
+                redraw: true,
+            },
+            EditorState {
+                modified: true,
+                ..EditorState::default()
+            },
+        );
+        fixture.sink.run_action("common.Interactive.delete");
+        assert_eq!(fixture.sink.modified(), Some(true));
+        fixture.recorder.borrow_mut().state.modified = false;
+        fixture.sink.run_action("common.Control.save");
+        assert_eq!(fixture.sink.modified(), Some(false));
     }
 
     #[test]

@@ -383,6 +383,16 @@ pub trait InputSink {
         false
     }
 
+    /// User-facing host feedback, including action failures.
+    fn status_message(&self) -> Option<&str> {
+        None
+    }
+
+    /// Unsaved changes in a live document; unavailable for a replay.
+    fn modified(&self) -> Option<bool> {
+        None
+    }
+
     /// How many items the host reports as selected.
     ///
     /// The shell has no selection of its own — the C++ selection tool owns it — so

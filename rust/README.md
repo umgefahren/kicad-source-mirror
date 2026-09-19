@@ -10,11 +10,10 @@ cargo is never invoked and the host shared library is not built.
 
 It opens real `.kicad_sch` files — `--schematic` below — holds the C++ session open,
 re-records the frame from it whenever the view moves, and hands every pointer move,
-click, drag, scroll and key press to KiCad's `TOOL_MANAGER` as a `TOOL_EVENT`. It is
-still not an editor, and the reason is on the far side of that seam rather than on
-this one: **no tool receives the events**, because every eeschema tool declines a
-tool holder that is not a `wxFrame`. `docs/rust-migration/06-what-is-missing.md` is
-the honest account of the distance from here to an editor.
+click, drag, scroll and key press to KiCad's `TOOL_MANAGER` as a `TOOL_EVENT`. Canvas editing tools run through the C++ host: selection, move, rotate,
+wiring, undo/redo and save. Dialog workflows, including symbol placement and
+properties, still need porting. `docs/rust-migration/06-what-is-missing.md`
+describes that remaining work.
 
 ## What is and is not here
 
@@ -139,18 +138,22 @@ build/rust-target/release/eeschema-gpui --stream qa/data/draw_streams/ecc83_pp_v
 `KICAD_SCH_HOST_DIR=` empty forces the no-host build, which is how that path
 stays tested on a machine that has one.
 
-**Input reaches the tool framework and stops there.** With `--schematic` the binary
-installs `HostInputSink` instead of `NullSink`, so a pointer move, a click, a drag,
-a scroll, a key press, a tool button and a menu item all cross into C++: the first
-five as `TOOL_EVENT`s through `HOST_TOOL_DISPATCHER`, the last two as
-`TOOL_ACTION`s by name. Nothing answers, because `TOOL_MANAGER` has no tools — see
-`docs/rust-migration/06-what-is-missing.md` Stage 4b. With `--stream` there is no
-session to talk to and the sink is still the null one.
+With `--schematic`, the binary installs `HostInputSink`: pointer and keyboard
+input reaches the C++ tool framework, and toolbar/menu actions run by name.
+Toolbar activation waits for a canvas click; tool hotkeys run through the host
+keyboard dispatcher so immediate placement and repeated hotkeys retain KiCad's
+semantics. The canvas takes keyboard focus at startup and on click, and regains
+it after the command palette closes. macOS supports Command shortcuts, including
+Command-Shift-Z for redo, alongside the Control aliases.
 
-Two things this makes visible in the shell today: the cursor the *tools* would read
-is the grid-snapped one the host reports, and the status bar's selection count comes
-from the host rather than from the shell, so it is honest about being zero rather
-than pretending the shell has a selection of its own.
+Drag with the middle or secondary mouse button to pan. A secondary click without
+dragging opens the context menu on release.
+
+The status bar reports the host selection count and unsaved state. Host errors
+and unhandled named actions appear there. This is not a capability guarantee:
+some registered C++ actions still accept an event but decline the dialog work.
+With `--stream` (or the no-argument demonstration), there is no live document and
+editing is unavailable.
 
 Keys cross the boundary **by name** — `"escape"`, `"f11"`, `"w"` — and C++ maps them
 onto KiCad's `WXK_*` codes in one function,

@@ -127,8 +127,11 @@ function( _kicad_rust_build_command target artifact_name out_artifact )
     # `--locked` keeps a build from silently resolving different dependency
     # versions than the checked-in Cargo.lock; a KiCad release build must be
     # reproducible.
-    add_custom_command(
-        OUTPUT ${_artifact}
+    # Cargo owns the Rust dependency graph, including workspace crates, build
+    # scripts and assets. Always ask it to check freshness; depending only on
+    # the host library left Rust-only edits silently out of the executable.
+    add_custom_target( ${target}-cargo
+        BYPRODUCTS ${_artifact}
         COMMAND ${CMAKE_COMMAND} -E env
                 "CARGO_TARGET_DIR=${KICAD_RUST_TARGET_DIR}"
                 ${ARG_ENVIRONMENT}
@@ -167,7 +170,7 @@ function( kicad_add_rust_library target )
     string( REPLACE "-" "_" _libstem "${ARG_CRATE}" )
     _kicad_rust_build_command( ${target} "lib${_libstem}.a" _artifact ${ARGN} )
 
-    add_custom_target( ${target}-build DEPENDS ${_artifact} )
+    add_custom_target( ${target}-build DEPENDS ${target}-cargo )
 
     add_library( ${target} STATIC IMPORTED GLOBAL )
     set_target_properties( ${target} PROPERTIES
@@ -204,7 +207,7 @@ function( kicad_add_rust_executable target )
     set( _exe_name "${ARG_OUTPUT_NAME}${CMAKE_EXECUTABLE_SUFFIX}" )
     _kicad_rust_build_command( ${target} "${_exe_name}" _artifact ${ARGN} )
 
-    add_custom_target( ${target} ALL DEPENDS ${_artifact} )
+    add_custom_target( ${target} ALL DEPENDS ${target}-cargo )
 
     set_target_properties( ${target} PROPERTIES
                            KICAD_RUST_ARTIFACT "${_artifact}" )

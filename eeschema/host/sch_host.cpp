@@ -359,7 +359,7 @@ bool SCH_HOST::DispatchInput( const HOST_INPUT_EVENT& aEvent )
 }
 
 
-bool SCH_HOST::RunActionByName( const std::string& aActionName )
+bool SCH_HOST::RunActionByName( const std::string& aActionName, bool aFromChrome )
 {
     // Deliberately not TOOL_MANAGER::RunAction( const std::string& ): that overload
     // reports whether the *name resolved*, not whether anything ran. It discards
@@ -380,6 +380,16 @@ bool SCH_HOST::RunActionByName( const std::string& aActionName )
 
     if( !action )
         return false;
+
+    TOOL_EVENT event = action->MakeEvent();
+
+    // Toolbar/menu activation must wait for a canvas click. A hotkey, on the
+    // other hand, starts drawing immediately at the canvas cursor.
+    if( aFromChrome && event.IsActivate() )
+    {
+        event.SetHasPosition( false );
+        return m_toolManager->ProcessEvent( event );
+    }
 
     return m_toolManager->RunAction( *action );
 }
@@ -979,6 +989,7 @@ void SCH_HOST::initRenderSettings()
     settings.m_ShowHiddenPins = false;
     settings.m_ShowHiddenFields = false;
     settings.m_ShowPinAltIcons = false;
+    settings.m_ShowPinsElectricalType = false;
 
     settings.SetDefaultPenWidth( m_schematic->Settings().m_DefaultLineWidth );
     settings.m_LabelSizeRatio = m_schematic->Settings().m_LabelSizeRatio;

@@ -887,7 +887,7 @@ extern "C" ksch_status ksch_session_run_action( ksch_session* aSession, const ch
     return guard( aSession,
                   [&]() -> ksch_status
                   {
-                      const bool handled = aSession->m_Host.RunActionByName( aNameUtf8 );
+                      const bool handled = aSession->m_Host.RunActionByName( aNameUtf8, true );
 
                       if( aOutFlags )
                       {

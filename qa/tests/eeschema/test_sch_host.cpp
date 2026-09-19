@@ -764,8 +764,8 @@ BOOST_AUTO_TEST_CASE( AnUnhandledActionIsReportedRatherThanAsserted )
 
     BOOST_REQUIRE( host.LoadFile( eeschemaFixture( wxT( "api_kitchen_sink.kicad_sch" ) ) ) );
 
-    // COMMON_TOOLS declines a non-frame holder, so nothing runs this one.
-    BOOST_CHECK( !host.RunActionByName( "common.Control.zoomFitScreen" ) );
+    // Symbol-library control is not registered in a schematic host.
+    BOOST_CHECK( !host.RunActionByName( "eeschema.SymbolLibraryControl.newSymbol" ) );
     BOOST_CHECK( !host.RunActionByName( "no.such.action" ) );
 
     // And the ones that do have a tool behind them now, so that "unhandled" above means
@@ -1526,13 +1526,11 @@ BOOST_AUTO_TEST_CASE( AWireCanBeDrawnWithThePointer )
                 host->DispatchInput( event );
             };
 
-    // The wire starts at the cursor, as it does when the user presses W, so the pointer
-    // has to be where the wire should begin *before* the tool is activated. Without this
-    // the first segment runs from the cursor's initial position, which is the origin.
-    moveTo( from );
-
-    BOOST_REQUIRE( host->RunActionByName( "eeschema.InteractiveDrawingLineWireBus.drawWires" ) );
-
+    // A toolbar click must not start a wire at the old cursor (or toolbar) position.
+    moveTo( from - VECTOR2I( schIUScale.MilsToIU( 1000 ), 0 ) );
+    BOOST_REQUIRE( host->RunActionByName(
+            "eeschema.InteractiveDrawingLineWireBus.drawWires", true ) );
+    clickAtWorld( from );
     clickAtWorld( to );
 
     // Finish, rather than cancel: Escape during wire drawing discards the segment in
@@ -1542,13 +1540,18 @@ BOOST_AUTO_TEST_CASE( AWireCanBeDrawnWithThePointer )
     // Which wire is new rather than where it is exactly: the click positions snap to the
     // grid, so the endpoints are the nearest grid points to what was asked for.
     SCH_LINE* drawn = nullptr;
+    std::size_t newLines = 0;
 
     for( SCH_ITEM* item : host->GetScreen()->Items().OfType( SCH_LINE_T ) )
     {
         if( !existingLines.count( item ) )
+        {
             drawn = static_cast<SCH_LINE*>( item );
+            ++newLines;
+        }
     }
 
+    BOOST_CHECK_EQUAL( newLines, 1u );
     BOOST_REQUIRE_MESSAGE( drawn, "the gesture drew no new line" );
 
     BOOST_CHECK_EQUAL( drawn->GetLayer(), LAYER_WIRE );
@@ -2178,9 +2181,9 @@ BOOST_AUTO_TEST_CASE( AnActionNoToolHandlesIsReportedRatherThanAnError )
 
     // A *registered* action with no tool behind it, which is the case that matters:
     // every action in the process is registered, so a made-up name would prove
-    // nothing about whether "handled" means handled. COMMON_TOOLS declines a holder that
-    // is not an EDA_DRAW_FRAME, so this is one nothing runs.
-    BOOST_CHECK_EQUAL( ksch_session_run_action( session, "common.Control.zoomFitScreen", &flags ),
+    // nothing about whether "handled" means handled. Symbol-library control is not
+    // registered in a schematic host.
+    BOOST_CHECK_EQUAL( ksch_session_run_action( session, "eeschema.SymbolLibraryControl.newSymbol", &flags ),
                        KSCH_OK );
     BOOST_CHECK( ( flags & KSCH_INPUT_HANDLED ) == 0u );
 

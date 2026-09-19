@@ -148,6 +148,11 @@ pub struct CanvasState {
     last_paint: std::time::Duration,
 }
 
+/// A secondary click, emitted only after release so dragging can pan instead.
+pub struct CanvasContextMenu(pub Point<Pixels>);
+
+impl gpui_kit::EventEmitter<CanvasContextMenu> for CanvasState {}
+
 impl CanvasState {
     /// A canvas showing `renderer`, reporting to `sink`.
     pub fn new(
@@ -291,6 +296,20 @@ impl CanvasState {
             .unwrap_or(0)
     }
 
+    /// Feedback from the live host, if attached.
+    pub fn host_status(&self) -> Option<String> {
+        self.sink
+            .try_borrow()
+            .ok()?
+            .status_message()
+            .map(str::to_owned)
+    }
+
+    /// Unsaved state from the document rather than inferred from UI gestures.
+    pub fn modified(&self) -> Option<bool> {
+        self.sink.try_borrow().ok()?.modified()
+    }
+
     /// Point the events somewhere else. Used by tests and by the host once it
     /// attaches.
     pub fn set_sink(&mut self, sink: SharedSink) {
@@ -416,6 +435,23 @@ impl CanvasState {
         }
         self.tool = tool;
         self.emit(ShellEvent::ToolActivated(tool.id()));
+    }
+
+    /// Invoke a tool through the host's hotkey dispatcher, preserving immediate
+    /// placement and repeated hotkeys (W while drawing is a synthetic click).
+    pub fn tool_hotkey(&mut self, tool: Tool, hotkey: &str) {
+        self.tool = tool;
+        let parts: Vec<_> = hotkey.split('-').collect();
+        self.emit(ShellEvent::KeyDown {
+            key: parts.last().unwrap_or(&hotkey).to_string(),
+            modifiers: Modifiers {
+                ctrl: parts.contains(&"ctrl"),
+                shift: parts.contains(&"shift"),
+                alt: parts.contains(&"alt"),
+                meta: parts.contains(&"cmd"),
+            },
+            repeat: false,
+        });
     }
 
     /// Go back to the select tool and tell the host the current tool was
@@ -790,9 +826,9 @@ fn install_mouse_handlers(state: &Entity<CanvasState>, hitbox: &Hitbox, window: 
                         f32::from(event.position.x) - f32::from(previous.x),
                         f32::from(event.position.y) - f32::from(previous.y),
                     );
-                    // The middle button pans the view itself; the host still
-                    // hears the drag so a tool can override it.
-                    if press.button == PointerButton::Middle {
+                    // Both navigation buttons pan. A secondary click opens its
+                    // menu only on release, and never after a pan.
+                    if matches!(press.button, PointerButton::Middle | PointerButton::Right) {
                         state.pan(delta.x as f64, delta.y as f64);
                     }
                     state.emit(ShellEvent::DragUpdate {
@@ -829,6 +865,12 @@ fn install_mouse_handlers(state: &Entity<CanvasState>, hitbox: &Hitbox, window: 
                 // otherwise believe that button is held for the rest of the session and
                 // turn every later pointer move into a drag from a stale origin.
                 // Only the drag bookkeeping depends on the match.
+                let secondary_click = state.press.is_some_and(|press| {
+                    press.button == PointerButton::Right
+                        && button == PointerButton::Right
+                        && !press.dragging
+                        && state.bounds.contains(&event.position)
+                });
                 let dragging = match state.press {
                     Some(press) if press.button == button => {
                         state.press = None;
@@ -851,6 +893,9 @@ fn install_mouse_handlers(state: &Entity<CanvasState>, hitbox: &Hitbox, window: 
                     world,
                     modifiers,
                 });
+                if secondary_click {
+                    cx.emit(CanvasContextMenu(event.position));
+                }
                 cx.notify();
             });
         });

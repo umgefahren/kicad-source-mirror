@@ -21,7 +21,8 @@ dialogs are untouched, so **wxWidgets has not been removed from anything** and t
 wx editor is still the only complete way to edit a schematic. That document says
 exactly which tools run, what each one can and cannot do there, and why.
 
-For the design, start with **`01-plan.md`**.
+For the design, start with **`01-plan.md`**. For the latest hands-on UI checks and
+fixes, see [`07-ui-bugfix-pass.md`](07-ui-bugfix-pass.md).
 
 | Document | What it is | Who it is for |
 |---|---|---|

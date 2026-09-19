@@ -104,14 +104,6 @@ fn open_with(cx: &mut TestAppContext, document: Option<SharedDocument>) -> Harne
         sink,
     };
 
-    // Give the shell keyboard focus so key bindings resolve the way they do
-    // when the user has clicked into the window.
-    let focus = harness.shell.clone();
-    cx.update_window(harness.window, |_, window, cx| {
-        focus.read(cx).focus_handle(cx).focus(window, cx);
-        window.render_frame(cx);
-    })
-    .expect("window is live");
     cx.run_until_parked();
     frame(cx, &harness);
     harness.sink.clear();
@@ -284,7 +276,11 @@ fn key_bindings_activate_tools_and_escape_cancels(cx: &mut TestAppContext) {
 
     press(cx, &harness, "b");
     assert_eq!(active_tool(cx, &harness), Tool::DrawBus);
-    assert_eq!(harness.sink.activated_tools(), vec![Tool::DrawBus.id()]);
+    assert!(
+        harness
+            .sink
+            .any(|event| matches!(event, ShellEvent::KeyDown { key, .. } if key == "b"))
+    );
 
     harness.sink.clear();
     press(cx, &harness, "w");
@@ -756,14 +752,7 @@ fn the_file_menu_carries_the_actions_it_should(cx: &mut TestAppContext) {
     );
 }
 
-/// Right-clicking the canvas opens gpui-component's `ContextMenu`, which keeps
-/// the `PopupMenu` entity it builds in element state for the life of the
-/// window and never drops it — dismissing only clears an open flag. That is
-/// harmless in an application and fatal to gpui's leaked-handle check, which
-/// fires when the test's `App` is dropped; removing the window first does not
-/// help. So this is recorded and skipped rather than deleted, and the context
-/// menu is verified in the headless screenshots instead.
-#[ignore = "gpui-component's ContextMenu retains its PopupMenu, which trips gpui's leak detector"]
+/// A secondary click still opens a menu and reaches the host.
 #[gpui_kit::test]
 fn a_right_click_on_the_canvas_reaches_the_host(cx: &mut TestAppContext) {
     let harness = open(cx);
@@ -784,6 +773,9 @@ fn a_right_click_on_the_canvas_reaches_the_host(cx: &mut TestAppContext) {
         "the host hears the right click: {:?}",
         harness.sink.events()
     );
+    cx.run_until_parked();
+    frame(cx, &harness);
+    press(cx, &harness, "escape");
 }
 
 #[gpui_kit::test]
@@ -1381,5 +1373,133 @@ fn every_press_gets_a_release_even_with_two_buttons_held(cx: &mut TestAppContext
     assert_eq!(
         ups, downs,
         "every button that went down has to come up: {ups:?}"
+    );
+}
+
+/// Do not give the test a focus handle that a real user never receives.
+#[gpui_kit::test]
+fn canvas_receives_unbound_host_keys_at_startup_and_after_palette(cx: &mut TestAppContext) {
+    let harness = open(cx);
+    press(cx, &harness, "r");
+    assert!(harness.sink.events().iter().any(|event| matches!(
+        event, ShellEvent::KeyDown { key, .. } if key == "r"
+    )));
+    press(cx, &harness, "ctrl-shift-p");
+    press(cx, &harness, "escape");
+    harness.sink.clear();
+    press(cx, &harness, "r");
+    assert!(harness.sink.events().iter().any(|event| matches!(
+        event, ShellEvent::KeyDown { key, .. } if key == "r"
+    )));
+}
+
+#[gpui_kit::test]
+fn clicking_canvas_restores_host_keyboard_input(cx: &mut TestAppContext) {
+    let harness = open(cx);
+    cx.update_window(harness.window, |_, window, cx| {
+        harness.shell.read(cx).focus_handle(cx).focus(window, cx);
+    })
+    .expect("window is live");
+    click(cx, &harness, "canvas");
+    harness.sink.clear();
+    press(cx, &harness, "r");
+    assert!(harness.sink.events().iter().any(|event| matches!(
+        event, ShellEvent::KeyDown { key, .. } if key == "r"
+    )));
+}
+
+#[cfg(target_os = "macos")]
+#[gpui_kit::test]
+fn mac_command_save_and_redo_reach_the_host(cx: &mut TestAppContext) {
+    let harness = open(cx);
+    press(cx, &harness, "cmd-s");
+    press(cx, &harness, "cmd-shift-z");
+    for expected in ["common.Control.save", "common.Interactive.redo"] {
+        assert!(harness.sink.events().iter().any(|event| matches!(
+            event, ShellEvent::ActionInvoked(id) if id.as_str() == expected
+        )));
+    }
+}
+
+#[gpui_kit::test]
+fn named_host_edits_repaint_the_cached_canvas_panel(cx: &mut TestAppContext) {
+    let (harness, _document) = open_live(cx);
+    cx.update_window(harness.window, |_, _, cx| {
+        let canvas = harness.shell.read(cx).canvas().clone();
+        canvas.update(cx, |canvas, _| {
+            canvas.set_sink(shared_sink(BusyHostSink::default()))
+        });
+    })
+    .expect("window is live");
+    let before = renders(cx, &harness);
+    press(cx, &harness, "ctrl-z");
+    assert!(
+        renders(cx, &harness) > before,
+        "undo must repaint without a mouse move"
+    );
+}
+
+#[gpui_kit::test]
+fn secondary_drag_pans_without_opening_a_menu(cx: &mut TestAppContext) {
+    let (harness, document) = open_live(cx);
+    let before = document.borrow().last_viewport().unwrap();
+    let start = cx
+        .update_window(harness.window, |_, window, cx| {
+            window.render_frame(cx);
+            window.find("canvas").bounds().center()
+        })
+        .unwrap();
+    let end = start + gpui_kit::point(px(100.), px(60.));
+    cx.update_window(harness.window, |_, window, cx| {
+        window.dispatch_event(
+            gpui_kit::PlatformInput::MouseDown(gpui_kit::MouseDownEvent {
+                button: gpui_kit::MouseButton::Right,
+                position: start,
+                modifiers: Default::default(),
+                click_count: 1,
+                first_mouse: false,
+            }),
+            cx,
+        );
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    // A menu on mouse-down would steal the following motion.
+    cx.update_window(harness.window, |_, window, cx| {
+        window.dispatch_event(
+            gpui_kit::PlatformInput::MouseMove(gpui_kit::MouseMoveEvent {
+                position: end,
+                pressed_button: Some(gpui_kit::MouseButton::Right),
+                modifiers: Default::default(),
+            }),
+            cx,
+        );
+        window.render_frame(cx);
+        window.dispatch_event(
+            gpui_kit::PlatformInput::MouseUp(gpui_kit::MouseUpEvent {
+                button: gpui_kit::MouseButton::Right,
+                position: end,
+                modifiers: Default::default(),
+                click_count: 1,
+            }),
+            cx,
+        );
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    frame(cx, &harness);
+    let after = document.borrow().last_viewport().unwrap();
+    assert_eq!(after.scale, before.scale);
+    assert!((after.center.x - (before.center.x - 100. / before.scale)).abs() < 0.01);
+    assert!((after.center.y - (before.center.y - 60. / before.scale)).abs() < 0.01);
+    // No menu stole focus: an ordinary canvas hotkey still works on release.
+    harness.sink.clear();
+    press(cx, &harness, "r");
+    assert!(
+        harness
+            .sink
+            .any(|event| matches!(event, ShellEvent::KeyDown { key, .. } if key == "r"))
     );
 }

@@ -79,12 +79,17 @@ gpui_kit::actions!(
 pub struct RunAction {
     /// The KiCad action name, for example `eeschema.EditorControl.save`.
     pub id: SharedString,
+    /// Tool shortcut, when invoked at the canvas cursor rather than from chrome.
+    pub hotkey: Option<SharedString>,
 }
 
 impl RunAction {
     /// An action that invokes `id`.
     pub fn new(id: impl Into<SharedString>) -> Self {
-        Self { id: id.into() }
+        Self {
+            id: id.into(),
+            hotkey: None,
+        }
     }
 }
 
@@ -713,9 +718,37 @@ pub fn key_bindings() -> (Vec<KeyBinding>, Vec<&'static str>) {
         if bound.contains(&keys) {
             continue;
         }
+        // Keep Control aliases, but expose the platform's standard Command shortcuts
+        // on macOS. Raw host key events cannot substitute for shell actions (save, quit).
+        #[cfg(target_os = "macos")]
+        if keys.starts_with("ctrl-") {
+            let native = if keys == "ctrl-y" {
+                "cmd-shift-z".to_string()
+            } else {
+                keys.replacen("ctrl-", "cmd-", 1)
+            };
+            match KeyBinding::load(
+                &native,
+                spec.action(),
+                context_for(&native),
+                false,
+                None,
+                &gpui_kit::DummyKeyboardMapper,
+            ) {
+                Ok(binding) => bindings.push(binding),
+                Err(_) => rejected.push(keys),
+            }
+        }
+        let action = match spec.kind {
+            CommandKind::Tool(tool) => Box::new(RunAction {
+                id: tool.id().as_str().into(),
+                hotkey: Some(keys.into()),
+            }) as Box<dyn Action>,
+            _ => spec.action(),
+        };
         match KeyBinding::load(
             keys,
-            spec.action(),
+            action,
             context_for(keys),
             false,
             None,
@@ -797,10 +830,11 @@ mod tests {
                 .iter()
                 .map(|k| k.inner().key.clone())
                 .collect();
-            let modifiers = binding
-                .keystrokes()
-                .iter()
-                .any(|k| k.inner().modifiers.control || k.inner().modifiers.alt);
+            let modifiers = binding.keystrokes().iter().any(|k| {
+                k.inner().modifiers.control
+                    || k.inner().modifiers.alt
+                    || k.inner().modifiers.platform
+            });
             if !modifiers {
                 assert!(
                     binding.predicate().is_some(),

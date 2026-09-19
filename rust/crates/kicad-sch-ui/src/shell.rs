@@ -18,7 +18,7 @@ use gpui_kit::component::command::{Command, CommandGroup, CommandItem, CommandSt
 use gpui_kit::component::dock::{
     DockArea, DockLayout, DockPlacement, DockSkin, Panel, PanelEvent, panel_handle,
 };
-use gpui_kit::component::menu::{AppMenuBar, ContextMenuExt, PopupMenu};
+use gpui_kit::component::menu::{AppMenuBar, PopupMenu};
 use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::status_bar::StatusBar;
 use gpui_kit::component::theme::{Theme, ThemeMode};
@@ -29,7 +29,7 @@ use gpui_kit::{
     KeyUpEvent, SharedString, Window, div, px,
 };
 
-use crate::canvas::{CanvasElement, CanvasState};
+use crate::canvas::{CanvasContextMenu, CanvasElement, CanvasState};
 use crate::commands::{
     self, CancelTool, CycleGrid, OpenCommandPalette, Quit, RunAction, ToggleFrameStats, ToggleGrid,
     ToggleLeftPanel, ToggleRightPanel, ToggleTheme, ToggleUnits, ZoomActualSize, ZoomIn, ZoomOut,
@@ -82,6 +82,8 @@ pub struct CanvasPanel {
     /// screenshot that claims to be untitled while showing a real schematic
     /// is worse than no caption at all.
     title: SharedString,
+    context_menu: Option<(Entity<PopupMenu>, gpui_kit::Point<gpui_kit::Pixels>)>,
+    menu_subscription: Option<gpui_kit::Subscription>,
 }
 
 impl CanvasPanel {
@@ -89,13 +91,73 @@ impl CanvasPanel {
     pub fn new(
         state: Entity<CanvasState>,
         title: impl Into<SharedString>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        // Dock panels cache their rendered element. Invalidating the shell alone
+        // does not repaint the nested canvas after a menu/keyboard edit.
+        cx.observe(&state, |_, _, cx| cx.notify()).detach();
+        cx.subscribe_in(
+            &state,
+            window,
+            |this, _, event: &CanvasContextMenu, window, cx| {
+                this.open_context_menu(event.0, window, cx);
+            },
+        )
+        .detach();
         Self {
             focus_handle: cx.focus_handle(),
             state,
             title: title.into(),
+            context_menu: None,
+            menu_subscription: None,
         }
+    }
+
+    fn open_context_menu(
+        &mut self,
+        position: gpui_kit::Point<gpui_kit::Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let menu = PopupMenu::build(window, cx, |menu, _, _| {
+            menu.menu("Cut", Box::new(RunAction::new("common.Interactive.cut")))
+                .menu("Copy", Box::new(RunAction::new("common.Interactive.copy")))
+                .menu(
+                    "Paste",
+                    Box::new(RunAction::new("common.Interactive.paste")),
+                )
+                .separator()
+                .menu(
+                    "Properties...",
+                    Box::new(RunAction::new("eeschema.InteractiveEdit.properties")),
+                )
+                .menu(
+                    "Delete",
+                    Box::new(RunAction::new("common.Interactive.delete")),
+                )
+                .separator()
+                .menu(
+                    "Select All",
+                    Box::new(RunAction::new("common.Interactive.selectAll")),
+                )
+                .menu("Zoom to Fit", Box::new(ZoomToFit))
+                .action_context(self.focus_handle.clone())
+        });
+
+        self.menu_subscription = Some(cx.subscribe_in(
+            &menu,
+            window,
+            |this, _, _: &gpui_kit::DismissEvent, window, cx| {
+                this.context_menu = None;
+                this.menu_subscription = None;
+                this.focus_handle.focus(window, cx);
+                cx.notify();
+            },
+        ));
+        menu.read(cx).focus_handle(cx).focus(window, cx);
+        self.context_menu = Some((menu, position));
+        cx.notify();
     }
 
     /// Re-caption the tab, when the document changes.
@@ -117,10 +179,13 @@ impl CanvasPanel {
             alt: keystroke.modifiers.alt,
             meta: keystroke.modifiers.platform,
         };
-        self.state.read(cx).emit(ShellEvent::KeyDown {
-            key: keystroke.key.to_string(),
-            modifiers,
-            repeat: event.is_held,
+        self.state.update(cx, |state, cx| {
+            state.emit(ShellEvent::KeyDown {
+                key: keystroke.key.to_string(),
+                modifiers,
+                repeat: event.is_held,
+            });
+            cx.notify();
         });
         // As every mouse handler in `canvas.rs` does. A host that claimed the key may
         // have changed the document, which sets the canvas' dirty flag — and without a
@@ -186,31 +251,22 @@ impl Render for CanvasPanel {
             .size_full()
             .relative()
             .overflow_hidden()
+            .on_mouse_down(
+                gpui_kit::MouseButton::Left,
+                cx.listener(|this, _, window, cx| {
+                    this.focus_handle.focus(window, cx);
+                }),
+            )
             .on_key_down(cx.listener(Self::on_key_down))
             .on_key_up(cx.listener(Self::on_key_up))
             .child(CanvasElement::new("canvas-surface", state).size_full())
-            .context_menu(|menu: PopupMenu, _window, _cx| {
-                menu.menu("Cut", Box::new(RunAction::new("common.Interactive.cut")))
-                    .menu("Copy", Box::new(RunAction::new("common.Interactive.copy")))
-                    .menu(
-                        "Paste",
-                        Box::new(RunAction::new("common.Interactive.paste")),
-                    )
-                    .separator()
-                    .menu(
-                        "Properties...",
-                        Box::new(RunAction::new("eeschema.InteractiveEdit.properties")),
-                    )
-                    .menu(
-                        "Delete",
-                        Box::new(RunAction::new("common.Interactive.delete")),
-                    )
-                    .separator()
-                    .menu(
-                        "Select All",
-                        Box::new(RunAction::new("common.Interactive.selectAll")),
-                    )
-                    .menu("Zoom to Fit", Box::new(ZoomToFit))
+            .when_some(self.context_menu.clone(), |element, (menu, position)| {
+                element.child(gpui_kit::deferred(
+                    gpui_kit::anchored()
+                        .position(position)
+                        .snap_to_window_with_margin(px(8.))
+                        .child(menu),
+                ))
             })
     }
 }
@@ -301,7 +357,7 @@ impl SchematicShell {
         let title = design_state.source().title();
 
         let canvas = cx.new(|_| CanvasState::new(renderer, palette, sink));
-        let canvas_panel = cx.new(|cx| CanvasPanel::new(canvas.clone(), title, cx));
+        let canvas_panel = cx.new(|cx| CanvasPanel::new(canvas.clone(), title, window, cx));
         let design = cx.new(|_| design_state);
         let hierarchy = cx.new(|cx| HierarchyPanel::new(design.clone(), cx));
         let properties = cx.new(|cx| PropertiesPanel::new(design.clone(), cx));
@@ -354,6 +410,11 @@ impl SchematicShell {
             status: "Ready".into(),
         };
         shell.canvas.update(cx, |canvas, _| canvas.zoom_to_fit());
+        shell
+            .canvas_panel
+            .read(cx)
+            .focus_handle(cx)
+            .focus(window, cx);
         shell
     }
 
@@ -476,11 +537,14 @@ impl SchematicShell {
         self.status = message.into();
     }
 
-    fn emit(&self, event: ShellEvent, cx: &App) {
-        self.canvas.read(cx).emit(event);
+    fn emit(&self, event: ShellEvent, cx: &mut Context<Self>) {
+        self.canvas.update(cx, |canvas, cx| {
+            canvas.emit(event);
+            cx.notify();
+        });
     }
 
-    fn report(&self, command: commands::ShellCommand, cx: &App) {
+    fn report(&self, command: commands::ShellCommand, cx: &mut Context<Self>) {
         self.emit(ShellEvent::ActionInvoked(command.reported_id().into()), cx);
     }
 
@@ -490,7 +554,11 @@ impl SchematicShell {
         let id = action.id.to_string();
         if let Some(tool) = commands::tool_for_action(&id) {
             self.canvas.update(cx, |canvas, cx| {
-                canvas.set_tool(tool);
+                if let Some(hotkey) = &action.hotkey {
+                    canvas.tool_hotkey(tool, hotkey);
+                } else {
+                    canvas.set_tool(tool);
+                }
                 cx.notify();
             });
             self.set_status(format!("{} tool", tool.label()));
@@ -662,16 +730,20 @@ impl SchematicShell {
         cx.notify();
     }
 
-    fn close_palette(&mut self, cx: &mut Context<Self>) {
+    fn close_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.palette_open {
             self.palette_open = false;
+            self.canvas_panel
+                .read(cx)
+                .focus_handle(cx)
+                .focus(window, cx);
             cx.notify();
         }
     }
 
-    fn on_cancel_tool(&mut self, _: &CancelTool, _window: &mut Window, cx: &mut Context<Self>) {
+    fn on_cancel_tool(&mut self, _: &CancelTool, window: &mut Window, cx: &mut Context<Self>) {
         if self.palette_open {
-            self.close_palette(cx);
+            self.close_palette(window, cx);
             return;
         }
         self.canvas.update(cx, |canvas, cx| {
@@ -1002,8 +1074,22 @@ impl SchematicShell {
                     .test_support()
                     .text_xs()
                     .text_color(theme.muted_foreground)
-                    .child(self.status.clone()),
+                    .child(
+                        canvas
+                            .host_status()
+                            .map(SharedString::from)
+                            .unwrap_or_else(|| self.status.clone()),
+                    ),
             )
+            .when_some(canvas.modified(), |bar, modified| {
+                bar.right(
+                    div()
+                        .id("status-modified")
+                        .test_support()
+                        .text_xs()
+                        .child(if modified { "Unsaved changes" } else { "Saved" }),
+                )
+            })
             // A live canvas that quietly keeps showing the last frame it managed
             // to record is indistinguishable from one that is working, so a
             // failed frame says so where the user is already looking.
@@ -1090,11 +1176,11 @@ impl SchematicShell {
             .searchable(true)
             .filterable(true)
             .max_h(px(420.))
-            .on_confirm(move |_, _, cx| {
-                on_confirm.update(cx, |shell, cx| shell.close_palette(cx));
+            .on_confirm(move |_, window, cx| {
+                on_confirm.update(cx, |shell, cx| shell.close_palette(window, cx));
             })
-            .on_cancel(move |_, cx| {
-                on_cancel.update(cx, |shell, cx| shell.close_palette(cx));
+            .on_cancel(move |window, cx| {
+                on_cancel.update(cx, |shell, cx| shell.close_palette(window, cx));
             });
 
         let mut grouped: Vec<(String, Vec<CommandItem>)> = Vec::new();
@@ -1123,7 +1209,7 @@ impl SchematicShell {
             .bg(theme.overlay)
             .on_mouse_down(
                 gpui_kit::MouseButton::Left,
-                cx.listener(|this, _event, _window, cx| this.close_palette(cx)),
+                cx.listener(|this, _event, window, cx| this.close_palette(window, cx)),
             )
             .child(
                 div()

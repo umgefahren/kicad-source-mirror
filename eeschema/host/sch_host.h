@@ -286,9 +286,10 @@ public:
     /**
      * Run a registered action by its dotted name, as a menu or a toolbar does.
      *
+     * @param aFromChrome suppress immediate cursor placement for toolbar/menu activation.
      * @return false if no action has that name, or if the action was not handled.
      */
-    bool RunActionByName( const std::string& aActionName );
+    bool RunActionByName( const std::string& aActionName, bool aFromChrome = false );
 
     /// Forget which buttons are down, e.g. because the host lost focus.
     void ResetInputState();
