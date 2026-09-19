@@ -300,6 +300,14 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # sources the compiler itself handles fine.
 set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 
+# ...and the same thing again for fmt, which the line above does not cover.
+# `FMT_MODULE` defaults to on whenever the standard is C++20, the generator is
+# Ninja >= 1.11 and the compiler is new enough — all true here — and
+# `add_module_library( ... USE_CMAKE_MODULES )` then turns scanning back on for
+# that one target, where it fails exactly as described above. Nothing in KiCad
+# consumes fmt as a module; only the header-only and static forms are used.
+set(FMT_MODULE OFF CACHE BOOL "Build fmt as a C++20 module library" FORCE)
+
 # Xcode older than 26 gates std::jthread / std::stop_token behind the
 # experimental library. Enable it for C++20.
 #
