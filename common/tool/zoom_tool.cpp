@@ -41,6 +41,16 @@ ZOOM_TOOL::~ZOOM_TOOL() {}
 
 bool ZOOM_TOOL::Init()
 {
+    // Checked, because the tool holder is not necessarily a frame: a non-wx host
+    // installs one that is not, and the unchecked cast below adjusts a pointer by the
+    // offset of a TOOLS_HOLDER subobject inside a frame — which does not exist in one
+    // that is not a frame. Zooming by rubber band needs the canvas, so declining is
+    // the answer, and TOOL_MANAGER::InitTools() then unregisters this tool.
+    EDA_DRAW_FRAME* frame = dynamic_cast<EDA_DRAW_FRAME*>( m_toolMgr->GetToolHolder() );
+
+    if( !frame )
+        return false;
+
     auto& ctxMenu = m_menu->GetMenu();
 
     // cancel current tool goes in main context menu at the top if present
@@ -48,7 +58,7 @@ bool ZOOM_TOOL::Init()
     ctxMenu.AddSeparator( 1 );
 
     // Finally, add the standard zoom/grid items
-    getEditFrame<EDA_DRAW_FRAME>()->AddStandardSubMenus( *m_menu.get() );
+    frame->AddStandardSubMenus( *m_menu.get() );
 
     return true;
 }

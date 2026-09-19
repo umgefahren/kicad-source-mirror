@@ -20,13 +20,19 @@
 
 #include <eda_draw_frame.h>
 #include <tool/actions.h>
+#include <tool/tool_manager.h>
 #include <tool/properties_tool.h>
 #include <widgets/properties_panel.h>
 
 
 int PROPERTIES_TOOL::UpdateProperties( const TOOL_EVENT& aEvent )
 {
-    EDA_DRAW_FRAME* editFrame = getEditFrame<EDA_DRAW_FRAME>();
+    // Checked, so that the null test below can actually fire. getEditFrame<T>() is a
+    // static_cast of the tool holder, which for a holder that is not a frame yields a
+    // plausible non-null pointer to nothing — so the guard as written was unreachable
+    // and the call was undefined behaviour. This tool needs no frame to exist, only to
+    // do anything, which is why it declines the work rather than declining to run.
+    EDA_DRAW_FRAME* editFrame = dynamic_cast<EDA_DRAW_FRAME*>( m_toolMgr->GetToolHolder() );
 
     if( editFrame )
         editFrame->UpdateProperties();

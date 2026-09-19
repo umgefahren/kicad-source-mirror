@@ -44,7 +44,16 @@ EMBED_TOOL::EMBED_TOOL() :
 
 bool EMBED_TOOL::Init()
 {
-    m_files = getModel<EDA_ITEM>()->GetEmbeddedFiles();
+    // The model is whatever TOOL_MANAGER::SetEnvironment() was given, and a host that
+    // has not opened a document yet has none. Dereferencing it was a null crash rather
+    // than an error, so decline instead: TOOL_MANAGER::InitTools() unregisters a tool
+    // whose Init() returns false, and there is nothing to embed files into anyway.
+    EDA_ITEM* model = getModel<EDA_ITEM>();
+
+    if( !model )
+        return false;
+
+    m_files = model->GetEmbeddedFiles();
 
     return true;
 }

@@ -52,6 +52,17 @@ COMMON_TOOLS::COMMON_TOOLS() :
 }
 
 
+bool COMMON_TOOLS::Init()
+{
+    // Checked, because the tool holder is not necessarily a frame: a non-wx host
+    // installs one that is not. Reset() below reaches straight through m_frame for the
+    // grid list, and every zoom and grid action wants the canvas, so there is nothing
+    // this tool can do without one. TOOL_MANAGER::InitTools() unregisters a tool whose
+    // Init() returns false, which is how it is meant to say so.
+    return dynamic_cast<EDA_DRAW_FRAME*>( m_toolMgr->GetToolHolder() ) != nullptr;
+}
+
+
 void COMMON_TOOLS::Reset( RESET_REASON aReason )
 {
     m_frame = getEditFrame<EDA_DRAW_FRAME>();
