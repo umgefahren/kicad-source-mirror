@@ -10,7 +10,7 @@
 //! that has no host. Keep the two signatures identical: a caller must not need
 //! `cfg` of its own.
 
-use std::ffi::{CStr, CString};
+use std::ffi::{c_int, CStr, CString};
 use std::marker::PhantomData;
 use std::mem::MaybeUninit;
 use std::path::Path;
@@ -318,6 +318,42 @@ impl Session {
         Ok(outcome(flags))
     }
 
+    /// Undo the newest command.
+    ///
+    /// Deliberately not `run_action("common.Interactive.undo")`: that action belongs to
+    /// `SCH_EDITOR_CONTROL`, which still declines an editing context that is not a
+    /// `wxFrame`. Undo itself needs no frame, so the ABI carries it directly.
+    ///
+    /// Returns whether anything was undone; false means the stack was empty.
+    pub fn undo(&mut self) -> Result<bool, Error> {
+        let mut undone: c_int = 0;
+
+        // SAFETY: a live handle and an out-parameter we own.
+        self.check(unsafe { ffi::ksch_session_undo(self.raw.as_ptr(), &mut undone) })?;
+
+        Ok(undone != 0)
+    }
+
+    /// Redo the newest undone command. See [`Session::undo`].
+    pub fn redo(&mut self) -> Result<bool, Error> {
+        let mut redone: c_int = 0;
+
+        // SAFETY: a live handle and an out-parameter we own.
+        self.check(unsafe { ffi::ksch_session_redo(self.raw.as_ptr(), &mut redone) })?;
+
+        Ok(redone != 0)
+    }
+
+    /// Write every sheet back to the file it was loaded from.
+    ///
+    /// The `.kicad_sch` files and nothing else — not the project file, the symbol library
+    /// table, a backup or the embedded-file cache, each of which is a decision about the
+    /// project rather than about the document.
+    pub fn save(&mut self) -> Result<(), Error> {
+        // SAFETY: a live handle.
+        self.check(unsafe { ffi::ksch_session_save(self.raw.as_ptr()) })
+    }
+
     /// What the editor is doing: the cursor, the selection and the status text.
     ///
     /// `&mut self` because the C++ side is not const about it — reading the
@@ -336,6 +372,8 @@ impl Session {
         Ok(EditorState {
             cursor: (state.cursor_x, state.cursor_y),
             selection_count: state.selection_count,
+            undo_count: state.undo_count,
+            redo_count: state.redo_count,
             pointer_over_canvas: state.flags
                 & ffi::ksch_editor_flag_KSCH_EDITOR_POINTER_OVER_CANVAS
                 != 0,

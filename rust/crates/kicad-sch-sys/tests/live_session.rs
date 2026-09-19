@@ -111,6 +111,10 @@ fn main() {
             "a click over the ABI selects the item under it",
             live::a_click_selects_the_item_under_it,
         ),
+        (
+            "an edit is undone, redone, saved and reloaded over the ABI",
+            live::an_edit_is_undone_redone_and_saved,
+        ),
     ];
 
     let mut failed = 0;
@@ -919,6 +923,166 @@ mod live {
             0,
             "a click on nothing clears the selection"
         );
+    }
+
+    /// Undo, redo and save, over the ABI, on a copy of a fixture.
+    ///
+    /// The edit is a drag rather than a synthetic commit, so what is being checked is the
+    /// whole of Stage 4b in one gesture: select, move, undo, redo, save, reopen.
+    ///
+    /// The fixture is copied to a temporary directory first, because saving writes the file
+    /// it was loaded from.
+    pub fn an_edit_is_undone_redone_and_saved() {
+        const MM: f64 = 10_000.0;
+
+        let temp = std::env::temp_dir().join(format!("kicad_sch_sys_save_{}", std::process::id()));
+        std::fs::create_dir_all(&temp).expect("a temporary directory");
+
+        let copy = temp.join("api_kitchen_sink.kicad_sch");
+        std::fs::copy(kitchen_sink(), &copy).expect("copying the fixture");
+
+        // The wire whose midpoint `a_click_selects_the_item_under_it` clicks, and one whole
+        // grid step to drag it by: eeschema's default grid is 50 mil.
+        let target = (96.52 * MM, 77.47 * MM);
+        let step = 2.54 * MM; // 100 mil
+
+        let mut session = Session::open(&copy).expect("the copy loads");
+
+        session.set_viewport(&FIXTURE_VIEWPORT).expect("a viewport");
+        session.zoom_to_fit().expect("framing the page");
+
+        // A baseline written by the same writer, so that a later comparison sees the edit
+        // and not the difference between how the fixture was formatted and how this writes.
+        session.save().expect("saving the untouched copy");
+        let baseline = std::fs::read(&copy).expect("reading the baseline");
+
+        let camera = session.viewport().expect("the camera");
+
+        let to_screen = |world: (f64, f64)| {
+            (
+                (world.0 - camera.center_x) * camera.scale + f64::from(camera.width_px) / 2.0,
+                (world.1 - camera.center_y) * camera.scale + f64::from(camera.height_px) / 2.0,
+            )
+        };
+
+        let mut send = |event: InputEvent<'_>| {
+            session.dispatch_input(&event).expect("the gesture crosses");
+        };
+
+        let click = |send: &mut dyn FnMut(InputEvent<'_>), at: (f64, f64)| {
+            let screen = to_screen(at);
+
+            send(InputEvent::PointerMotion {
+                screen,
+                modifiers: Modifiers::default(),
+            });
+            send(InputEvent::PointerDown {
+                screen,
+                button: PointerButton::Left,
+                modifiers: Modifiers::default(),
+            });
+            send(InputEvent::PointerUp {
+                screen,
+                button: PointerButton::Left,
+                modifiers: Modifiers::default(),
+            });
+        };
+
+        // Select the wire, then drag it one grid step down.
+        click(&mut send, target);
+
+        let from = to_screen(target);
+        let to = to_screen((target.0, target.1 + step));
+
+        send(InputEvent::PointerMotion {
+            screen: from,
+            modifiers: Modifiers::default(),
+        });
+        send(InputEvent::PointerDown {
+            screen: from,
+            button: PointerButton::Left,
+            modifiers: Modifiers::default(),
+        });
+
+        for i in 1..=8 {
+            let t = f64::from(i) / 8.0;
+
+            send(InputEvent::PointerMotion {
+                screen: (from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t),
+                modifiers: Modifiers::default(),
+            });
+        }
+
+        send(InputEvent::PointerUp {
+            screen: to,
+            button: PointerButton::Left,
+            modifiers: Modifiers::default(),
+        });
+
+        let after_drag = session.editor_state().expect("editor state");
+
+        assert!(after_drag.modified, "the drag should have edited the document");
+        assert_eq!(
+            after_drag.undo_count, 1,
+            "the drag should be one undoable command"
+        );
+
+        // Undo, and it is back.
+        assert!(session.undo().expect("undo is accepted"));
+
+        let undone = session.editor_state().expect("editor state");
+        assert_eq!(undone.undo_count, 0);
+        assert_eq!(undone.redo_count, 1);
+
+        // Redo, and it is moved again.
+        assert!(session.redo().expect("redo is accepted"));
+        assert_eq!(session.editor_state().expect("state").undo_count, 1);
+
+        // Nothing left to redo, and saying so is not an error.
+        assert!(!session.redo().expect("redo on an empty stack"));
+
+        session.save().expect("saving the copy");
+
+        assert!(
+            !session.editor_state().expect("state").modified,
+            "saving clears the modified flag"
+        );
+
+        let edited = std::fs::read(&copy).expect("reading the saved copy");
+
+        assert_ne!(
+            edited, baseline,
+            "the drag should be in the file the same writer wrote"
+        );
+
+        // And undoing it puts the document back **byte for byte** as serialised, which is a
+        // stronger claim than any assertion about one item's coordinates: whatever the drag
+        // did to the wire and to its connections, undo reversed all of it.
+        assert!(session.undo().expect("undo is accepted"));
+        session.save().expect("saving the undone copy");
+
+        assert_eq!(
+            std::fs::read(&copy).expect("reading the undone copy"),
+            baseline,
+            "undo should restore the document exactly"
+        );
+
+        drop(session);
+
+        // Reopen the file, because "it parses and draws" is a separate claim from "the bytes
+        // are what we expected".
+        let mut reopened = Session::open(&copy).expect("the saved copy loads");
+
+        reopened.set_viewport(&FIXTURE_VIEWPORT).expect("a viewport");
+        reopened.zoom_to_fit().expect("framing the page");
+
+        let stream = reopened.render_owned().expect("recording the saved file");
+
+        assert!(!stream.groups().is_empty(), "the saved file renders");
+
+        drop(reopened);
+
+        std::fs::remove_dir_all(&temp).ok();
     }
 
     /// The main-thread rule, as a check rather than a comment.

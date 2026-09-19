@@ -363,6 +363,20 @@ public:
     /// Redo the newest undone command. @return false if there was nothing to redo.
     bool Redo();
 
+    /**
+     * Write every sheet of the hierarchy back to the file it was loaded from.
+     *
+     * Deliberately narrower than `SCH_EDIT_FRAME::SaveProject`, which also writes the
+     * project file, the symbol library table, a backup archive and the embedded-file cache.
+     * Those are decisions about the *project*; this writes the document, through the same
+     * `SCH_IO_KICAD_SEXPR` the editor writes it with, so what comes out is a file KiCad
+     * reopens.
+     *
+     * @return false if nothing is loaded, or if the writer failed — in which case
+     *         GetLastError() says why and the screens keep their modified flags.
+     */
+    bool Save();
+
     EESCHEMA_SETTINGS* eeconfig() const override;
 
     SCH_RENDER_SETTINGS* GetRenderSettings() override;

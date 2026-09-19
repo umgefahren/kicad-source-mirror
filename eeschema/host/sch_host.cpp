@@ -27,6 +27,7 @@
 #include <sch_painter.h>
 #include <sch_render_settings.h>
 #include <schematic_undo_redo.h>
+#include <sch_io/kicad_sexpr/sch_io_kicad_sexpr.h>
 #include <sch_screen.h>
 #include <sch_sheet.h>
 #include <sch_view.h>
@@ -64,6 +65,7 @@
 #include <zoom_defines.h>
 
 #include "sch_host.h"
+#include "sch_host_control.h"
 
 
 /// Fraction of the viewport left as margin by ZoomToFit(), matching the feel of
@@ -331,6 +333,10 @@ void SCH_HOST::registerTools()
     m_toolManager->RegisterTool( new SCH_NAVIGATE_TOOL );
     m_toolManager->RegisterTool( new PROPERTIES_TOOL );
     m_toolManager->RegisterTool( new EMBED_TOOL );
+
+    // Not part of SCH_EDIT_FRAME's roster: undo, redo and save for a holder with no frame.
+    // See SCH_HOST_CONTROL for why these are a tool rather than three ABI calls.
+    m_toolManager->RegisterTool( new SCH_HOST_CONTROL );
 }
 
 
@@ -533,6 +539,86 @@ bool SCH_HOST::Undo()
 bool SCH_HOST::Redo()
 {
     return SCH_UNDO_REDO::Redo( *this );
+}
+
+
+bool SCH_HOST::Save()
+{
+    if( !m_schematic )
+    {
+        m_lastError = wxT( "No document to save." );
+        return false;
+    }
+
+    // One entry per *screen* rather than per sheet path, because a sheet used twice in the
+    // hierarchy shares one screen and one file. SCH_EDIT_FRAME::SaveProject iterates the
+    // same way, for the same reason.
+    SCH_SCREENS screens( m_schematic->Root() );
+
+    // The writer throws IO_ERROR on a path it cannot write. The ABI's guard() would catch
+    // it, but catching it here lets the message land on the session's error string and the
+    // remaining screens keep their modified flags, so a caller can fix the path and retry.
+    try
+    {
+        // Sheet page numbers are serialised from the hierarchy, which SaveProject also
+        // makes sure is current before writing.
+        m_schematic->SetSheetNumberAndCount();
+
+        // Which sheet path each screen is reachable by; the writer serialises a page
+        // number per screen and needs to know whether the screen is used once or many
+        // times. SaveProject does this too, for the same reason.
+        screens.BuildClientSheetPathList();
+
+        SCH_IO_KICAD_SEXPR io;
+        int                written = 0;
+
+        for( std::size_t ii = 0; ii < screens.GetCount(); ++ii )
+        {
+            SCH_SCREEN* screen = screens.GetScreen( ii );
+            SCH_SHEET*  sheet = screens.GetSheet( ii );
+
+            if( !screen || !sheet )
+                continue;
+
+            // A screen with no file name has nowhere to go. That is not a failure: the
+            // hierarchy `SCHEMATIC::Reset()` starts from contains a placeholder top-level
+            // sheet, and SaveProject skips the same case rather than inventing a path.
+            if( screen->GetFileName().IsEmpty() )
+                continue;
+
+            screen->SetVirtualPageNumber( screen->GetClientSheetPaths().size() == 1 ? 1 : 0 );
+
+            io.SaveSchematicFile( screen->GetFileName(), sheet, m_schematic );
+            ++written;
+        }
+
+        if( written == 0 )
+        {
+            m_lastError = wxT( "No sheet of this document has a file name to save to." );
+            return false;
+        }
+    }
+    catch( const IO_ERROR& e )
+    {
+        m_lastError = e.What();
+        return false;
+    }
+    catch( const std::exception& e )
+    {
+        m_lastError = wxString::FromUTF8( e.what() );
+        return false;
+    }
+
+    for( std::size_t ii = 0; ii < screens.GetCount(); ++ii )
+    {
+        if( SCH_SCREEN* screen = screens.GetScreen( ii ) )
+        {
+            if( !screen->GetFileName().IsEmpty() )
+                screen->SetContentModified( false );
+        }
+    }
+
+    return true;
 }
 
 

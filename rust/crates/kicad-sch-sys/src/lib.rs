@@ -474,6 +474,10 @@ pub struct EditorState {
     pub cursor: (f64, f64),
     /// Items currently selected.
     pub selection_count: u32,
+    /// Commands on the undo stack, for greying out a menu item.
+    pub undo_count: u32,
+    /// Commands on the redo stack.
+    pub redo_count: u32,
     /// Whether the pointer is over the canvas, so a crosshair should be drawn.
     pub pointer_over_canvas: bool,
     /// Whether any screen has unsaved changes.

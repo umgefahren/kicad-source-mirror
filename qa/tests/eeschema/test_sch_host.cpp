@@ -1427,6 +1427,178 @@ BOOST_AUTO_TEST_CASE( AWireCanBeDrawnWithThePointer )
 }
 
 
+/**
+ * An edit survives a save and a reload, which is the last of Stage 4b's five.
+ *
+ * The fixture is copied to a temporary directory first, because a save writes the files it
+ * was loaded from and a test that edits `qa/data/` in place would be a bug in the test
+ * rather than a check of the code.
+ */
+BOOST_AUTO_TEST_CASE( AnEditSurvivesASaveAndAReload )
+{
+    const std::filesystem::path temp =
+            std::filesystem::temp_directory_path()
+            / ( "kicad_sch_host_save_" + std::to_string( ::getpid() ) );
+
+    std::filesystem::create_directories( temp );
+
+    const std::filesystem::path copy = temp / "erc_label_test.kicad_sch";
+
+    std::filesystem::copy_file( std::filesystem::path(
+                                        eeschemaFixture( wxT( "erc_label_test.kicad_sch" ) )
+                                                .ToStdString() ),
+                                copy, std::filesystem::copy_options::overwrite_existing );
+
+    const wxString path = wxString::FromUTF8( copy.string() );
+    const wxString edited = wxT( "SAVED_FROM_A_HOST" );
+
+    {
+        SCH_HOST host;
+
+        BOOST_REQUIRE_MESSAGE( host.LoadFile( path ), host.GetLastError().ToStdString() );
+
+        // A single-sheet fixture on purpose: a hierarchy's child screens keep the absolute
+        // paths they were loaded from, so saving a copy of only the root would write the
+        // children back over the originals.
+        BOOST_REQUIRE_EQUAL( host.GetSheetHierarchy().size(), 1u );
+
+        SCH_LABEL* label = nullptr;
+
+        for( SCH_ITEM* item : host.GetScreen()->Items().OfType( SCH_LABEL_T ) )
+        {
+            label = static_cast<SCH_LABEL*>( item );
+            break;
+        }
+
+        BOOST_REQUIRE( label );
+
+        SCH_COMMIT commit( host.GetToolManager() );
+        commit.Modify( label, host.GetScreen() );
+        label->SetText( edited );
+        commit.Push( wxT( "Rename label" ) );
+
+        BOOST_REQUIRE( host.IsModified() );
+        BOOST_REQUIRE_MESSAGE( host.Save(), host.GetLastError().ToStdString() );
+
+        // Saving clears the modified flags, which is what a UI's title bar reads.
+        BOOST_CHECK( !host.IsModified() );
+    }
+
+    // A second session, so nothing is carried over in memory.
+    {
+        SCH_HOST reopened;
+
+        BOOST_REQUIRE_MESSAGE( reopened.LoadFile( path ),
+                               reopened.GetLastError().ToStdString() );
+
+        bool found = false;
+
+        for( SCH_ITEM* item : reopened.GetScreen()->Items().OfType( SCH_LABEL_T ) )
+        {
+            if( static_cast<SCH_LABEL*>( item )->GetText() == edited )
+                found = true;
+        }
+
+        BOOST_CHECK_MESSAGE( found, "the edited label did not survive the save" );
+        BOOST_CHECK( !reopened.IsModified() );
+
+        // And it still renders, which is the check that the file is not merely parseable.
+        const kgds_stream_view frame = reopened.Render();
+        BOOST_CHECK_GT( frame.group_cmd_count, 0u );
+    }
+
+    std::filesystem::remove_all( temp );
+}
+
+
+/**
+ * Undo, redo and save reach the host as *actions*, so a hotkey works and not only a menu.
+ *
+ * A hotkey is resolved inside `TOOL_MANAGER`: a UI on the far side of the C ABI can forward
+ * ⌘Z but cannot intervene in what it means. `SCH_HOST_CONTROL` is the handler that makes the
+ * key, a menu item and a palette entry all do the same thing.
+ */
+BOOST_AUTO_TEST_CASE( UndoRedoAndSaveAreActions )
+{
+    std::unique_ptr<SCH_HOST> host = hostForMoving();
+
+    SCH_LABEL* label = nullptr;
+
+    for( SCH_ITEM* item : host->GetScreen()->Items().OfType( SCH_LABEL_T ) )
+    {
+        label = static_cast<SCH_LABEL*>( item );
+        break;
+    }
+
+    BOOST_REQUIRE( label );
+
+    const wxString original = label->GetText();
+
+    SCH_COMMIT commit( host->GetToolManager() );
+    commit.Modify( label, host->GetScreen() );
+    label->SetText( wxT( "EDITED" ) );
+    commit.Push( wxT( "Rename label" ) );
+
+    BOOST_REQUIRE_EQUAL( host->GetUndoCommandCount(), 1 );
+
+    BOOST_CHECK( host->RunActionByName( "common.Interactive.undo" ) );
+    BOOST_CHECK_EQUAL( label->GetText(), original );
+
+    BOOST_CHECK( host->RunActionByName( "common.Interactive.redo" ) );
+    BOOST_CHECK_EQUAL( label->GetText(), wxString( wxT( "EDITED" ) ) );
+
+    // An undo with nothing to undo is still *handled* — the tool ran and found the stack
+    // empty, which is different from no tool having claimed the action.
+    BOOST_CHECK( host->RunActionByName( "common.Interactive.undo" ) );
+    BOOST_CHECK( host->RunActionByName( "common.Interactive.undo" ) );
+    BOOST_CHECK_EQUAL( label->GetText(), original );
+}
+
+
+/**
+ * The undo *hotkey*, which is the case a UI on the far side of the C ABI cannot arrange for
+ * itself: it forwards a key press, and what that key means is decided inside `TOOL_MANAGER`.
+ *
+ * On macOS the modifier is Command, because `wx/defs.h` makes `wxMOD_CMD == wxMOD_CONTROL`
+ * there and every `.DefaultHotkey( MD_CTRL + 'Z' )` in the tree is written on that
+ * understanding — which is why the ABI carries the *physical* modifier and the host decides.
+ * Here the event is built with `MD_CTRL` directly, which is what the host resolves ⌘ to.
+ */
+BOOST_AUTO_TEST_CASE( TheUndoHotkeyReachesTheHost )
+{
+    std::unique_ptr<SCH_HOST> host = hostForMoving();
+
+    SCH_LABEL* label = nullptr;
+
+    for( SCH_ITEM* item : host->GetScreen()->Items().OfType( SCH_LABEL_T ) )
+    {
+        label = static_cast<SCH_LABEL*>( item );
+        break;
+    }
+
+    BOOST_REQUIRE( label );
+
+    const wxString original = label->GetText();
+
+    SCH_COMMIT commit( host->GetToolManager() );
+    commit.Modify( label, host->GetScreen() );
+    label->SetText( wxT( "EDITED" ) );
+    commit.Push( wxT( "Rename label" ) );
+
+    BOOST_REQUIRE_EQUAL( host->GetUndoCommandCount(), 1 );
+
+    HOST_INPUT_EVENT key;
+    key.type = HOST_INPUT_TYPE::KEY_DOWN;
+    key.keyCode = 'Z';
+    key.modifiers = MD_CTRL;
+
+    BOOST_CHECK( host->DispatchInput( key ) );
+    BOOST_CHECK_EQUAL( label->GetText(), original );
+    BOOST_CHECK_EQUAL( host->GetUndoCommandCount(), 0 );
+    BOOST_CHECK_EQUAL( host->GetRedoCommandCount(), 1 );
+}
+
+
 BOOST_AUTO_TEST_SUITE_END()
 
 

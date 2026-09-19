@@ -61,6 +61,12 @@ pub trait InputTarget {
     fn run_action(&mut self, name: &str) -> Result<InputOutcome, Error>;
     /// Read the cursor, the selection and the status text back.
     fn editor_state(&mut self) -> Result<EditorState, Error>;
+    /// Undo the newest command; false if there was nothing to undo.
+    fn undo(&mut self) -> Result<bool, Error>;
+    /// Redo the newest undone command; false if there was nothing to redo.
+    fn redo(&mut self) -> Result<bool, Error>;
+    /// Write the document back to the files it was loaded from.
+    fn save(&mut self) -> Result<(), Error>;
 }
 
 impl InputTarget for Session {
@@ -74,6 +80,18 @@ impl InputTarget for Session {
 
     fn editor_state(&mut self) -> Result<EditorState, Error> {
         Session::editor_state(self)
+    }
+
+    fn undo(&mut self) -> Result<bool, Error> {
+        Session::undo(self)
+    }
+
+    fn redo(&mut self) -> Result<bool, Error> {
+        Session::redo(self)
+    }
+
+    fn save(&mut self) -> Result<(), Error> {
+        Session::save(self)
     }
 }
 
@@ -150,6 +168,76 @@ impl HostInputSink {
             Err(error) => {
                 drop(session);
                 self.fail(format!("action {name}: {error}"));
+            }
+        }
+    }
+
+    /// Undo the newest command, for a caller that would rather not go through the registry.
+    #[allow(dead_code)]
+    fn undo(&mut self) {
+        let Ok(mut session) = self.session.try_borrow_mut() else {
+            return;
+        };
+
+        match session.undo() {
+            Ok(undone) => {
+                drop(session);
+
+                // Nothing to undo is not a failure and not a reason to re-record.
+                if undone {
+                    self.absorb(InputOutcome {
+                        handled: true,
+                        redraw: true,
+                    });
+                }
+            }
+            Err(error) => {
+                drop(session);
+                self.fail(format!("undo: {error}"));
+            }
+        }
+    }
+
+    /// Redo the newest undone command.
+    #[allow(dead_code)]
+    fn redo(&mut self) {
+        let Ok(mut session) = self.session.try_borrow_mut() else {
+            return;
+        };
+
+        match session.redo() {
+            Ok(redone) => {
+                drop(session);
+
+                if redone {
+                    self.absorb(InputOutcome {
+                        handled: true,
+                        redraw: true,
+                    });
+                }
+            }
+            Err(error) => {
+                drop(session);
+                self.fail(format!("redo: {error}"));
+            }
+        }
+    }
+
+    /// Write the document back to the files it came from.
+    #[allow(dead_code)]
+    fn save(&mut self) {
+        let Ok(mut session) = self.session.try_borrow_mut() else {
+            return;
+        };
+
+        match session.save() {
+            Ok(()) => {
+                drop(session);
+                self.last_failure = None;
+            }
+            Err(error) => {
+                drop(session);
+                self.fail(format!("save: {error}"));
             }
         }
     }
@@ -292,6 +380,13 @@ impl InputSink for HostInputSink {
             // registry rather than to the dispatcher.
             ShellEvent::ToolActivated(tool) => self.run_action(tool.as_str()),
             ShellEvent::ActionInvoked(action) => {
+                // Undo, redo and save included: they reach the host through the action
+                // registry like everything else, because `SCH_HOST` registers a tool that
+                // handles them. That is what makes ⌘Z work as well as a menu item — a
+                // hotkey is resolved inside `TOOL_MANAGER`, where the shell cannot
+                // intervene. `Session::undo`/`redo`/`save` exist for a UI that would rather
+                // ask directly, and the ABI's undo and redo counts are how a menu greys
+                // itself out.
                 let name = action.as_str().to_string();
                 self.run_action(&name);
             }
@@ -356,6 +451,9 @@ mod tests {
         actions: Vec<String>,
         outcome: InputOutcome,
         state: EditorState,
+        /// Undo, redo and save, recorded under those names, so a test can tell an action
+        /// that went through the registry from one the sink short-circuited.
+        commands: Vec<String>,
     }
 
     impl InputTarget for Recorder {
@@ -371,6 +469,21 @@ mod tests {
 
         fn editor_state(&mut self) -> Result<EditorState, Error> {
             Ok(self.state.clone())
+        }
+
+        fn undo(&mut self) -> Result<bool, Error> {
+            self.commands.push("undo".to_string());
+            Ok(true)
+        }
+
+        fn redo(&mut self) -> Result<bool, Error> {
+            self.commands.push("redo".to_string());
+            Ok(true)
+        }
+
+        fn save(&mut self) -> Result<(), Error> {
+            self.commands.push("save".to_string());
+            Ok(())
         }
     }
 
@@ -402,6 +515,10 @@ mod tests {
 
         fn events(&self) -> Vec<String> {
             self.recorder.borrow().events.clone()
+        }
+
+        fn commands(&self) -> Vec<String> {
+            self.recorder.borrow().commands.clone()
         }
 
         fn actions(&self) -> Vec<String> {
@@ -650,6 +767,42 @@ mod tests {
             ]
         );
         assert!(fixture.events().is_empty());
+    }
+
+    /// Undo, redo and save go through the action registry like everything else, rather
+    /// than being short-circuited to the ABI calls of the same names.
+    ///
+    /// That is the whole reason `SCH_HOST` registers `SCH_HOST_CONTROL`: a hotkey is
+    /// resolved inside `TOOL_MANAGER`, so ⌘Z arrives here as a key press and never as an
+    /// action, and a sink that special-cased the *action* names would make the menu work and
+    /// the key not. `Session::undo` and friends stay available for a UI that wants the
+    /// answer rather than a fire-and-forget.
+    #[test]
+    fn undo_redo_and_save_go_through_the_registry_like_everything_else() {
+        let mut fixture = fixture();
+
+        for name in [
+            "common.Interactive.undo",
+            "common.Interactive.redo",
+            "common.Control.save",
+        ] {
+            fixture
+                .sink
+                .handle(ShellEvent::ActionInvoked(ActionId::from(name)));
+        }
+
+        assert_eq!(
+            fixture.actions(),
+            vec![
+                "common.Interactive.undo".to_string(),
+                "common.Interactive.redo".to_string(),
+                "common.Control.save".to_string(),
+            ]
+        );
+        assert!(
+            fixture.commands().is_empty(),
+            "the sink should not have bypassed the registry"
+        );
     }
 
     /// The viewport is set by the live document as part of asking for a frame,

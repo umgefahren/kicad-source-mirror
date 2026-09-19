@@ -464,6 +464,7 @@ set( EESCHEMA_SRCS
     # Rust UI drives it through. See docs/rust-migration/04-host-seam.md.
     host/sch_host.cpp
     host/sch_host_abi.cpp
+    host/sch_host_control.cpp
 
     import_net_map.cpp
     junction_helpers.cpp

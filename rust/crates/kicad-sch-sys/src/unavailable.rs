@@ -138,6 +138,21 @@ impl Session {
     pub fn editor_state(&mut self) -> Result<EditorState, Error> {
         match self.0 {}
     }
+
+    /// Unreachable: no `Session` can exist in this build.
+    pub fn undo(&mut self) -> Result<bool, Error> {
+        match self.0 {}
+    }
+
+    /// Unreachable: no `Session` can exist in this build.
+    pub fn redo(&mut self) -> Result<bool, Error> {
+        match self.0 {}
+    }
+
+    /// Unreachable: no `Session` can exist in this build.
+    pub fn save(&mut self) -> Result<(), Error> {
+        match self.0 {}
+    }
 }
 
 impl fmt::Debug for Session {

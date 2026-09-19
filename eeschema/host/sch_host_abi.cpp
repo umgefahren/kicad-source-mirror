@@ -933,6 +933,8 @@ extern "C" ksch_status ksch_session_editor_state( ksch_session*      aSession,
                       aOut->cursor_x = cursor.x;
                       aOut->cursor_y = cursor.y;
                       aOut->selection_count = static_cast<uint32_t>( host.GetSelectionCount() );
+                      aOut->undo_count = static_cast<uint32_t>( host.GetUndoCommandCount() );
+                      aOut->redo_count = static_cast<uint32_t>( host.GetRedoCommandCount() );
 
                       aOut->flags = 0;
 
@@ -946,6 +948,66 @@ extern "C" ksch_status ksch_session_editor_state( ksch_session*      aSession,
                       aOut->status_text = aSession->m_StatusText.c_str();
 
                       return KSCH_OK;
+                  } );
+}
+
+
+extern "C" ksch_status ksch_session_undo( ksch_session* aSession, int* aOutUndone )
+{
+    if( !aSession )
+        return KSCH_ERR_INVALID_ARG;
+
+    return guard( aSession,
+                  [&]() -> ksch_status
+                  {
+                      if( !aSession->m_Host.IsLoaded() )
+                          return KSCH_ERR_NO_DOCUMENT;
+
+                      const bool undone = aSession->m_Host.Undo();
+
+                      if( aOutUndone )
+                          *aOutUndone = undone ? 1 : 0;
+
+                      return KSCH_OK;
+                  } );
+}
+
+
+extern "C" ksch_status ksch_session_redo( ksch_session* aSession, int* aOutRedone )
+{
+    if( !aSession )
+        return KSCH_ERR_INVALID_ARG;
+
+    return guard( aSession,
+                  [&]() -> ksch_status
+                  {
+                      if( !aSession->m_Host.IsLoaded() )
+                          return KSCH_ERR_NO_DOCUMENT;
+
+                      const bool redone = aSession->m_Host.Redo();
+
+                      if( aOutRedone )
+                          *aOutRedone = redone ? 1 : 0;
+
+                      return KSCH_OK;
+                  } );
+}
+
+
+extern "C" ksch_status ksch_session_save( ksch_session* aSession )
+{
+    if( !aSession )
+        return KSCH_ERR_INVALID_ARG;
+
+    return guard( aSession,
+                  [&]() -> ksch_status
+                  {
+                      if( !aSession->m_Host.IsLoaded() )
+                          return KSCH_ERR_NO_DOCUMENT;
+
+                      // The writer throws IO_ERROR on a path it cannot write; guard()
+                      // catches it and records the message, which is what a UI shows.
+                      return aSession->m_Host.Save() ? KSCH_OK : KSCH_ERR_IO;
                   } );
 }
 

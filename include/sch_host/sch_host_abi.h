@@ -104,7 +104,7 @@ extern "C" {
  * signature. A caller built against a different version must refuse to run
  * rather than reinterpret a struct.
  */
-#define KSCH_ABI_VERSION 3u
+#define KSCH_ABI_VERSION 4u
 
 /* --------------------------------------------------------------- status */
 
@@ -683,6 +683,16 @@ typedef struct ksch_editor_state
     uint32_t selection_count; /**< Items currently selected. */
     uint32_t flags;           /**< A bitwise-or of ::ksch_editor_flag. */
 
+    /**
+     * Commands on the undo and redo stacks, for a UI that greys out its menu items.
+     *
+     * Zero on a session that has not edited anything, which is also the answer for one
+     * whose tools cannot edit — so a UI cannot tell "nothing to undo" from "undo is not
+     * implemented", and does not need to.
+     */
+    uint32_t undo_count;
+    uint32_t redo_count;
+
     /** The user-level tool on top of the tool stack, or "" if none. Session-scoped. */
     const char* tool_name;
 
@@ -697,6 +707,44 @@ typedef struct ksch_editor_state
  */
 KISCH_API ksch_status ksch_session_editor_state( ksch_session*      aSession,
                                                  ksch_editor_state* aOut );
+
+/* ----------------------------------------------------------------- undo, redo, save */
+
+/**
+ * Undo the newest command.
+ *
+ * This is not ::ksch_session_run_action with `"common.Interactive.undo"`: that action is
+ * handled by `SCH_EDITOR_CONTROL`, which still declines an editing context that is not a
+ * `wxFrame`. Undo itself does not need one, so it is an entry point of its own until that
+ * tool is converted.
+ *
+ * @param aOutUndone receives 1 if anything was undone and 0 if not, or may be null. Zero
+ *                   means the stack was empty, which is not an error. An `int` rather than
+ *                   a `bool` because this header is plain C89-compatible, as
+ *                   ::ksch_session_bbox's flag already is.
+ */
+KISCH_API ksch_status ksch_session_undo( ksch_session* aSession, int* aOutUndone );
+
+/**
+ * Redo the newest undone command. See ::ksch_session_undo.
+ *
+ * @param aOutRedone receives whether anything was redone, or may be null.
+ */
+KISCH_API ksch_status ksch_session_redo( ksch_session* aSession, int* aOutRedone );
+
+/**
+ * Write every sheet of the hierarchy back to the files it was loaded from.
+ *
+ * Deliberately narrower than the editor's "Save": it writes the `.kicad_sch` files through
+ * the same writer and stops there. It does **not** write the project file, the symbol
+ * library table, a backup archive or the embedded-file cache, each of which is a decision
+ * about the *project* rather than about the document, and each of which a UI that wants it
+ * should ask for separately. A file written here reopens in KiCad.
+ *
+ * On failure the document is left loaded and unmodified-flags are left alone, so a caller
+ * can report the error and try again.
+ */
+KISCH_API ksch_status ksch_session_save( ksch_session* aSession );
 
 /* ------------------------------------------------------- action registry */
 
