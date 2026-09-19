@@ -27,6 +27,32 @@
 #include <sch_sheet.h>
 #include <sch_view.h>
 #include <schematic.h>
+#include <tool/action_manager.h>
+#include <tool/common_control.h>
+#include <tool/common_tools.h>
+#include <tool/embed_tool.h>
+#include <tool/host_tool_dispatcher.h>
+#include <tool/picker_tool.h>
+#include <tool/properties_tool.h>
+#include <tool/tool_manager.h>
+#include <tool/zoom_tool.h>
+#include <tools/ee_graphic_tool.h>
+#include <tools/sch_actions.h>
+#include <tools/sch_align_tool.h>
+#include <tools/sch_design_block_control.h>
+#include <tools/sch_drawing_tools.h>
+#include <tools/sch_edit_table_tool.h>
+#include <tools/sch_edit_tool.h>
+#include <tools/sch_editor_control.h>
+#include <tools/sch_find_replace_tool.h>
+#include <tools/sch_group_tool.h>
+#include <tools/sch_inspection_tool.h>
+#include <tools/sch_line_wire_bus_tool.h>
+#include <tools/sch_move_tool.h>
+#include <tools/sch_navigate_tool.h>
+#include <tools/sch_point_editor.h>
+#include <tools/sch_selection_tool.h>
+#include <view/host_view_controls.h>
 #include <view/view.h>
 #include <wildcards_and_files_ext.h>
 #include <wx/filename.h>
@@ -43,14 +69,34 @@ static constexpr double ZOOM_FIT_MARGIN = 1.05;
 SCH_HOST::SCH_HOST() :
         m_schematic( nullptr ),
         m_currentSheetIndex( 0 ),
-        m_viewportSize( 1920, 1080 )
+        m_viewportSize( 1920, 1080 ),
+        m_redrawRequested( false )
 {
     buildCanvas();
+    setupTools();
 }
 
 
 SCH_HOST::~SCH_HOST()
 {
+    // The tools go first, and explicitly rather than by member order, because
+    // Unload() below deletes the SCHEMATIC and a tool's destructor may reach for the
+    // model or the view. Leaving it to the member destructors would tear the document
+    // down in the constructor's body and the tools afterwards, which is the wrong way
+    // round — SCH_SELECTION_TOOL's destructor, for one, unlinks itself from the view.
+    if( m_ownedToolManager )
+    {
+        m_ownedToolManager->ShutdownAllTools();
+
+        m_dispatcher.reset();
+        m_ownedToolManager.reset(); // deletes every registered tool
+        m_ownedActions.reset();
+
+        // TOOLS_HOLDER's pointers are aliases of what was just freed.
+        m_toolManager = nullptr;
+        m_actions = nullptr;
+    }
+
     Unload();
 }
 
@@ -147,6 +193,139 @@ void SCH_HOST::buildCanvas()
 }
 
 
+void SCH_HOST::setupTools()
+{
+    m_viewControls = std::make_unique<KIGFX::HOST_VIEW_CONTROLS>( m_view.get() );
+
+    m_ownedToolManager = std::make_unique<TOOL_MANAGER>();
+    m_toolManager = m_ownedToolManager.get();
+
+    m_ownedActions = std::make_unique<SCH_ACTIONS>();
+    m_actions = m_ownedActions.get();
+
+    m_dispatcher = std::make_unique<HOST_TOOL_DISPATCHER>( m_toolManager, m_viewControls.get() );
+
+    // TOOLS_HOLDER::m_toolDispatcher is a TOOL_DISPATCHER*, which is a wxEvtHandler,
+    // and HOST_TOOL_DISPATCHER deliberately is not one. It stays null, which is a
+    // state the tree already tolerates — GetToolDispatcher() has no unguarded caller
+    // outside the frames that install one.
+
+    // No model yet: the document arrives with LoadFile(), which calls this again with
+    // one. The settings are the kiface's, which is where eeconfig() reads from, and
+    // ensureKifaceSettings() has already stood them up by the time buildCanvas()
+    // returned.
+    m_toolManager->SetEnvironment( nullptr, m_view.get(), m_viewControls.get(),
+                                   Kiface().KifaceSettings(), this );
+
+    registerTools();
+
+    m_toolManager->InitTools();
+}
+
+
+void SCH_HOST::registerTools()
+{
+    // The roster SCH_EDIT_FRAME::setupTools() registers, in its order.
+    //
+    // Every one of these declines a holder that is not a SCH_BASE_FRAME (or, for the
+    // ones in common/, an EDA_DRAW_FRAME), so InitTools() unregisters and deletes all
+    // of them and GetTool<T>() is null for each. That is deliberate and it is tested:
+    // `qa/tests/eeschema/test_sch_host.cpp` asserts the roster is registered and that
+    // none of it survives, so the day a tool is taught to run without a frame it
+    // starts working here with no further wiring, and the test says so by failing.
+    m_toolManager->RegisterTool( new COMMON_CONTROL );
+    m_toolManager->RegisterTool( new COMMON_TOOLS );
+    m_toolManager->RegisterTool( new ZOOM_TOOL );
+    m_toolManager->RegisterTool( new SCH_SELECTION_TOOL );
+    m_toolManager->RegisterTool( new PICKER_TOOL );
+    m_toolManager->RegisterTool( new SCH_DRAWING_TOOLS );
+    m_toolManager->RegisterTool( new EE_GRAPHIC_TOOL );
+    m_toolManager->RegisterTool( new SCH_LINE_WIRE_BUS_TOOL );
+    m_toolManager->RegisterTool( new SCH_MOVE_TOOL );
+    m_toolManager->RegisterTool( new SCH_ALIGN_TOOL );
+    m_toolManager->RegisterTool( new SCH_EDIT_TOOL );
+    m_toolManager->RegisterTool( new SCH_EDIT_TABLE_TOOL );
+    m_toolManager->RegisterTool( new SCH_GROUP_TOOL );
+    m_toolManager->RegisterTool( new SCH_INSPECTION_TOOL );
+    m_toolManager->RegisterTool( new SCH_DESIGN_BLOCK_CONTROL );
+    m_toolManager->RegisterTool( new SCH_EDITOR_CONTROL );
+    m_toolManager->RegisterTool( new SCH_FIND_REPLACE_TOOL );
+    m_toolManager->RegisterTool( new SCH_POINT_EDITOR );
+    m_toolManager->RegisterTool( new SCH_NAVIGATE_TOOL );
+    m_toolManager->RegisterTool( new PROPERTIES_TOOL );
+    m_toolManager->RegisterTool( new EMBED_TOOL );
+}
+
+
+bool SCH_HOST::DispatchInput( const HOST_INPUT_EVENT& aEvent )
+{
+    return m_dispatcher->Dispatch( aEvent );
+}
+
+
+bool SCH_HOST::RunActionByName( const std::string& aActionName )
+{
+    // Deliberately not TOOL_MANAGER::RunAction( const std::string& ): that overload
+    // reports whether the *name resolved*, not whether anything ran. It discards
+    // doRunAction()'s result and returns true for any registered action — and
+    // ACTION_MANAGER's constructor registers the whole process-wide list, so every
+    // one of KiCad's ~440 actions resolves here even though InitTools() deleted the
+    // entire tool roster. A UI would be told that every menu item it offered had
+    // been handled.
+    //
+    // Looking the action up and using the TOOL_ACTION& overload, whose result *is*
+    // processEvent()'s, is what makes the answer mean something.
+    TOOL_ACTION* action = m_toolManager->GetActionManager()->FindAction( aActionName );
+
+    if( !action )
+        return false;
+
+    return m_toolManager->RunAction( *action );
+}
+
+
+void SCH_HOST::ResetInputState()
+{
+    m_dispatcher->ResetState();
+}
+
+
+VECTOR2D SCH_HOST::GetCursorPosition() const
+{
+    // The one-argument overload reads the snapping setting, which is what every tool
+    // gets when it asks, so it is what a consumer drawing a crosshair should show.
+    return m_viewControls->VIEW_CONTROLS::GetCursorPosition();
+}
+
+
+SELECTION& SCH_HOST::GetCurrentSelection()
+{
+    // Same answer SCH_EDIT_FRAME gives: the selection belongs to the selection tool.
+    // Null until a selection tool can run on a non-frame holder, and then this starts
+    // reporting real items with no change here.
+    if( SCH_SELECTION_TOOL* tool = m_toolManager->GetTool<SCH_SELECTION_TOOL>() )
+        return tool->GetSelection();
+
+    return m_dummySelection;
+}
+
+
+std::size_t SCH_HOST::GetSelectionCount()
+{
+    return GetCurrentSelection().GetSize();
+}
+
+
+bool SCH_HOST::TakeRedrawRequest()
+{
+    bool requested = m_redrawRequested;
+
+    m_redrawRequested = false;
+
+    return requested;
+}
+
+
 SCH_RENDER_SETTINGS& SCH_HOST::RenderSettings() const
 {
     return *m_painter->GetSettings();
@@ -225,12 +404,29 @@ bool SCH_HOST::LoadFile( const wxString& aFileName )
     displayCurrentSheet();
     ZoomToFit();
 
+    // The tools' model. SCH_EDIT_FRAME can hand it over once, in setupTools(),
+    // because its SCHEMATIC exists for the frame's whole life; here the document
+    // arrives now, so the environment is re-stated and the tools are told to reload.
+    m_toolManager->SetEnvironment( m_schematic, m_view.get(), m_viewControls.get(),
+                                   Kiface().KifaceSettings(), this );
+    m_toolManager->ResetTools( TOOL_BASE::MODEL_RELOAD );
+
     return true;
 }
 
 
 void SCH_HOST::Unload()
 {
+    // The tools must stop referring to the document before it goes. Restating the
+    // environment with a null model is what SCH_EDIT_FRAME's equivalent does not need
+    // to do, because its schematic outlives its tools.
+    if( m_ownedToolManager )
+    {
+        m_ownedToolManager->SetEnvironment( nullptr, m_view.get(), m_viewControls.get(),
+                                           Kiface().KifaceSettings(), this );
+        m_ownedToolManager->ResetTools( TOOL_BASE::MODEL_RELOAD );
+    }
+
     // SCH_VIEW keeps a drawing-sheet proxy and an invalidation listener registered on the
     // schematic's text-variable tracker. Both have to go before the schematic does.
     if( m_view )

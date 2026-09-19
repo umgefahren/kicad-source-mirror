@@ -104,7 +104,7 @@ extern "C" {
  * signature. A caller built against a different version must refuse to run
  * rather than reinterpret a struct.
  */
-#define KSCH_ABI_VERSION 2u
+#define KSCH_ABI_VERSION 3u
 
 /* --------------------------------------------------------------- status */
 
@@ -452,6 +452,251 @@ KISCH_API ksch_status ksch_session_publish( const ksch_session* aSession, kgds_s
  * @param aPathUtf8 NUL-terminated UTF-8 path, borrowed for the call.
  */
 KISCH_API ksch_status ksch_session_write_stream( ksch_session* aSession, const char* aPathUtf8 );
+
+/* ------------------------------------------------------------------ input */
+
+/**
+ * What kind of input a ::ksch_input_event carries.
+ *
+ * Deliberately smaller than the wx vocabulary this replaces. KiCad's own
+ * `TOOL_DISPATCHER` consumes fifteen mouse-click event types plus motion, wheel,
+ * magnify and a synthetic refresh, and spends most of its 827 lines reconciling
+ * them with what the operating system actually did. A UI that delivers ordered,
+ * reliable events needs none of that reconciliation, so what crosses here is the
+ * vocabulary the tools care about.
+ */
+typedef enum ksch_input_type
+{
+    /** The pointer moved. Uses @p x / @p y. */
+    KSCH_INPUT_POINTER_MOTION = 0,
+
+    /** A button went down. Uses @p x / @p y and @p button. */
+    KSCH_INPUT_POINTER_DOWN = 1,
+
+    /** A button came up. Uses @p x / @p y and @p button. */
+    KSCH_INPUT_POINTER_UP = 2,
+
+    /** A double click, delivered *instead of* the second down of the pair. */
+    KSCH_INPUT_POINTER_DBLCLICK = 3,
+
+    /**
+     * The pointer left the canvas.
+     *
+     * Send this. It is the only notice the session gets that a button may have
+     * been released somewhere it will never hear about, and without it a tool goes
+     * on believing a drag is in progress.
+     */
+    KSCH_INPUT_POINTER_LEAVE = 4,
+
+    /** The wheel turned, or a two-finger scroll. Uses @p scroll_x / @p scroll_y. */
+    KSCH_INPUT_SCROLL = 5,
+
+    /** A key went down. Uses @p key. */
+    KSCH_INPUT_KEY_DOWN = 6,
+
+    /**
+     * A key came up. Uses @p key.
+     *
+     * Produces no tool event — KiCad's tools are driven by presses — and is
+     * accepted so that a UI can forward its whole key stream without filtering.
+     */
+    KSCH_INPUT_KEY_UP = 7,
+
+    /** Cancel whatever is running, as Escape does. Uses nothing. */
+    KSCH_INPUT_CANCEL = 8
+} ksch_input_type;
+
+
+/**
+ * Which pointer button an event is about.
+ *
+ * These are ordinals, not the bit values KiCad uses internally, so that a UI does
+ * not have to know about `BUT_LEFT` and friends.
+ */
+typedef enum ksch_pointer_button
+{
+    KSCH_BUTTON_NONE = 0,
+    KSCH_BUTTON_LEFT = 1,
+    KSCH_BUTTON_RIGHT = 2,
+    KSCH_BUTTON_MIDDLE = 3,
+    /** The mouse-side "back" button, KiCad's BUT_AUX1. */
+    KSCH_BUTTON_BACK = 4,
+    /** The mouse-side "forward" button, KiCad's BUT_AUX2. */
+    KSCH_BUTTON_FORWARD = 5
+} ksch_pointer_button;
+
+
+/**
+ * Bits in ksch_input_event::modifiers.
+ *
+ * Report the *physical* keys and let the session decide what they mean. On macOS
+ * that is not the identity mapping: KiCad's hotkeys are written in terms of
+ * "Control", and on macOS they are reached with **Command**, because wxWidgets
+ * defines `wxMOD_CMD == wxMOD_CONTROL` there. So ::KSCH_MOD_META becomes KiCad's
+ * `MD_CTRL` on macOS and physical Control produces no modifier at all, exactly as
+ * it does in the wx editor. Pre-translating on the caller's side would get this
+ * backwards and every keyboard shortcut in the tree would silently do nothing.
+ */
+enum ksch_modifier
+{
+    KSCH_MOD_SHIFT = 1u << 0,
+    /** The physical Control key. */
+    KSCH_MOD_CTRL = 1u << 1,
+    KSCH_MOD_ALT = 1u << 2,
+    /** Command on macOS, Super elsewhere. */
+    KSCH_MOD_META = 1u << 3
+};
+
+
+/** Bits in ksch_input_event::flags. */
+enum ksch_input_flag
+{
+    /** The key press is an auto-repeat rather than a fresh one. */
+    KSCH_INPUT_FLAG_AUTOREPEAT = 1u << 0
+};
+
+
+/**
+ * One input event from the UI.
+ *
+ * **Positions are in screen pixels**, relative to the top-left of the canvas —
+ * not in internal units like everything else in this header. That is deliberate:
+ * the session derives the world position itself, through the same
+ * `KIGFX::VIEW_CONTROLS` a tool reads it back from, so that a cursor a tool has
+ * forced or placed is the one the following events carry. A caller handing world
+ * coordinates in would bypass that and the tools would disagree with the view
+ * about where the cursor is.
+ */
+typedef struct ksch_input_event
+{
+    int32_t  type;      /**< A ::ksch_input_type. */
+    int32_t  button;    /**< A ::ksch_pointer_button; ::KSCH_BUTTON_NONE if none. */
+    uint32_t modifiers; /**< A bitwise-or of ::ksch_modifier. */
+    uint32_t flags;     /**< A bitwise-or of ::ksch_input_flag. */
+
+    /**
+     * The key's name, for a key event; null or "" otherwise.
+     *
+     * Named in the UI's own vocabulary, lower case and unpunctuated — "escape",
+     * "pagedown", "f11", "w" — and resolved to KiCad's `WXK_*` key code on this
+     * side of the boundary. That is the point: the hotkey registry is keyed by
+     * `WXK_*` integers (see ::ksch_action), and having the mapping here means the
+     * numbers come out of `wx/defs.h` through a compiler rather than out of a
+     * table transcribed by hand into another language, where one wrong entry is a
+     * shortcut that silently does nothing.
+     *
+     * A name the session does not know is dropped rather than sent as key zero.
+     * Borrowed for the duration of the call only.
+     */
+    const char* key;
+
+    double x; /**< Pointer position, screen pixels from the canvas' top-left. */
+    double y;
+
+    double scroll_x; /**< Scroll delta in wheel detents; positive y is away from the user. */
+    double scroll_y;
+} ksch_input_event;
+
+
+/** Bits returned by ::ksch_session_dispatch_input and ::ksch_session_run_action. */
+enum ksch_input_result
+{
+    /** A tool or a hotkey claimed the event. */
+    KSCH_INPUT_HANDLED = 1u << 0,
+
+    /**
+     * Something asked for the canvas to be repainted, so the frame the caller is
+     * holding is stale and ::ksch_session_render should be called again.
+     *
+     * This is the only notice a UI gets that the document or the view changed
+     * behind its back — a tool moving the view, an edit, a selection change. A UI
+     * that ignores it will show a frame that no longer matches the document.
+     */
+    KSCH_INPUT_REDRAW = 1u << 1
+};
+
+
+/**
+ * Give one input event to the tool framework.
+ *
+ * @param aEvent    the event; must not be null.
+ * @param aOutFlags receives a bitwise-or of ::ksch_input_result, or may be null.
+ *                  Passing null leaves a pending ::KSCH_INPUT_REDRAW *pending*, so
+ *                  the next call that does ask reports it: a repaint the UI never
+ *                  hears about is a stale window, whereas one attributed to the
+ *                  following event costs a redundant re-record and nothing else.
+ *
+ * @note A session with no document accepts input and does nothing useful with it,
+ *       rather than failing: a UI is allowed to have a window open before a file
+ *       is loaded, and its pointer still moves.
+ */
+KISCH_API ksch_status ksch_session_dispatch_input( ksch_session*           aSession,
+                                                   const ksch_input_event* aEvent,
+                                                   uint32_t*               aOutFlags );
+
+/**
+ * Forget which buttons are down, because the UI lost focus.
+ *
+ * Without this, a button released while the window was not focused leaves a tool
+ * believing its drag is still running. The last known cursor position is kept.
+ */
+KISCH_API ksch_status ksch_session_reset_input( ksch_session* aSession );
+
+/**
+ * Run a registered action by its dotted name, as a menu item or a toolbar button
+ * does.
+ *
+ * @param aNameUtf8 a ::ksch_action::name; borrowed for the call.
+ * @param aOutFlags receives a bitwise-or of ::ksch_input_result. May be null.
+ *
+ * An action that no registered tool handles reports ::KSCH_OK with
+ * ::KSCH_INPUT_HANDLED clear rather than an error, because a UI built from the
+ * whole registry will legitimately offer plenty of them.
+ */
+KISCH_API ksch_status ksch_session_run_action( ksch_session* aSession, const char* aNameUtf8,
+                                               uint32_t* aOutFlags );
+
+
+/** Bits in ksch_editor_state::flags. */
+enum ksch_editor_flag
+{
+    /** The pointer is over the canvas, so a crosshair should be drawn. */
+    KSCH_EDITOR_POINTER_OVER_CANVAS = 1u << 0,
+
+    /** Some screen in the hierarchy has unsaved changes. */
+    KSCH_EDITOR_MODIFIED = 1u << 1
+};
+
+
+/**
+ * What the editor is doing, for a UI's status bar and overlays.
+ *
+ * The cursor is the interesting field: it is what the *tools* see, which is the
+ * pointer snapped to the grid, or wherever a tool has forced it to be — not the
+ * raw pointer position the UI already knows.
+ */
+typedef struct ksch_editor_state
+{
+    double cursor_x; /**< The cursor the tools read, in internal units. */
+    double cursor_y;
+
+    uint32_t selection_count; /**< Items currently selected. */
+    uint32_t flags;           /**< A bitwise-or of ::ksch_editor_flag. */
+
+    /** The user-level tool on top of the tool stack, or "" if none. Session-scoped. */
+    const char* tool_name;
+
+    /** The last status text a tool asked to show, or "". Session-scoped. */
+    const char* status_text;
+} ksch_editor_state;
+
+/**
+ * Read the editor state.
+ *
+ * @param aOut receives the state; must not be null.
+ */
+KISCH_API ksch_status ksch_session_editor_state( ksch_session*      aSession,
+                                                 ksch_editor_state* aOut );
 
 /* ------------------------------------------------------- action registry */
 

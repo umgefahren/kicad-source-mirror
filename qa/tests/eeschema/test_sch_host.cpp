@@ -48,6 +48,21 @@
 #include <kiface_base.h>
 #include <pgm_base.h>
 #include <settings/settings_manager.h>
+#include <tool/host_tool_dispatcher.h>
+#include <tool/tool_manager.h>
+#include <view/host_view_controls.h>
+#include <view/view.h>
+
+// The tool headers inline through their frame type, so it has to be complete here.
+#include <sch_edit_frame.h>
+
+#include <tools/sch_drawing_tools.h>
+#include <tools/sch_edit_tool.h>
+#include <tools/sch_editor_control.h>
+#include <tools/sch_line_wire_bus_tool.h>
+#include <tools/sch_move_tool.h>
+#include <tools/sch_point_editor.h>
+#include <tools/sch_selection_tool.h>
 
 
 namespace
@@ -487,6 +502,204 @@ BOOST_AUTO_TEST_CASE( GoldenStreamsStillDecode )
 BOOST_AUTO_TEST_SUITE_END()
 
 
+/**
+ * The input half of the seam: the host is a TOOLS_HOLDER, owns a TOOL_MANAGER and
+ * turns host input into TOOL_EVENTs.
+ *
+ * The event translation itself is tested without eeschema in
+ * `qa/tests/common/test_host_input.cpp`. What is asserted here is the wiring —
+ * that a pointer position pushed in at one end is the cursor the tools would read
+ * at the other — and the one uncomfortable fact this stage inherited: the tool
+ * roster is registered and none of it survives, because every eeschema tool
+ * declines a holder that is not a frame. That is deliberate (Stage 3) and is
+ * pinned here so that the day a tool learns to run without one, this test fails
+ * and says so.
+ */
+BOOST_FIXTURE_TEST_SUITE( SchHostInput, SCH_HOST_SETTINGS_FIXTURE )
+
+
+BOOST_AUTO_TEST_CASE( TheHostIsItsOwnToolHolder )
+{
+    SCH_HOST host;
+
+    BOOST_REQUIRE( host.GetToolManager() != nullptr );
+    BOOST_CHECK_EQUAL( host.GetToolManager()->GetToolHolder(), static_cast<TOOLS_HOLDER*>( &host ) );
+
+    // The blocker that turned out not to be one: a null canvas is already a
+    // production state, and nothing on the eeschema tool path asks for it.
+    BOOST_CHECK( host.GetToolCanvas() == nullptr );
+
+    // The view controls the tools will ask for the cursor are the host's, not wx's.
+    BOOST_CHECK_EQUAL( host.GetToolManager()->GetViewControls(),
+                       static_cast<KIGFX::VIEW_CONTROLS*>( &host.ViewControls() ) );
+}
+
+
+/**
+ * The honest state of Stage 4, in one assertion.
+ *
+ * Every one of these classes sets `m_frame` from the tool holder and returns false
+ * when the holder is not its frame type, so `TOOL_MANAGER::InitTools()` unregisters
+ * and deletes all of them. Input therefore reaches the framework and stops there.
+ * Making any one of them run is a decision about what `m_frame` means for a host
+ * that is not a frame — see `docs/rust-migration/06-what-is-missing.md` Stage 4.
+ */
+BOOST_AUTO_TEST_CASE( TheToolRosterIsRegisteredAndNoneOfItSurvivesYet )
+{
+    SCH_HOST host;
+
+    TOOL_MANAGER* tools = host.GetToolManager();
+
+    BOOST_REQUIRE( tools != nullptr );
+
+    BOOST_CHECK( tools->GetTool<SCH_SELECTION_TOOL>() == nullptr );
+    BOOST_CHECK( tools->GetTool<SCH_MOVE_TOOL>() == nullptr );
+    BOOST_CHECK( tools->GetTool<SCH_LINE_WIRE_BUS_TOOL>() == nullptr );
+    BOOST_CHECK( tools->GetTool<SCH_EDIT_TOOL>() == nullptr );
+    BOOST_CHECK( tools->GetTool<SCH_DRAWING_TOOLS>() == nullptr );
+    BOOST_CHECK( tools->GetTool<SCH_EDITOR_CONTROL>() == nullptr );
+    BOOST_CHECK( tools->GetTool<SCH_POINT_EDITOR>() == nullptr );
+
+    // ...and with no selection tool, the holder's selection is the empty one rather
+    // than a dereference of nothing.
+    BOOST_CHECK_EQUAL( host.GetSelectionCount(), 0u );
+}
+
+
+/**
+ * The round trip that matters: a pointer position given to the host in screen
+ * pixels is the world position the tool framework reads back.
+ *
+ * This is what WX_VIEW_CONTROLS answers by polling the operating system, and it is
+ * the reason a second implementation had to exist at all.
+ */
+BOOST_AUTO_TEST_CASE( AHostPointerPositionBecomesTheCursorTheToolsWouldRead )
+{
+    SCH_HOST host;
+
+    BOOST_REQUIRE_MESSAGE( host.LoadFile( eeschemaFixture( wxT( "api_kitchen_sink.kicad_sch" ) ) ),
+                           host.GetLastError().ToStdString() );
+
+    host.SetViewportSize( 800, 600 );
+    host.ZoomToFit();
+
+    HOST_INPUT_EVENT motion;
+    motion.type = HOST_INPUT_TYPE::POINTER_MOTION;
+    motion.position = VECTOR2D( 100, 50 );
+
+    host.DispatchInput( motion );
+
+    const VECTOR2D expected = host.View().ToWorld( VECTOR2D( 100, 50 ) );
+
+    BOOST_CHECK_CLOSE( host.ViewControls().GetMousePosition( true ).x, expected.x, 1e-9 );
+    BOOST_CHECK_CLOSE( host.ViewControls().GetMousePosition( true ).y, expected.y, 1e-9 );
+
+    // A different screen position gives a different world position, which is the
+    // check that the view transform is actually involved rather than the number
+    // being echoed back.
+    motion.position = VECTOR2D( 700, 500 );
+    host.DispatchInput( motion );
+
+    BOOST_CHECK( host.ViewControls().GetMousePosition( true ) != expected );
+}
+
+
+/**
+ * With no tool registered, nothing claims an event. Saying so is the point: the
+ * dispatcher is wired and the tools are absent, and those are two separate facts.
+ */
+BOOST_AUTO_TEST_CASE( InputWithNoToolIsUnclaimedRatherThanFatal )
+{
+    SCH_HOST host;
+
+    BOOST_REQUIRE( host.LoadFile( eeschemaFixture( wxT( "api_kitchen_sink.kicad_sch" ) ) ) );
+
+    host.SetViewportSize( 800, 600 );
+    host.ZoomToFit();
+
+    HOST_INPUT_EVENT event;
+
+    event.type = HOST_INPUT_TYPE::POINTER_MOTION;
+    event.position = VECTOR2D( 100, 50 );
+    BOOST_CHECK( !host.DispatchInput( event ) );
+
+    event.type = HOST_INPUT_TYPE::POINTER_DOWN;
+    event.button = BUT_LEFT;
+    BOOST_CHECK( !host.DispatchInput( event ) );
+
+    event.type = HOST_INPUT_TYPE::POINTER_UP;
+    BOOST_CHECK( !host.DispatchInput( event ) );
+
+    event.type = HOST_INPUT_TYPE::KEY_DOWN;
+    event.button = BUT_NONE;
+    event.keyCode = 'W';
+    BOOST_CHECK( !host.DispatchInput( event ) );
+
+    event.type = HOST_INPUT_TYPE::CANCEL;
+    BOOST_CHECK( !host.DispatchInput( event ) );
+
+    // The document is untouched by all of it.
+    BOOST_CHECK( !host.IsModified() );
+}
+
+
+/**
+ * An action that no registered tool handles is reported as unhandled rather than
+ * asserted on, because a UI built from the whole 440-action registry will offer
+ * plenty of them.
+ *
+ * The names below are deliberately **registered** ones. Every `TOOL_ACTION` in the
+ * process is in `ACTION_MANAGER`'s list whether or not a tool exists to run it, so
+ * a made-up name proves nothing: `TOOL_MANAGER::RunAction( const std::string& )`
+ * answers "the name resolved", not "something ran it", and a test written against
+ * an unregistered name passes either way. These are the real ids the shell's tool
+ * buttons and menu items send.
+ */
+BOOST_AUTO_TEST_CASE( AnUnhandledActionIsReportedRatherThanAsserted )
+{
+    SCH_HOST host;
+
+    BOOST_CHECK( !host.RunActionByName( "eeschema.InteractiveDrawingLineWireBus.drawWires" ) );
+    BOOST_CHECK( !host.RunActionByName( "common.Control.zoomFitScreen" ) );
+    BOOST_CHECK( !host.RunActionByName( "common.InteractiveSelection" ) );
+    BOOST_CHECK( !host.RunActionByName( "no.such.action" ) );
+}
+
+
+/**
+ * `RefreshCanvas()` is how a tool says "the view changed", and it is the only
+ * notice a consumer on the far side of the ABI gets that the frame it holds is
+ * stale. Reading the flag clears it, so a consumer cannot re-render forever on one
+ * request.
+ */
+BOOST_AUTO_TEST_CASE( ARepaintRequestIsRecordedOnceAndConsumedOnce )
+{
+    SCH_HOST host;
+
+    BOOST_CHECK( !host.TakeRedrawRequest() );
+
+    host.RefreshCanvas();
+
+    BOOST_CHECK( host.TakeRedrawRequest() );
+    BOOST_CHECK( !host.TakeRedrawRequest() );
+}
+
+
+BOOST_AUTO_TEST_CASE( AToolMessageIsKeptForTheHostToShow )
+{
+    SCH_HOST host;
+
+    BOOST_CHECK( host.GetToolMessage().IsEmpty() );
+
+    host.DisplayToolMsg( wxT( "Draw a wire" ) );
+
+    BOOST_CHECK_EQUAL( host.GetToolMessage(), wxT( "Draw a wire" ) );
+}
+
+
+BOOST_AUTO_TEST_SUITE_END()
+
+
 BOOST_AUTO_TEST_SUITE( SchHostAbi )
 
 
@@ -737,6 +950,221 @@ BOOST_AUTO_TEST_CASE( FullRoundTripThroughTheAbi )
     BOOST_REQUIRE_EQUAL( ksch_session_write_stream( session, out.utf8_str().data() ), KSCH_OK );
     BOOST_CHECK_GT( wxFileName::GetSize( out ).GetValue(), sizeof( kgds_file_header ) );
     wxRemoveFile( out );
+
+    ksch_session_destroy( session );
+}
+
+
+/**
+ * The input half of the ABI: three vocabularies — button ordinals, modifier bits
+ * and key names — become KiCad's, and a UI on the far side gets back whether the
+ * event was claimed and whether its frame is now stale.
+ */
+BOOST_AUTO_TEST_CASE( InputEntryPointsRejectNullArguments )
+{
+    ksch_input_event  event = {};
+    ksch_editor_state state = {};
+
+    BOOST_CHECK_EQUAL( ksch_session_dispatch_input( nullptr, &event, nullptr ),
+                       KSCH_ERR_INVALID_ARG );
+    BOOST_CHECK_EQUAL( ksch_session_reset_input( nullptr ), KSCH_ERR_INVALID_ARG );
+    BOOST_CHECK_EQUAL( ksch_session_run_action( nullptr, "x", nullptr ), KSCH_ERR_INVALID_ARG );
+    BOOST_CHECK_EQUAL( ksch_session_editor_state( nullptr, &state ), KSCH_ERR_INVALID_ARG );
+
+    ksch_session* session = ksch_session_create();
+    BOOST_REQUIRE( session != nullptr );
+
+    BOOST_CHECK_EQUAL( ksch_session_dispatch_input( session, nullptr, nullptr ),
+                       KSCH_ERR_INVALID_ARG );
+    BOOST_CHECK_EQUAL( ksch_session_run_action( session, nullptr, nullptr ),
+                       KSCH_ERR_INVALID_ARG );
+    BOOST_CHECK_EQUAL( ksch_session_editor_state( session, nullptr ), KSCH_ERR_INVALID_ARG );
+
+    ksch_session_destroy( session );
+}
+
+
+BOOST_AUTO_TEST_CASE( AnUnknownInputTypeIsAnErrorRatherThanIgnored )
+{
+    ksch_session* session = ksch_session_create();
+    BOOST_REQUIRE( session != nullptr );
+
+    ksch_input_event event = {};
+    event.type = 9999;
+
+    BOOST_CHECK_EQUAL( ksch_session_dispatch_input( session, &event, nullptr ),
+                       KSCH_ERR_INVALID_ARG );
+    BOOST_CHECK( *ksch_session_last_error( session ) != '\0' );
+
+    ksch_session_destroy( session );
+}
+
+
+/**
+ * The round trip: a pointer position in screen pixels goes in and the cursor the
+ * tools read comes back in internal units, having gone through the view transform.
+ */
+BOOST_AUTO_TEST_CASE( PointerInputMovesTheCursorReportedBack )
+{
+    ksch_session* session = ksch_session_create();
+    BOOST_REQUIRE( session != nullptr );
+
+    const wxString path = eeschemaFixture( wxT( "api_kitchen_sink.kicad_sch" ) );
+
+    BOOST_REQUIRE_MESSAGE( ksch_session_load_file( session, path.utf8_str().data() ) == KSCH_OK,
+                           ksch_session_last_error( session ) );
+
+    ksch_viewport viewport;
+    viewport.width_px = 800;
+    viewport.height_px = 600;
+    viewport.center_x = 0.0;
+    viewport.center_y = 0.0;
+    viewport.scale = 1.0;
+    BOOST_REQUIRE_EQUAL( ksch_session_set_viewport( session, &viewport ), KSCH_OK );
+    BOOST_REQUIRE_EQUAL( ksch_session_zoom_to_fit( session ), KSCH_OK );
+
+    ksch_editor_state before = {};
+    BOOST_REQUIRE_EQUAL( ksch_session_editor_state( session, &before ), KSCH_OK );
+
+    // Nothing has reported a pointer yet, so there is nothing to draw a crosshair at.
+    BOOST_CHECK( ( before.flags & KSCH_EDITOR_POINTER_OVER_CANVAS ) == 0u );
+
+    ksch_input_event event = {};
+    event.type = KSCH_INPUT_POINTER_MOTION;
+    event.x = 100.0;
+    event.y = 50.0;
+
+    std::uint32_t flags = 0xffffffffu;
+    BOOST_REQUIRE_EQUAL( ksch_session_dispatch_input( session, &event, &flags ), KSCH_OK );
+
+    // No tool can run on a non-frame holder yet, so nothing claims a motion event.
+    BOOST_CHECK( ( flags & KSCH_INPUT_HANDLED ) == 0u );
+
+    ksch_editor_state after = {};
+    BOOST_REQUIRE_EQUAL( ksch_session_editor_state( session, &after ), KSCH_OK );
+
+    BOOST_CHECK( ( after.flags & KSCH_EDITOR_POINTER_OVER_CANVAS ) != 0u );
+    BOOST_CHECK( after.cursor_x != before.cursor_x || after.cursor_y != before.cursor_y );
+
+    // The cursor is in internal units, so it is on the scale of a schematic page
+    // rather than of a pixel. A page is millions of internal units across; a
+    // failure to convert would leave this at 100.
+    BOOST_CHECK( std::abs( after.cursor_x ) > 1000.0 || std::abs( after.cursor_y ) > 1000.0 );
+
+    event.type = KSCH_INPUT_POINTER_LEAVE;
+    BOOST_REQUIRE_EQUAL( ksch_session_dispatch_input( session, &event, nullptr ), KSCH_OK );
+
+    BOOST_REQUIRE_EQUAL( ksch_session_editor_state( session, &after ), KSCH_OK );
+    BOOST_CHECK( ( after.flags & KSCH_EDITOR_POINTER_OVER_CANVAS ) == 0u );
+
+    ksch_session_destroy( session );
+}
+
+
+/**
+ * A whole click gesture, and a key, over the ABI. Nothing claims any of it while
+ * the tool roster declines a non-frame holder, and nothing edits the document —
+ * which is the state this stage leaves the seam in, stated as an assertion rather
+ * than as a sentence in a document.
+ */
+BOOST_AUTO_TEST_CASE( AClickGestureIsAcceptedAndChangesNothing )
+{
+    ksch_session* session = ksch_session_create();
+    BOOST_REQUIRE( session != nullptr );
+
+    const wxString path = eeschemaFixture( wxT( "api_kitchen_sink.kicad_sch" ) );
+
+    BOOST_REQUIRE_EQUAL( ksch_session_load_file( session, path.utf8_str().data() ), KSCH_OK );
+    BOOST_REQUIRE_EQUAL( ksch_session_zoom_to_fit( session ), KSCH_OK );
+
+    ksch_document_info before = {};
+    BOOST_REQUIRE_EQUAL( ksch_session_document_info( session, &before ), KSCH_OK );
+
+    const int types[] = { KSCH_INPUT_POINTER_MOTION, KSCH_INPUT_POINTER_DOWN,
+                          KSCH_INPUT_POINTER_UP, KSCH_INPUT_POINTER_DBLCLICK };
+
+    for( int type : types )
+    {
+        ksch_input_event event = {};
+        event.type = type;
+        event.button = KSCH_BUTTON_LEFT;
+        event.x = 400.0;
+        event.y = 300.0;
+
+        BOOST_CHECK_EQUAL( ksch_session_dispatch_input( session, &event, nullptr ), KSCH_OK );
+    }
+
+    ksch_input_event key = {};
+    key.type = KSCH_INPUT_KEY_DOWN;
+    key.key = "w";
+    BOOST_CHECK_EQUAL( ksch_session_dispatch_input( session, &key, nullptr ), KSCH_OK );
+
+    // A key name the mapping does not know is dropped, not an error: a UI forwards
+    // its whole key stream and some of it has no KiCad meaning.
+    key.key = "no such key";
+    BOOST_CHECK_EQUAL( ksch_session_dispatch_input( session, &key, nullptr ), KSCH_OK );
+
+    key.key = nullptr;
+    BOOST_CHECK_EQUAL( ksch_session_dispatch_input( session, &key, nullptr ), KSCH_OK );
+
+    ksch_input_event cancel = {};
+    cancel.type = KSCH_INPUT_CANCEL;
+    BOOST_CHECK_EQUAL( ksch_session_dispatch_input( session, &cancel, nullptr ), KSCH_OK );
+
+    BOOST_CHECK_EQUAL( ksch_session_reset_input( session ), KSCH_OK );
+
+    ksch_document_info after = {};
+    BOOST_REQUIRE_EQUAL( ksch_session_document_info( session, &after ), KSCH_OK );
+    BOOST_CHECK_EQUAL( after.modified, before.modified );
+    BOOST_CHECK_EQUAL( after.item_count, before.item_count );
+
+    ksch_session_destroy( session );
+}
+
+
+BOOST_AUTO_TEST_CASE( AnActionNoToolHandlesIsReportedRatherThanAnError )
+{
+    ksch_session* session = ksch_session_create();
+    BOOST_REQUIRE( session != nullptr );
+
+    std::uint32_t flags = 0xffffffffu;
+
+    BOOST_CHECK_EQUAL( ksch_session_run_action( session, "no.such.action", &flags ), KSCH_OK );
+    BOOST_CHECK( ( flags & KSCH_INPUT_HANDLED ) == 0u );
+
+    // A *registered* action with no tool behind it, which is the case that matters:
+    // every action in the process is registered, so a made-up name would prove
+    // nothing about whether "handled" means handled.
+    for( const char* name : { "eeschema.InteractiveDrawingLineWireBus.drawWires",
+                              "common.Control.zoomFitScreen", "common.InteractiveSelection" } )
+    {
+        BOOST_CHECK_EQUAL( ksch_session_run_action( session, name, &flags ), KSCH_OK );
+        BOOST_CHECK_MESSAGE( ( flags & KSCH_INPUT_HANDLED ) == 0u,
+                             std::string( name ) + " cannot have been handled: no tool ran" );
+    }
+
+    ksch_session_destroy( session );
+}
+
+
+BOOST_AUTO_TEST_CASE( EditorStateStringsAreNeverNull )
+{
+    ksch_session* session = ksch_session_create();
+    BOOST_REQUIRE( session != nullptr );
+
+    ksch_editor_state state = {};
+    BOOST_REQUIRE_EQUAL( ksch_session_editor_state( session, &state ), KSCH_OK );
+
+    BOOST_REQUIRE( state.tool_name != nullptr );
+    BOOST_REQUIRE( state.status_text != nullptr );
+    BOOST_CHECK_EQUAL( state.selection_count, 0u );
+
+    // And "no tool" is the empty string, as the header says. TOOLS_HOLDER answers an
+    // empty tool stack with the selection tool's name — a sensible default for a
+    // status bar that always has a tool, and a wrong answer for a UI that would then
+    // display a tool which is not even registered.
+    BOOST_CHECK_EQUAL( state.tool_name, "" );
+    BOOST_CHECK_EQUAL( state.status_text, "" );
 
     ksch_session_destroy( session );
 }

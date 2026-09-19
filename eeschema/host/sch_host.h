@@ -22,14 +22,21 @@
 #include <math/box2.h>
 #include <math/vector2d.h>
 #include <sch_sheet_path.h>
+#include <tool/tools_holder.h>
 #include <wx/string.h>
 
+class ACTIONS;
+class HOST_TOOL_DISPATCHER;
 class SCHEMATIC;
 class SCH_SCREEN;
 class SCH_RENDER_SETTINGS;
+class TOOL_MANAGER;
+
+struct HOST_INPUT_EVENT;
 
 namespace KIGFX
 {
+class HOST_VIEW_CONTROLS;
 class SCH_PAINTER;
 class SCH_VIEW;
 } // namespace KIGFX
@@ -67,30 +74,37 @@ struct SCH_HOST_SHEET_INFO
  * RECORDING_GAL -> stream path works end to end before any of that is
  * attempted.
  *
- * ## What is deliberately absent
+ * ## The tool framework
  *
- * No TOOL_MANAGER, no undo/redo, no selection, no dialogs.
+ * SCH_HOST *is* a TOOLS_HOLDER and owns a TOOL_MANAGER, a HOST_VIEW_CONTROLS and
+ * a HOST_TOOL_DISPATCHER, so host input becomes `TOOL_EVENT`s and reaches the
+ * framework. `GetToolCanvas()` returning nullptr is not the obstacle it looks
+ * like: it is already a production state, which SIMULATOR_FRAME and
+ * MERGETOOL_FRAME both rely on.
  *
- * `TOOLS_HOLDER::GetToolCanvas() -> wxWindow*` being pure virtual is not the
- * obstacle it looks like: returning nullptr from it is already a production
- * state, which SIMULATOR_FRAME and MERGETOOL_FRAME both do. Installing a
- * TOOLS_HOLDER that is not a frame used to be undefined behaviour instead, and
- * no longer is — see `docs/rust-migration/06-what-is-missing.md` Stage 3. But
- * every eeschema tool now *declines* such a holder, deliberately, because
- * `m_frame` is its route to the screen, the selection, the undo stack and every
- * dialog. Registering the tool set here therefore needs a decision about what
- * `m_frame` is for a host that is not a frame; that is the next milestone and is
- * written up in `docs/rust-migration/04-host-seam.md` §6.
+ * What is *not* yet true is that a tool runs. Every eeschema tool declines a
+ * holder that is not a `SCH_BASE_FRAME`, deliberately and testably — see
+ * `docs/rust-migration/06-what-is-missing.md` Stage 3 — because `m_frame` is its
+ * route to the screen, the selection, the undo stack and every dialog. So
+ * ::RegisterTools registers eeschema's roster, `TOOL_MANAGER::InitTools()` drops
+ * all of it, and the only thing input reaches today is the hotkey lookup. Making
+ * a tool run is a question about what `m_frame` means for a non-frame host, and
+ * `docs/rust-migration/04-host-seam.md` §6 records the two answers and their cost.
+ *
+ * ## What is still deliberately absent
+ *
+ * No undo/redo — the containers are members of `EDA_BASE_FRAME`, and hoisting
+ * them is an edit to a base class every KiCad program inherits — and no dialogs.
  *
  * ## Threading
  *
  * Not thread safe, and neither is anything it owns. One session per thread.
  */
-class SCH_HOST
+class SCH_HOST : public TOOLS_HOLDER
 {
 public:
     SCH_HOST();
-    ~SCH_HOST();
+    ~SCH_HOST() override;
 
     SCH_HOST( const SCH_HOST& ) = delete;
     SCH_HOST& operator=( const SCH_HOST& ) = delete;
@@ -223,13 +237,81 @@ public:
     /// The stream recorded by the last Render(), without recording a new one.
     kgds_stream_view PublishLastFrame() const;
 
+    // ----------------------------------------------------------------- input
+
+    /**
+     * Translate one host input event and give the result to the tool framework.
+     *
+     * @return true if a tool or a hotkey claimed it. With no tool able to run on a
+     *         non-frame holder (see the class comment) that means a hotkey, or
+     *         nothing.
+     */
+    bool DispatchInput( const HOST_INPUT_EVENT& aEvent );
+
+    /**
+     * Run a registered action by its dotted name, as a menu or a toolbar does.
+     *
+     * @return false if no action has that name, or if the action was not handled.
+     */
+    bool RunActionByName( const std::string& aActionName );
+
+    /// Forget which buttons are down, e.g. because the host lost focus.
+    void ResetInputState();
+
+    /**
+     * The cursor, in internal units, as the tools see it: grid-snapped if snapping
+     * is on, or wherever a tool has forced it to be.
+     */
+    VECTOR2D GetCursorPosition() const;
+
+    /// Number of items in the current selection.
+    std::size_t GetSelectionCount();
+
+    /// The most recent status text a tool asked to display. Empty if none has.
+    const wxString& GetToolMessage() const { return m_toolMessage; }
+
+    /**
+     * Whether anything asked for a repaint since this was last called; reading it
+     * clears it.
+     *
+     * `TOOLS_HOLDER::RefreshCanvas()` is how a tool says "the view changed", and it
+     * is the only notice a consumer on the far side of the ABI gets that the frame
+     * it is holding is stale.
+     */
+    bool TakeRedrawRequest();
+
+    // ------------------------------------------------------ TOOLS_HOLDER
+
+    /**
+     * No canvas, and that is a supported answer rather than a gap: three
+     * implementations in the tree already return nullptr, and `TOOL_DISPATCHER`
+     * null-checks the result before using it.
+     */
+    wxWindow* GetToolCanvas() const override { return nullptr; }
+
+    SELECTION& GetCurrentSelection() override;
+
+    void RefreshCanvas() override { m_redrawRequested = true; }
+
+    void DisplayToolMsg( const wxString& aMsg ) override { m_toolMessage = aMsg; }
+
+    wxString ConfigBaseName() override { return wxT( "SchHost" ); }
+
     // ---------------------------------------------------------- collaborators
 
-    KIGFX::RECORDING_GAL& Gal() { return *m_gal; }
-    KIGFX::SCH_VIEW&      View() { return *m_view; }
-    SCH_RENDER_SETTINGS&  RenderSettings() const;
+    KIGFX::RECORDING_GAL&      Gal() { return *m_gal; }
+    KIGFX::SCH_VIEW&           View() { return *m_view; }
+    SCH_RENDER_SETTINGS&       RenderSettings() const;
+    KIGFX::HOST_VIEW_CONTROLS& ViewControls() { return *m_viewControls; }
 
 private:
+    /// Build the tool framework: view controls, manager, actions, dispatcher.
+    /// Called once, from the constructor, after buildCanvas().
+    void setupTools();
+
+    /// Register the tool roster SCH_EDIT_FRAME registers. See the class comment for
+    /// why none of it survives InitTools() yet.
+    void registerTools();
     /**
      * Make sure Kiface().KifaceSettings() is live before anything draws.
      *
@@ -272,9 +354,28 @@ private:
     std::unique_ptr<KIGFX::SCH_VIEW>      m_view;
     std::unique_ptr<KIGFX::SCH_PAINTER>   m_painter;
 
+    /**
+     * The tool framework.
+     *
+     * TOOLS_HOLDER holds `m_toolManager` and `m_actions` as raw pointers it does not
+     * own — every frame in KiCad deletes its own — so the lifetime lives here, and
+     * the base's pointers are aliases of these. Declared after the view because the
+     * tools unlink themselves from it as they are destroyed.
+     */
+    std::unique_ptr<KIGFX::HOST_VIEW_CONTROLS> m_viewControls;
+    std::unique_ptr<TOOL_MANAGER>              m_ownedToolManager;
+    std::unique_ptr<ACTIONS>                   m_ownedActions;
+    std::unique_ptr<HOST_TOOL_DISPATCHER>      m_dispatcher;
+
     VECTOR2I m_viewportSize;
 
     wxString m_lastError;
+
+    /// The last thing a tool asked to be shown in a status bar.
+    wxString m_toolMessage;
+
+    /// Set by RefreshCanvas(), cleared by TakeRedrawRequest().
+    bool m_redrawRequested;
 };
 
 #endif // KICAD_EESCHEMA_HOST_SCH_HOST_H

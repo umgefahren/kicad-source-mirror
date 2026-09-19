@@ -34,7 +34,9 @@
 #include <pgm_base.h>
 #include <sch_host/sch_host_abi.h>
 #include <tool/action_manager.h>
+#include <tool/host_tool_dispatcher.h>
 #include <tool/tool_action.h>
+#include <view/host_view_controls.h>
 #include <wx/filename.h>
 #include <wx/string.h>
 
@@ -59,6 +61,10 @@ struct ksch_session
     std::string m_SheetName;
     std::string m_SheetPath;
     std::string m_SheetPage;
+
+    /// Backing store for the strings of the most recent ksch_session_editor_state().
+    std::string m_ToolName;
+    std::string m_StatusText;
 };
 
 
@@ -121,6 +127,88 @@ ksch_status guard( ksch_session* aSession, FUNC aBody )
         setError( aSession, wxT( "Unknown exception crossing the host ABI boundary." ) );
         return KSCH_ERR_INTERNAL;
     }
+}
+
+
+/* ------------------------------------------------------------------ input */
+
+/**
+ * Translate a ::ksch_input_event into the C++ struct the dispatcher takes.
+ *
+ * Three vocabularies meet here and nowhere else: the ABI's button ordinals become
+ * KiCad's `BUT_*` bits, the ABI's modifier bits become `MD_*` bits, and the UI's
+ * key *name* becomes a `WXK_*` code. Each of those is a place where a wrong number
+ * is a feature that silently does not work, which is why they are all on this side
+ * of the boundary, where a compiler reads the real values out of KiCad's headers.
+ *
+ * @return false if the event's type is not one this ABI defines.
+ */
+bool toHostInput( const ksch_input_event& aEvent, HOST_INPUT_EVENT& aOut )
+{
+    switch( aEvent.type )
+    {
+    case KSCH_INPUT_POINTER_MOTION: aOut.type = HOST_INPUT_TYPE::POINTER_MOTION; break;
+    case KSCH_INPUT_POINTER_DOWN: aOut.type = HOST_INPUT_TYPE::POINTER_DOWN; break;
+    case KSCH_INPUT_POINTER_UP: aOut.type = HOST_INPUT_TYPE::POINTER_UP; break;
+    case KSCH_INPUT_POINTER_DBLCLICK: aOut.type = HOST_INPUT_TYPE::POINTER_DBLCLICK; break;
+    case KSCH_INPUT_POINTER_LEAVE: aOut.type = HOST_INPUT_TYPE::POINTER_LEAVE; break;
+    case KSCH_INPUT_SCROLL: aOut.type = HOST_INPUT_TYPE::SCROLL; break;
+    case KSCH_INPUT_KEY_DOWN: aOut.type = HOST_INPUT_TYPE::KEY_DOWN; break;
+    case KSCH_INPUT_KEY_UP: aOut.type = HOST_INPUT_TYPE::KEY_UP; break;
+    case KSCH_INPUT_CANCEL: aOut.type = HOST_INPUT_TYPE::CANCEL; break;
+    default: return false;
+    }
+
+    switch( aEvent.button )
+    {
+    case KSCH_BUTTON_LEFT: aOut.button = BUT_LEFT; break;
+    case KSCH_BUTTON_RIGHT: aOut.button = BUT_RIGHT; break;
+    case KSCH_BUTTON_MIDDLE: aOut.button = BUT_MIDDLE; break;
+    case KSCH_BUTTON_BACK: aOut.button = BUT_AUX1; break;
+    case KSCH_BUTTON_FORWARD: aOut.button = BUT_AUX2; break;
+    default: aOut.button = BUT_NONE; break;
+    }
+
+    aOut.modifiers = 0;
+
+    if( aEvent.modifiers & KSCH_MOD_SHIFT )
+        aOut.modifiers |= MD_SHIFT;
+
+    if( aEvent.modifiers & KSCH_MOD_ALT )
+        aOut.modifiers |= MD_ALT;
+
+    // The Command/Control question, which has exactly one right answer and it is not
+    // the obvious one.
+    //
+    // KiCad's hotkey table is written in MD_* bits — `.DefaultHotkey( MD_CTRL + 'Z' )`
+    // — and on macOS those are reached with **Command**, not Control, because
+    // `wxMOD_CMD == wxMOD_CONTROL` there (`wx/defs.h`) and `decodeModifiers` tests
+    // `wxMOD_CONTROL`. Physical Control arrives as `wxMOD_RAW_CONTROL`, which
+    // `decodeModifiers` does not look at, so in the wx editor on macOS it produces no
+    // modifier bit at all.
+    //
+    // Mapping the UI's "meta" (Command on macOS) to MD_META instead would be the
+    // literal translation and would leave every Ctrl-keyed shortcut in the tree
+    // unreachable, while physical Control would fire them — inverted from the wx app
+    // on the same machine, and silently, because an unmatched hotkey does nothing.
+#ifdef __APPLE__
+    if( aEvent.modifiers & KSCH_MOD_META )
+        aOut.modifiers |= MD_CTRL;
+#else
+    if( aEvent.modifiers & KSCH_MOD_CTRL )
+        aOut.modifiers |= MD_CTRL;
+
+    if( aEvent.modifiers & KSCH_MOD_META )
+        aOut.modifiers |= MD_META;
+#endif
+
+    aOut.keyCode = aEvent.key ? HOST_TOOL_DISPATCHER::KeyCodeFromName( aEvent.key ) : 0;
+    aOut.isAutoRepeat = ( aEvent.flags & KSCH_INPUT_FLAG_AUTOREPEAT ) != 0;
+
+    aOut.position = VECTOR2D( aEvent.x, aEvent.y );
+    aOut.scrollDelta = VECTOR2D( aEvent.scroll_x, aEvent.scroll_y );
+
+    return true;
 }
 
 
@@ -725,6 +813,142 @@ extern "C" ksch_status ksch_session_write_stream( ksch_session* aSession, const 
 
 
 /* -------------------------------------------------------- action registry */
+
+/* ------------------------------------------------------------------ input */
+
+extern "C" ksch_status ksch_session_dispatch_input( ksch_session*           aSession,
+                                                    const ksch_input_event* aEvent,
+                                                    uint32_t*               aOutFlags )
+{
+    if( !aSession || !aEvent )
+        return KSCH_ERR_INVALID_ARG;
+
+    return guard( aSession,
+                  [&]() -> ksch_status
+                  {
+                      HOST_INPUT_EVENT event;
+
+                      if( !toHostInput( *aEvent, event ) )
+                      {
+                          setError( aSession,
+                                    wxString::Format( wxT( "Unknown input event type %d." ),
+                                                      aEvent->type ) );
+                          return KSCH_ERR_INVALID_ARG;
+                      }
+
+                      const bool handled = aSession->m_Host.DispatchInput( event );
+
+                      if( aOutFlags )
+                      {
+                          uint32_t flags = 0;
+
+                          if( handled )
+                              flags |= KSCH_INPUT_HANDLED;
+
+                          if( aSession->m_Host.TakeRedrawRequest() )
+                              flags |= KSCH_INPUT_REDRAW;
+
+                          *aOutFlags = flags;
+                      }
+
+                      // With no out-parameter the request is deliberately *left
+                      // pending* rather than consumed. It is the only way a caller can
+                      // learn that a tool asked for a repaint, so dropping it loses a
+                      // frame the UI needed; carrying it to the next call that does ask
+                      // attributes it to the wrong event, which costs one redundant
+                      // re-record and nothing else. A lost repaint is worse than a late
+                      // one.
+
+                      return KSCH_OK;
+                  } );
+}
+
+
+extern "C" ksch_status ksch_session_reset_input( ksch_session* aSession )
+{
+    if( !aSession )
+        return KSCH_ERR_INVALID_ARG;
+
+    return guard( aSession,
+                  [&]() -> ksch_status
+                  {
+                      aSession->m_Host.ResetInputState();
+                      return KSCH_OK;
+                  } );
+}
+
+
+extern "C" ksch_status ksch_session_run_action( ksch_session* aSession, const char* aNameUtf8,
+                                                uint32_t* aOutFlags )
+{
+    if( !aSession || !aNameUtf8 )
+        return KSCH_ERR_INVALID_ARG;
+
+    return guard( aSession,
+                  [&]() -> ksch_status
+                  {
+                      const bool handled = aSession->m_Host.RunActionByName( aNameUtf8 );
+
+                      if( aOutFlags )
+                      {
+                          // Same rule as ksch_session_dispatch_input: with no
+                          // out-parameter the redraw request stays pending rather than
+                          // being consumed and lost.
+                          *aOutFlags = ( handled ? KSCH_INPUT_HANDLED : 0u )
+                                       | ( aSession->m_Host.TakeRedrawRequest()
+                                                   ? KSCH_INPUT_REDRAW
+                                                   : 0u );
+                      }
+
+                      return KSCH_OK;
+                  } );
+}
+
+
+extern "C" ksch_status ksch_session_editor_state( ksch_session*      aSession,
+                                                  ksch_editor_state* aOut )
+{
+    if( !aSession || !aOut )
+        return KSCH_ERR_INVALID_ARG;
+
+    return guard( aSession,
+                  [&]() -> ksch_status
+                  {
+                      SCH_HOST& host = aSession->m_Host;
+
+                      // Parked on the session rather than on a temporary, which is the
+                      // only reason these pointers are safe to return at all.
+                      //
+                      // `TOOLS_HOLDER::CurrentToolName()` answers with the selection
+                      // tool's name when the stack is empty rather than with nothing,
+                      // which is a sensible default for a status bar that always has
+                      // a tool and a wrong answer for an ABI that promises "" for
+                      // none — a UI would show a tool that is not even registered.
+                      aSession->m_ToolName =
+                              host.ToolStackIsEmpty() ? std::string() : host.CurrentToolName();
+                      aSession->m_StatusText = host.GetToolMessage().utf8_string();
+
+                      const VECTOR2D cursor = host.GetCursorPosition();
+
+                      aOut->cursor_x = cursor.x;
+                      aOut->cursor_y = cursor.y;
+                      aOut->selection_count = static_cast<uint32_t>( host.GetSelectionCount() );
+
+                      aOut->flags = 0;
+
+                      if( host.ViewControls().PointerIsOverCanvas() )
+                          aOut->flags |= KSCH_EDITOR_POINTER_OVER_CANVAS;
+
+                      if( host.IsModified() )
+                          aOut->flags |= KSCH_EDITOR_MODIFIED;
+
+                      aOut->tool_name = aSession->m_ToolName.c_str();
+                      aOut->status_text = aSession->m_StatusText.c_str();
+
+                      return KSCH_OK;
+                  } );
+}
+
 
 extern "C" uint32_t ksch_action_count( void )
 {
