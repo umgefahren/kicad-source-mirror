@@ -41,6 +41,27 @@ public:
     /// @copydoc TOOL_INTERACTIVE::Init()
     bool Init() override;
 
+    /**
+     * Runs on an editing context that is not a wxFrame.
+     *
+     * The tool itself computes nothing: it asks the editor for the windows that do. ERC
+     * is run by DIALOG_ERC, the symbol/library diff by DIALOG_BOOK_REPORTER and the
+     * schematic comparison by DIALOG_KICAD_DIFF, so what registering it without a frame
+     * buys is that it is present and declines rather than being absent — and that the
+     * message-panel and cross-probe handlers bound to the selection events stop being a
+     * reason for the selection tool's events to reach a dead end.
+     *
+     * Every action needs a window and declines without one: ::RunERC, ::PrevMarker,
+     * ::NextMarker, ::ExcludeMarker and ::CrossProbe (the ERC dialog), ::CheckSymbol
+     * (the symbol editor's current symbol, a UNITS_PROVIDER to format coordinates with,
+     * and an HTML_MESSAGE_BOX to show them in), ::DiffSymbol,
+     * ::CompareSchematicWithFile, ::CompareSchematicWithHistory, ::ShowBusSyntaxHelp,
+     * ::ShowDatasheet and ::RunSimulation (all dialogs, or a Kiway player).
+     * ::UpdateMessagePanel keeps running and updates nothing, because the message panel
+     * and the hierarchy navigator are both the frame's.
+     */
+    bool runsWithoutAFrame() const override { return true; }
+
     void Reset( RESET_REASON aReason ) override;
 
     int RunERC( const TOOL_EVENT& aEvent );

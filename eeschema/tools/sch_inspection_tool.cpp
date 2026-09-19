@@ -57,6 +57,7 @@
 #include <diff_merge/sch_differ.h>
 #include <eeschema_helpers.h>
 #include <schematic.h>
+#include <schematic_holder.h>
 #include <settings/settings_manager.h>
 #include <local_history.h>
 #include <wildcards_and_files_ext.h>
@@ -76,14 +77,19 @@ bool SCH_INSPECTION_TOOL::Init()
     if( !SCH_TOOL_BASE::Init() )
         return false;
 
-    // Add inspection actions to the selection tool menu
-    //
-    CONDITIONAL_MENU& selToolMenu = m_selectionTool->GetToolMenu().GetMenu();
+    // Add inspection actions to the selection tool menu. TOOL_INTERACTIVE only builds a
+    // TOOL_MENU when Pgm().IsGUI(), so a headless holder has none to add to. Both items
+    // open a window anyway, so nothing is lost that was not already unavailable.
+    if( m_selectionTool && m_selectionTool->HasToolMenu() )
+    {
+        CONDITIONAL_MENU& selToolMenu = m_selectionTool->GetToolMenu().GetMenu();
 
-    selToolMenu.AddItem( SCH_ACTIONS::excludeMarker, SCH_CONDITIONS::SingleNonExcludedMarker, 100 );
+        selToolMenu.AddItem( SCH_ACTIONS::excludeMarker, SCH_CONDITIONS::SingleNonExcludedMarker,
+                             100 );
 
-    selToolMenu.AddItem( ACTIONS::showDatasheet,
-                         SCH_CONDITIONS::SingleSymbol && SCH_CONDITIONS::Idle, 220 );
+        selToolMenu.AddItem( ACTIONS::showDatasheet,
+                             SCH_CONDITIONS::SingleSymbol && SCH_CONDITIONS::Idle, 220 );
+    }
 
     return true;
 }
@@ -95,9 +101,15 @@ void SCH_INSPECTION_TOOL::Reset( RESET_REASON aReason )
 
     if( aReason == SUPERMODEL_RELOAD || aReason == RESET_REASON::SHUTDOWN )
     {
-        wxCommandEvent* evt = new wxCommandEvent( EDA_EVT_CLOSE_ERC_DIALOG, wxID_ANY );
+        // A window: the ERC dialog is the frame's child and this is how it is told to
+        // close itself. Without a frame there is no dialog open and no event handler to
+        // queue to.
+        if( m_frame )
+        {
+            wxCommandEvent* evt = new wxCommandEvent( EDA_EVT_CLOSE_ERC_DIALOG, wxID_ANY );
 
-        wxQueueEvent( m_frame, evt );
+            wxQueueEvent( m_frame, evt );
+        }
     }
 }
 
@@ -111,6 +123,12 @@ int SCH_INSPECTION_TOOL::RunERC( const TOOL_EVENT& aEvent )
 
 void SCH_INSPECTION_TOOL::ShowERCDialog()
 {
+    // This action is the dialog: DIALOG_ERC owns the ERC run, its progress reporting and
+    // its results. Without a window to parent it there is nothing this can do, and a
+    // caller that wants the checks themselves has to drive ERC_TESTER directly.
+    if( !m_frame )
+        return;
+
     SCH_EDIT_FRAME* frame = dynamic_cast<SCH_EDIT_FRAME*>( m_frame );
 
     wxCHECK( frame, /* void */ );
@@ -135,6 +153,11 @@ void SCH_INSPECTION_TOOL::ShowERCDialog()
 
 int SCH_INSPECTION_TOOL::PrevMarker( const TOOL_EVENT& aEvent )
 {
+    // Stepping through the markers is the ERC dialog's list; without a window there is
+    // no dialog and no list to step through.
+    if( !m_frame )
+        return 0;
+
     SCH_EDIT_FRAME* frame = dynamic_cast<SCH_EDIT_FRAME*>( m_frame );
 
     wxCHECK( frame, 0 );
@@ -154,6 +177,10 @@ int SCH_INSPECTION_TOOL::PrevMarker( const TOOL_EVENT& aEvent )
 
 int SCH_INSPECTION_TOOL::NextMarker( const TOOL_EVENT& aEvent )
 {
+    // Same as ::PrevMarker: the marker list belongs to the ERC dialog.
+    if( !m_frame )
+        return 0;
+
     SCH_EDIT_FRAME* frame = dynamic_cast<SCH_EDIT_FRAME*>( m_frame );
 
     wxCHECK( frame, 0 );
@@ -180,6 +207,9 @@ int SCH_INSPECTION_TOOL::CrossProbe( const TOOL_EVENT& aEvent )
 
     if( selection.GetSize() == 1 && selection.Front()->Type() == SCH_MARKER_T )
     {
+        // A window: the far end of this cross-probe is the ERC dialog's marker list.
+        // Without a frame the dynamic_cast is null and the selection simply does not
+        // highlight anything there.
         SCH_EDIT_FRAME* frame = dynamic_cast<SCH_EDIT_FRAME*>( m_frame );
         DIALOG_ERC* dlg = frame ? frame->GetErcDialog() : nullptr;
 
@@ -196,6 +226,11 @@ int SCH_INSPECTION_TOOL::CrossProbe( const TOOL_EVENT& aEvent )
 
 void SCH_INSPECTION_TOOL::CrossProbe( const SCH_MARKER* aMarker )
 {
+    // Called by the ERC dialog to show itself and select a marker, so without a window
+    // there is neither a caller nor anything to raise.
+    if( !m_frame )
+        return;
+
     SCH_EDIT_FRAME* frame = dynamic_cast<SCH_EDIT_FRAME*>( m_frame );
 
     wxCHECK( frame, /* void */ );
@@ -217,6 +252,11 @@ void SCH_INSPECTION_TOOL::CrossProbe( const SCH_MARKER* aMarker )
 
 wxString SCH_INSPECTION_TOOL::InspectERCErrorMenuText( const std::shared_ptr<RC_ITEM>& aERCItem )
 {
+    // The text of a menu item in the ERC dialog, and the description comes from the
+    // frame's hotkey-annotated command list. No window, no menu to label.
+    if( !m_frame )
+        return wxEmptyString;
+
     if( aERCItem->GetErrorCode() == ERCE_BUS_TO_NET_CONFLICT )
     {
         return m_frame->GetRunMenuCommandDescription( SCH_ACTIONS::showBusSyntaxHelp );
@@ -232,11 +272,17 @@ wxString SCH_INSPECTION_TOOL::InspectERCErrorMenuText( const std::shared_ptr<RC_
 
 void SCH_INSPECTION_TOOL::InspectERCError( const std::shared_ptr<RC_ITEM>& aERCItem )
 {
+    // Both things this dispatches to are windows — the bus syntax help and the symbol
+    // diff dialog — and the only caller is the ERC dialog itself. Resolving the item is
+    // SCHEMATIC_HOLDER's, but there would be nothing to do with the answer.
+    if( !m_frame )
+        return;
+
     SCH_EDIT_FRAME* frame = dynamic_cast<SCH_EDIT_FRAME*>( m_frame );
 
     wxCHECK( frame, /* void */ );
 
-    EDA_ITEM* a = frame->ResolveItem( aERCItem->GetMainItemID() );
+    EDA_ITEM* a = m_editor->ResolveItem( aERCItem->GetMainItemID() );
 
     if( aERCItem->GetErrorCode() == ERCE_BUS_TO_NET_CONFLICT )
     {
@@ -252,6 +298,12 @@ void SCH_INSPECTION_TOOL::InspectERCError( const std::shared_ptr<RC_ITEM>& aERCI
 
 int SCH_INSPECTION_TOOL::ExcludeMarker( const TOOL_EVENT& aEvent )
 {
+    // The exclusion is applied by the ERC dialog, which owns the marker provider's
+    // cached counts. Without a window there is no provider to update, so excluding a
+    // marker headlessly would have to go to the SCHEMATIC's ERC settings directly.
+    if( !m_frame )
+        return 0;
+
     SCH_SELECTION_TOOL* selTool = m_toolMgr->GetTool<SCH_SELECTION_TOOL>();
     SCH_SELECTION&      selection = selTool->GetSelection();
     SCH_MARKER*         marker = nullptr;
@@ -281,7 +333,18 @@ extern void CheckLibSymbol( LIB_SYMBOL* aSymbol, std::vector<wxString>& aMessage
 
 int SCH_INSPECTION_TOOL::CheckSymbol( const TOOL_EVENT& aEvent )
 {
-    LIB_SYMBOL* symbol = static_cast<SYMBOL_EDIT_FRAME*>( m_frame )->GetCurSymbol();
+    // Three separate things here are the frame's and none of them has an interface
+    // route: the symbol being checked is the symbol *editor's* current symbol, the
+    // coordinates in the messages are formatted by the frame as a UNITS_PROVIDER, and
+    // the messages themselves are shown in a modal box. The checks in CheckLibSymbol()
+    // are otherwise free of any of that, so a headless caller wanting them would call it
+    // with its own symbol and units provider rather than come through here.
+    SYMBOL_EDIT_FRAME* symbolEditFrame = dynamic_cast<SYMBOL_EDIT_FRAME*>( m_frame );
+
+    if( !symbolEditFrame )
+        return 0;
+
+    LIB_SYMBOL* symbol = symbolEditFrame->GetCurSymbol();
 
     if( !symbol )
         return 0;
@@ -311,6 +374,11 @@ int SCH_INSPECTION_TOOL::CheckSymbol( const TOOL_EVENT& aEvent )
 
 int SCH_INSPECTION_TOOL::ShowBusSyntaxHelp( const TOOL_EVENT& aEvent )
 {
+    // This action is an HTML_MESSAGE_BOX. Without a window to parent it there is nothing
+    // it can do.
+    if( !m_frame )
+        return 0;
+
     if( m_busSyntaxHelp )
     {
         m_busSyntaxHelp->Raise();
@@ -325,6 +393,12 @@ int SCH_INSPECTION_TOOL::ShowBusSyntaxHelp( const TOOL_EVENT& aEvent )
 
 int SCH_INSPECTION_TOOL::DiffSymbol( const TOOL_EVENT& aEvent )
 {
+    // The comparison is reported into a DIALOG_BOOK_REPORTER and drawn in a
+    // SYMBOL_DIFF_WIDGET, both of which are the frame's, and the "select a symbol first"
+    // complaint goes to the info bar. Without a window there is nowhere to put any of it.
+    if( !m_frame )
+        return 0;
+
     SCH_EDIT_FRAME* schEditorFrame = dynamic_cast<SCH_EDIT_FRAME*>( m_frame );
 
     wxCHECK( schEditorFrame, 0 );
@@ -344,6 +418,11 @@ int SCH_INSPECTION_TOOL::DiffSymbol( const TOOL_EVENT& aEvent )
 
 void SCH_INSPECTION_TOOL::DiffSymbol( SCH_SYMBOL* symbol )
 {
+    // Same as the event handler above, and it also needs the frame's PROJECT to find the
+    // library the symbol came from.
+    if( !m_frame )
+        return;
+
     SCH_EDIT_FRAME* schEditorFrame = dynamic_cast<SCH_EDIT_FRAME*>( m_frame );
 
     wxCHECK( schEditorFrame, /* void */ );
@@ -440,6 +519,8 @@ SYMBOL_DIFF_WIDGET* SCH_INSPECTION_TOOL::constructDiffPanel( wxPanel* aParentPan
 {
     wxBoxSizer* sizer = new wxBoxSizer( wxVERTICAL );
 
+    // GetCanvas() here is the frame's wxWindow, not the view. Its only caller is
+    // ::DiffSymbol, which has already established that there is a frame.
     EDA_DRAW_PANEL_GAL::GAL_TYPE backend = m_frame->GetCanvas()->GetBackend();
     SYMBOL_DIFF_WIDGET*          diffWidget = new SYMBOL_DIFF_WIDGET( aParentPanel, backend );
 
@@ -591,6 +672,12 @@ void reloadDrillFrame( DIALOG_KICAD_DIFF& aDlg, SCHEMATIC* aRefSch, const KICAD_
 
 int SCH_INSPECTION_TOOL::CompareSchematicWithFile( const TOOL_EVENT& aEvent )
 {
+    // This action opens a wxFileDialog and then a DIALOG_KICAD_DIFF. Without a window
+    // there is neither a way to ask which file nor anywhere to show the answer; a
+    // headless caller would drive KICAD_DIFF::SCH_DIFFER itself.
+    if( !m_frame )
+        return 0;
+
     SCH_EDIT_FRAME* schEditorFrame = dynamic_cast<SCH_EDIT_FRAME*>( m_frame );
 
     wxCHECK( schEditorFrame, 0 );
@@ -634,6 +721,11 @@ int SCH_INSPECTION_TOOL::CompareSchematicWithFile( const TOOL_EVENT& aEvent )
 int SCH_INSPECTION_TOOL::showSchematicComparison( const wxString& aOtherPath, const wxString& aProjectPath,
                                                   const wxString& aComparisonLabel )
 {
+    // The whole of this is a modal DIALOG_KICAD_DIFF, and every failure along the way is
+    // reported to the info bar.
+    if( !m_frame )
+        return 0;
+
     SCH_EDIT_FRAME* schEditorFrame = dynamic_cast<SCH_EDIT_FRAME*>( m_frame );
 
     wxCHECK( schEditorFrame, 0 );
@@ -856,6 +948,12 @@ int SCH_INSPECTION_TOOL::showSchematicComparison( const wxString& aOtherPath, co
 
 int SCH_INSPECTION_TOOL::CompareSchematicWithHistory( const TOOL_EVENT& aEvent )
 {
+    // As with ::CompareSchematicWithFile: the revision chooser and the diff canvas are
+    // both DIALOG_KICAD_DIFF's, and the LOCAL_HISTORY it reads comes off the frame's
+    // KIWAY, which a non-frame holder does not have either.
+    if( !m_frame )
+        return 0;
+
     SCH_EDIT_FRAME* schEditorFrame = dynamic_cast<SCH_EDIT_FRAME*>( m_frame );
 
     wxCHECK( schEditorFrame, 0 );
@@ -1293,6 +1391,11 @@ int SCH_INSPECTION_TOOL::CompareSchematicWithHistory( const TOOL_EVENT& aEvent )
 
 int SCH_INSPECTION_TOOL::RunSimulation( const TOOL_EVENT& aEvent )
 {
+    // This action raises another KIWAY_PLAYER window, and KIWAY itself is reached
+    // through the frame. There is no window to raise and no KIWAY to ask without one.
+    if( !m_frame )
+        return 0;
+
     SIMULATOR_FRAME* simFrame = (SIMULATOR_FRAME*) m_frame->Kiway().Player( FRAME_SIMULATOR, true );
 
     if( !simFrame )
@@ -1315,6 +1418,12 @@ int SCH_INSPECTION_TOOL::RunSimulation( const TOOL_EVENT& aEvent )
 
 int SCH_INSPECTION_TOOL::ShowDatasheet( const TOOL_EVENT& aEvent )
 {
+    // Which of the three editors this is, the PROJECT that resolves a relative datasheet
+    // path, the search stack and the browser or PDF viewer GetAssociatedDocument()
+    // launches are all the frame's, as is the info bar that reports having found none.
+    if( !m_frame )
+        return 0;
+
     wxString datasheet;
     std::vector<EMBEDDED_FILES*> filesStack;
 
@@ -1379,6 +1488,10 @@ int SCH_INSPECTION_TOOL::UpdateMessagePanel( const TOOL_EVENT& aEvent )
 
     // Note: the symbol viewer manages its own message panel
 
+    // A window: the message panel, the net-highlight status text and the hierarchy
+    // navigator are all parts of the frame. Without one both dynamic_casts are null and
+    // this handler runs to completion having updated nothing, which is what it should
+    // do — the selection change it reacts to has already happened elsewhere.
     if( symbolEditFrame || schEditFrame )
     {
         if( selection.GetSize() == 1 )

@@ -27,11 +27,49 @@
 #include <schematic.h>
 #include <tools/sch_find_replace_tool.h>
 #include <sch_sheet_path.h>
+#include <schematic_holder.h>
+#include <tool/tools_holder.h>
 #include "sch_actions.h"
+
+
+EDA_SEARCH_DATA* SCH_FIND_REPLACE_TOOL::searchData() const
+{
+    // EDA_DRAW_FRAME owns the search terms and DIALOG_SCH_FIND fills them in; there is
+    // no copy of them on SCHEMATIC_HOLDER and none on this tool. See ::runsWithoutAFrame.
+    return m_frame ? &m_frame->GetFindReplaceData() : nullptr;
+}
+
+
+SCHEMATIC* SCH_FIND_REPLACE_TOOL::getSchematic() const
+{
+    // SCH_EDIT_FRAME::Schematic() is asked first so that a frame answers exactly what it
+    // answered before. A holder that is not a frame is asked for the document instead,
+    // which is the same object by a different route.
+    if( SCH_EDIT_FRAME* editFrame = dynamic_cast<SCH_EDIT_FRAME*>( m_frame ) )
+        return &editFrame->Schematic();
+
+    return m_editor->IsSchematicEditor() ? m_editor->GetSchematic() : nullptr;
+}
+
+
+SCH_SHEET_PATH* SCH_FIND_REPLACE_TOOL::getCurrentSheet() const
+{
+    // Null in the symbol editor and the symbol viewer, which have no sheets to search
+    // across; SCH_EDIT_FRAME::GetCurrentSheet() is itself SCHEMATIC::CurrentSheet().
+    SCHEMATIC* sch = getSchematic();
+
+    return sch ? &sch->CurrentSheet() : nullptr;
+}
 
 
 int SCH_FIND_REPLACE_TOOL::FindAndReplace( const TOOL_EVENT& aEvent )
 {
+    // This action *is* the find dialog: it opens it and then repaints what it matches.
+    // Without a window to parent it there is nothing it can do, and nowhere for a
+    // headless caller to type a search string.
+    if( !m_frame )
+        return 0;
+
     m_frame->ShowFindReplaceDialog( aEvent.IsAction( &ACTIONS::findAndReplace ) );
     return UpdateFind( aEvent );
 }
@@ -39,13 +77,18 @@ int SCH_FIND_REPLACE_TOOL::FindAndReplace( const TOOL_EVENT& aEvent )
 
 int SCH_FIND_REPLACE_TOOL::UpdateFind( const TOOL_EVENT& aEvent )
 {
-    EDA_SEARCH_DATA& data = m_frame->GetFindReplaceData();
-    SCH_SEARCH_DATA* schSearchData = dynamic_cast<SCH_SEARCH_DATA*>( &data );
-    SCH_SHEET_PATH*  sheetPath = nullptr;
-    bool             selectedOnly = schSearchData ? schSearchData->searchSelectedOnly : false;
+    EDA_SEARCH_DATA* searchTerms = searchData();
 
-    if( m_frame->GetFrameType() == FRAME_SCH )
-        sheetPath = &static_cast<SCH_EDIT_FRAME*>( m_frame )->GetCurrentSheet();
+    // No window, no search terms, and so nothing to brighten or un-brighten. The events
+    // this is bound to are selection changes, which arrive regardless. Past here there
+    // is a frame, which is what lets the "is the find dialog open?" tests below stand.
+    if( !searchTerms )
+        return 0;
+
+    EDA_SEARCH_DATA& data = *searchTerms;
+    SCH_SEARCH_DATA* schSearchData = dynamic_cast<SCH_SEARCH_DATA*>( &data );
+    SCH_SHEET_PATH*  sheetPath = getCurrentSheet();
+    bool             selectedOnly = schSearchData ? schSearchData->searchSelectedOnly : false;
 
     auto visit =
             [&]( EDA_ITEM* aItem, SCH_SHEET_PATH* aSheet )
@@ -82,7 +125,7 @@ int SCH_FIND_REPLACE_TOOL::UpdateFind( const TOOL_EVENT& aEvent )
                 }
                 else
                 {
-                    for( SCH_ITEM* item : m_frame->GetScreen()->Items() )
+                    for( SCH_ITEM* item : m_editor->GetScreen()->Items() )
                     {
                         visit( item, sheetPath );
 
@@ -136,7 +179,10 @@ int SCH_FIND_REPLACE_TOOL::UpdateFind( const TOOL_EVENT& aEvent )
     }
 
     getView()->UpdateItems();
-    m_frame->GetCanvas()->Refresh();
+
+    // TOOLS_HOLDER::RefreshCanvas() is EDA_DRAW_FRAME::GetCanvas()->Refresh(), and it is
+    // answered by whatever owns the canvas rather than by a window.
+    m_toolMgr->GetToolHolder()->RefreshCanvas();
 
     return 0;
 }
@@ -243,7 +289,14 @@ SCH_ITEM* SCH_FIND_REPLACE_TOOL::nextMatch( SCH_SCREEN* aScreen, SCH_SHEET_PATH*
 
 int SCH_FIND_REPLACE_TOOL::FindNext( const TOOL_EVENT& aEvent )
 {
-    EDA_SEARCH_DATA& data            = m_frame->GetFindReplaceData();
+    EDA_SEARCH_DATA* searchTerms = searchData();
+
+    // The walk below is all document — screens, sheets and items — but what to look for
+    // is the dialog's, so there is nothing to search for without a window.
+    if( !searchTerms )
+        return 0;
+
+    EDA_SEARCH_DATA& data            = *searchTerms;
     bool             searchAllSheets = false;
     bool             selectedOnly    = false;
     bool             isReversed      = aEvent.IsAction( &ACTIONS::findPrevious );
@@ -255,9 +308,9 @@ int SCH_FIND_REPLACE_TOOL::FindNext( const TOOL_EVENT& aEvent )
     {
         const SCH_SEARCH_DATA& schSearchData = dynamic_cast<const SCH_SEARCH_DATA&>( data );
 
-        if( m_frame->GetFrameType() == FRAME_SCH )
+        if( SCH_SHEET_PATH* sheet = getCurrentSheet() )
         {
-            currentSheet = afterSheet = &static_cast<SCH_EDIT_FRAME*>( m_frame )->GetCurrentSheet();
+            currentSheet = afterSheet = sheet;
             searchAllSheets = !schSearchData.searchCurrentSheetOnly;
         }
 
@@ -272,7 +325,7 @@ int SCH_FIND_REPLACE_TOOL::FindNext( const TOOL_EVENT& aEvent )
     else if( data.findString.IsEmpty() )
         return FindAndReplace( ACTIONS::find.MakeEvent() );
 
-    if( m_afterItem && m_afterItemScreen != m_frame->GetScreen() )
+    if( m_afterItem && m_afterItemScreen != m_editor->GetScreen() )
     {
         m_afterItem = nullptr;
         m_afterItemScreen = nullptr;
@@ -303,13 +356,13 @@ int SCH_FIND_REPLACE_TOOL::FindNext( const TOOL_EVENT& aEvent )
         bool freshSession = ( m_afterItem == nullptr );
 
         if( afterSheet || !searchAllSheets || selectedOnly )
-            item = nextMatch( m_frame->GetScreen(), currentSheet, m_afterItem, data, isReversed );
+            item = nextMatch( m_editor->GetScreen(), currentSheet, m_afterItem, data, isReversed );
 
         if( !item && searchAllSheets && !selectedOnly )
         {
-            if( SCH_EDIT_FRAME* editFrame = dynamic_cast<SCH_EDIT_FRAME*>( m_frame ) )
+            if( SCHEMATIC* schematic = getSchematic() )
             {
-                SCH_SCREENS    screens( editFrame->Schematic().Root() );
+                SCH_SCREENS    screens( schematic->Root() );
                 SCH_SHEET_LIST paths;
 
                 screens.BuildClientSheetPathList();
@@ -339,8 +392,8 @@ int SCH_FIND_REPLACE_TOOL::FindNext( const TOOL_EVENT& aEvent )
 
                     if( item )
                     {
-                        if( editFrame->Schematic().CurrentSheet() != sheet )
-                            editFrame->GetToolManager()->RunAction<SCH_SHEET_PATH*>( SCH_ACTIONS::changeSheet, &sheet );
+                        if( schematic->CurrentSheet() != sheet )
+                            m_toolMgr->RunAction<SCH_SHEET_PATH*>( SCH_ACTIONS::changeSheet, &sheet );
 
                         break;
                     }
@@ -355,7 +408,7 @@ int SCH_FIND_REPLACE_TOOL::FindNext( const TOOL_EVENT& aEvent )
     if( item )
     {
         m_afterItem = item;
-        m_afterItemScreen = m_frame->GetScreen();
+        m_afterItemScreen = m_editor->GetScreen();
 
         if( !selectedOnly )
         {
@@ -374,10 +427,17 @@ int SCH_FIND_REPLACE_TOOL::FindNext( const TOOL_EVENT& aEvent )
             m_foundItemHighlighted = true;
         }
 
-        m_frame->FocusOnLocation( item->GetBoundingBox().GetCenter() );
-        m_frame->GetCanvas()->Refresh();
+        // A window: scrolling the view so the match is on screen is the frame's, and so
+        // is the keyboard focus it takes. Finding the item, selecting it and brightening
+        // it have all already happened.
+        if( m_frame )
+            m_frame->FocusOnLocation( item->GetBoundingBox().GetCenter() );
 
-        if( wrappedAround )
+        m_toolMgr->GetToolHolder()->RefreshCanvas();
+
+        // A window: the transient status text over the find dialog. Without one the
+        // caller learns that the search wrapped from what it got back instead.
+        if( wrappedAround && m_frame )
         {
             wxString msg;
 
@@ -395,7 +455,11 @@ int SCH_FIND_REPLACE_TOOL::FindNext( const TOOL_EVENT& aEvent )
     {
         m_afterItem = nullptr;
         m_afterItemScreen = nullptr;
-        m_frame->ShowFindReplaceStatus( _( "No matches found." ), 2000 );
+
+        // A window: the same transient status text, so without one the caller finds out
+        // there was no match from the selection being unchanged.
+        if( m_frame )
+            m_frame->ShowFindReplaceStatus( _( "No matches found." ), 2000 );
     }
 
     return 0;
@@ -403,8 +467,14 @@ int SCH_FIND_REPLACE_TOOL::FindNext( const TOOL_EVENT& aEvent )
 
 EDA_ITEM* SCH_FIND_REPLACE_TOOL::getCurrentMatch()
 {
-    EDA_SEARCH_DATA& data = m_frame->GetFindReplaceData();
-    SCH_SEARCH_DATA* schSearchData = dynamic_cast<SCH_SEARCH_DATA*>( &data );
+    EDA_SEARCH_DATA* searchTerms = searchData();
+
+    // Which of the two the current match is depends on a search option, so with no
+    // search data there is no way to say. Every caller has already declined by here.
+    if( !searchTerms )
+        return nullptr;
+
+    SCH_SEARCH_DATA* schSearchData = dynamic_cast<SCH_SEARCH_DATA*>( searchTerms );
     bool             selectedOnly = schSearchData ? schSearchData->searchSelectedOnly : false;
 
     return selectedOnly ? m_afterItem : m_selectionTool->GetSelection().Front();
@@ -412,35 +482,41 @@ EDA_ITEM* SCH_FIND_REPLACE_TOOL::getCurrentMatch()
 
 bool SCH_FIND_REPLACE_TOOL::HasMatch()
 {
-    EDA_SEARCH_DATA& data = m_frame->GetFindReplaceData();
-    EDA_ITEM*        match = getCurrentMatch();
-    SCH_SHEET_PATH*  sheetPath = nullptr;
+    EDA_SEARCH_DATA* searchTerms = searchData();
 
-    if( m_frame->GetFrameType() == FRAME_SCH )
-        sheetPath = &static_cast<SCH_EDIT_FRAME*>( m_frame )->GetCurrentSheet();
+    // Nothing to match against without the search terms.
+    if( !searchTerms )
+        return false;
 
-    return match && match->Matches( data, sheetPath );
+    EDA_ITEM*       match = getCurrentMatch();
+    SCH_SHEET_PATH* sheetPath = getCurrentSheet();
+
+    return match && match->Matches( *searchTerms, sheetPath );
 }
 
 
 int SCH_FIND_REPLACE_TOOL::ReplaceAndFindNext( const TOOL_EVENT& aEvent )
 {
-    EDA_SEARCH_DATA& data = m_frame->GetFindReplaceData();
-    EDA_ITEM*        item = getCurrentMatch();
-    SCH_SHEET_PATH*  currentSheet = nullptr;
+    EDA_SEARCH_DATA* searchTerms = searchData();
 
-    if( m_frame->GetFrameType() == FRAME_SCH )
-        currentSheet = &static_cast<SCH_EDIT_FRAME*>( m_frame )->GetCurrentSheet();
+    // The replacement text is part of the search data, so this declines for the same
+    // reason ::FindNext does: there is nowhere for a headless caller to put it yet.
+    if( !searchTerms )
+        return 0;
+
+    EDA_SEARCH_DATA& data = *searchTerms;
+    EDA_ITEM*        item = getCurrentMatch();
+    SCH_SHEET_PATH*  currentSheet = getCurrentSheet();
 
     if( data.findString.IsEmpty() )
         return FindAndReplace( ACTIONS::find.MakeEvent() );
 
     if( item && HasMatch() )
     {
-        SCH_COMMIT commit( m_frame );
+        SCH_COMMIT commit( m_toolMgr );
         SCH_ITEM* sch_item = static_cast<SCH_ITEM*>( item );
 
-        commit.Modify( sch_item, m_frame->GetScreen(), RECURSE_MODE::NO_RECURSE );
+        commit.Modify( sch_item, m_editor->GetScreen(), RECURSE_MODE::NO_RECURSE );
 
         if( item->Replace( data, currentSheet ) )
         {
@@ -449,10 +525,12 @@ int SCH_FIND_REPLACE_TOOL::ReplaceAndFindNext( const TOOL_EVENT& aEvent )
 
             commit.Push( wxS( "Find and Replace" ) );
         }
-        else if( SCH_EDIT_FRAME* editFrame = dynamic_cast<SCH_EDIT_FRAME*>( m_frame ) )
+        else
         {
-            // Nothing changed, but Modify() bumped the connectivity revision of the screen
-            editFrame->RecalculateConnections( nullptr, NO_CLEANUP );
+            // Nothing changed, but Modify() bumped the connectivity revision of the screen.
+            // A holder that is not editing a schematic does nothing here, as the symbol
+            // editor did before.
+            m_editor->RecalculateConnections( nullptr, NO_CLEANUP );
         }
 
         FindNext( ACTIONS::findNext.MakeEvent() );
@@ -464,7 +542,15 @@ int SCH_FIND_REPLACE_TOOL::ReplaceAndFindNext( const TOOL_EVENT& aEvent )
 
 int SCH_FIND_REPLACE_TOOL::ReplaceAll( const TOOL_EVENT& aEvent )
 {
-    EDA_SEARCH_DATA& data = m_frame->GetFindReplaceData();
+    EDA_SEARCH_DATA* searchTerms = searchData();
+
+    // The whole of the replace-all walk below is the document's, and the commit it
+    // pushes works on a holder that is not a frame. What it has no route to is *what*
+    // to replace with; see ::runsWithoutAFrame.
+    if( !searchTerms )
+        return 0;
+
+    EDA_SEARCH_DATA& data = *searchTerms;
     SCH_SHEET_PATH*  currentSheet = nullptr;
     bool             currentSheetOnly = true;
     bool             selectedOnly = false;
@@ -473,9 +559,9 @@ int SCH_FIND_REPLACE_TOOL::ReplaceAll( const TOOL_EVENT& aEvent )
     {
         const SCH_SEARCH_DATA& schSearchData = dynamic_cast<const SCH_SEARCH_DATA&>( data );
 
-        if( m_frame->GetFrameType() == FRAME_SCH )
+        if( SCH_SHEET_PATH* sheet = getCurrentSheet() )
         {
-            currentSheet = &static_cast<SCH_EDIT_FRAME*>( m_frame )->GetCurrentSheet();
+            currentSheet = sheet;
             currentSheetOnly = schSearchData.searchCurrentSheetOnly;
         }
 
@@ -485,7 +571,7 @@ int SCH_FIND_REPLACE_TOOL::ReplaceAll( const TOOL_EVENT& aEvent )
     {
     }
 
-    SCH_COMMIT commit( m_frame );
+    SCH_COMMIT commit( m_toolMgr );
 
     if( data.findString.IsEmpty() )
         return FindAndReplace( ACTIONS::find.MakeEvent() );
@@ -498,28 +584,28 @@ int SCH_FIND_REPLACE_TOOL::ReplaceAll( const TOOL_EVENT& aEvent )
                 commit.Modify( aItem, aSheet->LastScreen(), RECURSE_MODE::NO_RECURSE );
 
                 if( aItem->Replace( aData, aSheet ) )
-                    m_frame->UpdateItem( aItem, false, true );
+                    m_editor->UpdateItem( aItem, false, true );
             };
 
     if( currentSheetOnly || selectedOnly )
     {
         if( currentSheet )
         {
-            SCH_ITEM* item = nextMatch( m_frame->GetScreen(), currentSheet, nullptr, data, false );
+            SCH_ITEM* item = nextMatch( m_editor->GetScreen(), currentSheet, nullptr, data, false );
 
             while( item )
             {
                 if( !selectedOnly || item->IsSelected() )
                     doReplace( item, currentSheet, data );
 
-                item = nextMatch( m_frame->GetScreen(), currentSheet, item, data, false );
+                item = nextMatch( m_editor->GetScreen(), currentSheet, item, data, false );
             }
         }
     }
-    else if( SCH_EDIT_FRAME* schematicFrame = dynamic_cast<SCH_EDIT_FRAME*>( m_frame ) )
+    else if( SCHEMATIC* schematic = getSchematic() )
     {
-        SCH_SHEET_LIST allSheets = schematicFrame->Schematic().Hierarchy();
-        SCH_SCREENS    screens( schematicFrame->Schematic().Root() );
+        SCH_SHEET_LIST allSheets = schematic->Hierarchy();
+        SCH_SCREENS    screens( schematic->Root() );
 
         for( SCH_SCREEN* screen = screens.GetFirst(); screen; screen = screens.GetNext() )
         {
