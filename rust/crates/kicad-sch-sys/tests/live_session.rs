@@ -281,7 +281,11 @@ mod live {
             let mut report = String::new();
 
             for (entry, delta) in counts.iter().filter(|(_, delta)| **delta != 0) {
-                let side = if *delta > 0 { "only live  " } else { "only golden" };
+                let side = if *delta > 0 {
+                    "only live  "
+                } else {
+                    "only golden"
+                };
                 report.push_str(&format!("\n  {side} x{}  {entry}", delta.abs()));
             }
 
@@ -370,7 +374,11 @@ mod live {
             .cloned()
             .collect();
 
-        same_text("painted frame, less target and depth", &live_drawn, &golden_drawn);
+        same_text(
+            "painted frame, less target and depth",
+            &live_drawn,
+            &golden_drawn,
+        );
 
         // The state commands themselves: the fixture's must all still be there, and
         // the extras may only be the overlay brackets described above.
@@ -396,7 +404,10 @@ mod live {
             .filter(|entry| !live.contains(entry))
             .collect();
 
-        assert!(missing.is_empty(), "the live frame lost frame state: {missing:?}");
+        assert!(
+            missing.is_empty(),
+            "the live frame lost frame state: {missing:?}"
+        );
     }
 
     pub fn a_live_render_paints_the_recorded_fixture() {
@@ -864,7 +875,10 @@ mod live {
         );
 
         assert_eq!(
-            session.editor_state().expect("editor state").selection_count,
+            session
+                .editor_state()
+                .expect("editor state")
+                .selection_count,
             0
         );
 
@@ -919,7 +933,10 @@ mod live {
 
         assert!(redrawn, "clearing a selection should ask for a redraw");
         assert_eq!(
-            session.editor_state().expect("editor state").selection_count,
+            session
+                .editor_state()
+                .expect("editor state")
+                .selection_count,
             0,
             "a click on nothing clears the selection"
         );
@@ -1021,7 +1038,10 @@ mod live {
 
         let after_drag = session.editor_state().expect("editor state");
 
-        assert!(after_drag.modified, "the drag should have edited the document");
+        assert!(
+            after_drag.modified,
+            "the drag should have edited the document"
+        );
         assert_eq!(
             after_drag.undo_count, 1,
             "the drag should be one undoable command"
@@ -1073,7 +1093,9 @@ mod live {
         // are what we expected".
         let mut reopened = Session::open(&copy).expect("the saved copy loads");
 
-        reopened.set_viewport(&FIXTURE_VIEWPORT).expect("a viewport");
+        reopened
+            .set_viewport(&FIXTURE_VIEWPORT)
+            .expect("a viewport");
         reopened.zoom_to_fit().expect("framing the page");
 
         let stream = reopened.render_owned().expect("recording the saved file");
