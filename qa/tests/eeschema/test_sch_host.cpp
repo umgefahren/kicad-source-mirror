@@ -764,13 +764,16 @@ BOOST_AUTO_TEST_CASE( AnUnhandledActionIsReportedRatherThanAsserted )
 
     BOOST_REQUIRE( host.LoadFile( eeschemaFixture( wxT( "api_kitchen_sink.kicad_sch" ) ) ) );
 
-    // COMMON_TOOLS declines a non-frame holder, so nothing runs this one.
-    BOOST_CHECK( !host.RunActionByName( "common.Control.zoomFitScreen" ) );
+    // COMMON_CONTROL declines a non-frame holder, so nothing runs this one. It used to
+    // be zoomFitScreen, until Stage 4b step 2 gave COMMON_TOOLS a CANVAS_HOLDER to run
+    // on and that became a handled action -- which is asserted below instead.
+    BOOST_CHECK( !host.RunActionByName( "common.Control.showProjectManager" ) );
     BOOST_CHECK( !host.RunActionByName( "no.such.action" ) );
 
     // And the ones that do have a tool behind them now, so that "unhandled" above means
     // something other than "this never reports handled".
     BOOST_CHECK( host.RunActionByName( "common.InteractiveSelection" ) );
+    BOOST_CHECK( host.RunActionByName( "common.Control.zoomFitScreen" ) );
 }
 
 
@@ -2178,15 +2181,19 @@ BOOST_AUTO_TEST_CASE( AnActionNoToolHandlesIsReportedRatherThanAnError )
 
     // A *registered* action with no tool behind it, which is the case that matters:
     // every action in the process is registered, so a made-up name would prove
-    // nothing about whether "handled" means handled. COMMON_TOOLS declines a holder that
-    // is not an EDA_DRAW_FRAME, so this is one nothing runs.
-    BOOST_CHECK_EQUAL( ksch_session_run_action( session, "common.Control.zoomFitScreen", &flags ),
+    // nothing about whether "handled" means handled. COMMON_CONTROL declines a holder
+    // that is not an EDA_DRAW_FRAME -- everything it opens is a window -- so this is one
+    // nothing runs. It used to be zoomFitScreen, which Stage 4b step 2 made handled.
+    BOOST_CHECK_EQUAL( ksch_session_run_action( session, "common.Control.showProjectManager",
+                                                &flags ),
                        KSCH_OK );
     BOOST_CHECK( ( flags & KSCH_INPUT_HANDLED ) == 0u );
 
-    // And two that do have a tool behind them, so that "unhandled" above means something
-    // other than "this never reports handled".
+    // And three that do have a tool behind them, so that "unhandled" above means something
+    // other than "this never reports handled". The zoom is step 2's: COMMON_TOOLS runs
+    // here now, so the view can be moved from the tool framework over the ABI.
     for( const char* name : { "common.InteractiveSelection",
+                              "common.Control.zoomFitScreen",
                               "eeschema.InteractiveDrawingLineWireBus.drawWires" } )
     {
         BOOST_CHECK_EQUAL( ksch_session_run_action( session, name, &flags ), KSCH_OK );

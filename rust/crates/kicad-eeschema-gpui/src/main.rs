@@ -235,7 +235,7 @@ impl LiveDocument for SchematicSession {
             let (center_x, center_y, scale) = if moved_here {
                 (viewport.center.x, viewport.center.y, viewport.scale)
             } else {
-                let granted = self.granted.expect( "resized implies a previous grant" );
+                let granted = self.granted.expect("resized implies a previous grant");
                 (granted.center_x, granted.center_y, granted.scale)
             };
 
