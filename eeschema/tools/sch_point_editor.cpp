@@ -42,6 +42,7 @@
 #include <sch_sheet_pin.h>
 #include <symbol_editor/symbol_editor_settings.h>
 #include <sch_no_connect.h>
+#include <schematic_holder.h>
 
 
 static const std::vector<KICAD_T> pointEditorTypes = { SCH_SHAPE_T,
@@ -450,7 +451,8 @@ private:
 class RECTANGLE_POINT_EDIT_BEHAVIOR : public POINT_EDIT_BEHAVIOR
 {
 public:
-    RECTANGLE_POINT_EDIT_BEHAVIOR( SCH_SHAPE& aRect, EDA_DRAW_FRAME& aFrame ) :
+    /// @param aFrame the editing frame, or null when the editing context is not a window.
+    RECTANGLE_POINT_EDIT_BEHAVIOR( SCH_SHAPE& aRect, EDA_DRAW_FRAME* aFrame ) :
             m_rect( aRect ),
             m_frame( aFrame )
     {
@@ -709,11 +711,12 @@ private:
     {
         wxCHECK( aOldEdges.size() == aMoveVecs.size(), /* void */ );
 
-        // This only make sense in the symbol editor
-        if( !m_frame.IsType( FRAME_SCH_SYMBOL_EDITOR ) )
+        // This only make sense in the symbol editor, which is always a window: a null frame
+        // is an editing context that is not one, so it cannot be the symbol editor.
+        if( !m_frame || !m_frame->IsType( FRAME_SCH_SYMBOL_EDITOR ) )
             return;
 
-        SYMBOL_EDIT_FRAME& editor = static_cast<SYMBOL_EDIT_FRAME&>( m_frame );
+        SYMBOL_EDIT_FRAME& editor = static_cast<SYMBOL_EDIT_FRAME&>( *m_frame );
 
         // And only if the setting is enabled
         if( !editor.GetSettings()->m_dragPinsAlongWithEdges )
@@ -771,7 +774,9 @@ private:
 
 private:
     SCH_SHAPE&      m_rect;
-    EDA_DRAW_FRAME& m_frame;
+
+    /// The editing frame, or **null** when the editing context is not one.
+    EDA_DRAW_FRAME* m_frame;
 };
 
 
@@ -1006,10 +1011,12 @@ void SCH_POINT_EDITOR::makePointsAndBehavior( EDA_ITEM* aItem )
             // persisted value must be synced from settings before the behavior is built.
             if( m_isSymbolEditor )
             {
-                if( SYMBOL_EDITOR_SETTINGS* cfg = m_frame->libeditconfig() )
+                // libeditconfig() is the frame's, and the symbol editor is always one; a
+                // holder that is not keeps whatever arc mode it was last given.
+                if( SYMBOL_EDITOR_SETTINGS* cfg = m_frame ? m_frame->libeditconfig() : nullptr )
                     m_arcEditMode = cfg->m_ArcEditMode;
             }
-            else if( EESCHEMA_SETTINGS* cfg = m_frame->eeconfig() )
+            else if( EESCHEMA_SETTINGS* cfg = m_editor->eeconfig() )
             {
                 m_arcEditMode = cfg->m_Drawing.arc_edit_mode;
             }
@@ -1019,7 +1026,7 @@ void SCH_POINT_EDITOR::makePointsAndBehavior( EDA_ITEM* aItem )
             break;
         case SHAPE_T::CIRCLE: m_editBehavior = std::make_unique<EDA_CIRCLE_POINT_EDIT_BEHAVIOR>( *shape ); break;
         case SHAPE_T::RECTANGLE:
-            m_editBehavior = std::make_unique<RECTANGLE_POINT_EDIT_BEHAVIOR>( *shape, *m_frame );
+            m_editBehavior = std::make_unique<RECTANGLE_POINT_EDIT_BEHAVIOR>( *shape, m_frame );
             break;
         case SHAPE_T::POLY: m_editBehavior = std::make_unique<EDA_POLYGON_POINT_EDIT_BEHAVIOR>( *shape ); break;
         case SHAPE_T::BEZIER:
@@ -1056,13 +1063,13 @@ void SCH_POINT_EDITOR::makePointsAndBehavior( EDA_ITEM* aItem )
     case SCH_TABLECELL_T:
     {
         SCH_TABLECELL* cell = static_cast<SCH_TABLECELL*>( aItem );
-        m_editBehavior = std::make_unique<SCH_TABLECELL_POINT_EDIT_BEHAVIOR>( *cell, *m_frame->GetScreen() );
+        m_editBehavior = std::make_unique<SCH_TABLECELL_POINT_EDIT_BEHAVIOR>( *cell, *m_editor->GetScreen() );
         break;
     }
     case SCH_SHEET_T:
     {
         SCH_SHEET& sheet = static_cast<SCH_SHEET&>( *aItem );
-        m_editBehavior = std::make_unique<SHEET_POINT_EDIT_BEHAVIOR>( sheet, *m_frame->GetScreen() );
+        m_editBehavior = std::make_unique<SHEET_POINT_EDIT_BEHAVIOR>( sheet, *m_editor->GetScreen() );
         break;
     }
     case SCH_BITMAP_T:
@@ -1074,7 +1081,7 @@ void SCH_POINT_EDITOR::makePointsAndBehavior( EDA_ITEM* aItem )
     case SCH_LINE_T:
     {
         SCH_LINE& line = static_cast<SCH_LINE&>( *aItem );
-        m_editBehavior = std::make_unique<LINE_POINT_EDIT_BEHAVIOR>( line, *m_frame->GetScreen() );
+        m_editBehavior = std::make_unique<LINE_POINT_EDIT_BEHAVIOR>( line, *m_editor->GetScreen() );
         break;
     }
     default:
@@ -1164,13 +1171,19 @@ bool SCH_POINT_EDITOR::Init()
                && static_cast<const SCH_SHAPE*>( item )->GetShape() == SHAPE_T::ARC;
     };
 
-    auto& menu = m_selectionTool->GetToolMenu().GetMenu();
+    // TOOL_INTERACTIVE only builds a TOOL_MENU — and the wxMenu under it — when Pgm().IsGUI(),
+    // so a headless holder has none to add to. Only the right-click presentation is lost; the
+    // actions themselves still run.
+    if( m_selectionTool && m_selectionTool->HasToolMenu() )
+    {
+        auto& menu = m_selectionTool->GetToolMenu().GetMenu();
 
-    // clang-format off
-    menu.AddItem( SCH_ACTIONS::pointEditorAddCorner,     S_C::Count( 1 ) && addCornerCondition );
-    menu.AddItem( SCH_ACTIONS::pointEditorRemoveCorner,  S_C::Count( 1 ) && removeCornerCondition );
-    menu.AddItem( ACTIONS::cycleArcEditMode,             S_C::Count( 1 ) && arcIsEdited );
-    // clang-format on
+        // clang-format off
+        menu.AddItem( SCH_ACTIONS::pointEditorAddCorner,     S_C::Count( 1 ) && addCornerCondition );
+        menu.AddItem( SCH_ACTIONS::pointEditorRemoveCorner,  S_C::Count( 1 ) && removeCornerCondition );
+        menu.AddItem( ACTIONS::cycleArcEditMode,             S_C::Count( 1 ) && arcIsEdited );
+        // clang-format on
+    }
 
     return true;
 }
@@ -1222,9 +1235,12 @@ int SCH_POINT_EDITOR::Main( const TOOL_EVENT& aEvent )
 
     if( m_isSymbolEditor )
     {
-        SYMBOL_EDIT_FRAME* editor = getEditFrame<SYMBOL_EDIT_FRAME>();
+        // Ask for the symbol editor rather than static_cast'ing a holder that may not be a
+        // frame at all. It always is one when there is a symbol being edited, so no editor
+        // means there is nothing here to edit the points of.
+        SYMBOL_EDIT_FRAME* editor = dynamic_cast<SYMBOL_EDIT_FRAME*>( m_frame );
 
-        if( !editor->IsSymbolGraphicallyEditable() )
+        if( !editor || !editor->IsSymbolGraphicallyEditable() )
             return 0;
     }
 
@@ -1288,7 +1304,7 @@ int SCH_POINT_EDITOR::Main( const TOOL_EVENT& aEvent )
                 // not pop up mid-drag.
                 m_selectionTool->CancelDisambiguation();
 
-                commit.Modify( m_editPoints->GetParent(), m_frame->GetScreen() );
+                commit.Modify( m_editPoints->GetParent(), m_editor->GetScreen() );
 
                 if( SCH_SHAPE* shape = dynamic_cast<SCH_SHAPE*>( item ) )
                 {
@@ -1543,7 +1559,10 @@ int SCH_POINT_EDITOR::Main( const TOOL_EVENT& aEvent )
 
         m_editPoints.reset();
         m_angleItem.reset();
-        m_frame->GetCanvas()->Refresh();
+
+        // EDA_DRAW_FRAME::RefreshCanvas() is GetCanvas()->Refresh(); asking TOOLS_HOLDER lets
+        // a holder without a canvas post nothing instead.
+        m_toolMgr->GetToolHolder()->RefreshCanvas();
     }
 
     delete grid;
@@ -1568,7 +1587,10 @@ void SCH_POINT_EDITOR::updateParentItem( bool aSnapToGrid, SCH_COMMIT& aCommit )
     for( EDA_ITEM* updatedItem : updatedItems )
         updateItem( updatedItem, true );
 
-    m_frame->SetMsgPanel( item );
+    // A window: the message panel is part of the frame's status area, so without one there
+    // is nowhere to describe the item being dragged. The edit itself still happens.
+    if( m_frame )
+        m_frame->SetMsgPanel( item );
 }
 
 
@@ -1581,11 +1603,15 @@ void SCH_POINT_EDITOR::updatePoints()
     // longer present on the canvas.
     if( m_isSymbolEditor )
     {
-        SYMBOL_EDIT_FRAME* editor = static_cast<SYMBOL_EDIT_FRAME*>( m_frame );
+        // Which unit and body style are on the canvas is the symbol editor's, and that editor
+        // is always a frame; a holder that is not one shows no alternate body to switch away
+        // from, so the points cannot have gone stale this way.
+        SYMBOL_EDIT_FRAME* editor = dynamic_cast<SYMBOL_EDIT_FRAME*>( m_frame );
         SCH_ITEM*          item = dynamic_cast<SCH_ITEM*>( m_editPoints->GetParent() );
 
-        if( ( item && item->GetUnit() != 0 && item->GetUnit() != editor->GetUnit() )
-                || ( item && item->GetBodyStyle() != 0 && item->GetBodyStyle() != editor->GetBodyStyle() ) )
+        if( editor && item
+                && ( ( item->GetUnit() != 0 && item->GetUnit() != editor->GetUnit() )
+                     || ( item->GetBodyStyle() != 0 && item->GetBodyStyle() != editor->GetBodyStyle() ) ) )
         {
             getView()->Remove( m_editPoints.get() );
             getView()->Remove( m_angleItem.get() );
@@ -1607,13 +1633,13 @@ void SCH_POINT_EDITOR::setEditedPoint( EDIT_POINT* aPoint )
 
     if( aPoint )
     {
-        m_frame->GetCanvas()->SetCurrentCursor( KICURSOR::ARROW );
+        m_editor->SetCurrentCursor( KICURSOR::ARROW );
         controls->ForceCursorPosition( true, aPoint->GetPosition() );
         controls->ShowCursor( true );
     }
     else
     {
-        if( m_frame->ToolStackIsEmpty() )
+        if( m_toolMgr->GetToolHolder()->ToolStackIsEmpty() )
             controls->ShowCursor( false );
 
         controls->ForceCursorPosition( false );
@@ -1676,7 +1702,7 @@ int SCH_POINT_EDITOR::addCorner( const TOOL_EVENT& aEvent )
     SHAPE_LINE_CHAIN& poly = shape->GetPolyShape().Outline( 0 );
     SCH_COMMIT        commit( m_toolMgr );
 
-    commit.Modify( shape, m_frame->GetScreen() );
+    commit.Modify( shape, m_editor->GetScreen() );
 
     VECTOR2I cursor = getViewControls()->GetCursorPosition( !aEvent.DisableGridSnapping() );
     int      currentMinDistance = INT_MAX;
@@ -1722,7 +1748,7 @@ int SCH_POINT_EDITOR::removeCorner( const TOOL_EVENT& aEvent )
     if( m_editPoints->GetParent()->Type() == SCH_RULE_AREA_T && poly.GetPointCount() <= 3 )
         return 0;
 
-    commit.Modify( shape, m_frame->GetScreen() );
+    commit.Modify( shape, m_editor->GetScreen() );
 
     int idx = getEditedPointIndex();
     int last = (int) poly.GetPointCount() - 1;
@@ -1752,9 +1778,12 @@ int SCH_POINT_EDITOR::removeCorner( const TOOL_EVENT& aEvent )
 int SCH_POINT_EDITOR::changeArcEditMode( const TOOL_EVENT& aEvent )
 {
     // The Symbol Editor uses SYMBOL_EDITOR_SETTINGS, not EESCHEMA_SETTINGS, so eeconfig()
-    // returns nullptr there. Dispatch on frame type to read/write the right settings store.
-    EESCHEMA_SETTINGS*      schCfg = m_isSymbolEditor ? nullptr : m_frame->eeconfig();
-    SYMBOL_EDITOR_SETTINGS* symCfg = m_isSymbolEditor ? m_frame->libeditconfig() : nullptr;
+    // returns nullptr there. Dispatch on editor type to read/write the right settings store.
+    // libeditconfig() is the frame's, and the symbol editor is always one, so a holder that
+    // is not a window has neither store and the mode stays where it is.
+    EESCHEMA_SETTINGS*      schCfg = m_isSymbolEditor ? nullptr : m_editor->eeconfig();
+    SYMBOL_EDITOR_SETTINGS* symCfg = ( m_isSymbolEditor && m_frame ) ? m_frame->libeditconfig()
+                                                                     : nullptr;
 
     if( aEvent.Matches( ACTIONS::cycleArcEditMode.MakeEvent() ) )
     {

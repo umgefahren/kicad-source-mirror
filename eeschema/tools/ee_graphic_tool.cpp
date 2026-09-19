@@ -35,6 +35,7 @@
 #include <sch_shape.h>
 #include <sch_textbox.h>
 #include <schematic.h>
+#include <schematic_holder.h>
 #include <symbol_edit_frame.h>
 #include <symbol_editor/symbol_editor_settings.h>
 #include <tool/arc_draw_behavior.h>
@@ -85,13 +86,19 @@ bool EE_GRAPHIC_TOOL::Init()
                 return m_mode == MODE::ARC || m_mode == MODE::BEZIER || m_mode == MODE::ELLIPSE_ARC;
             };
 
-    CONDITIONAL_MENU& ctxMenu = m_menu->GetMenu();
+    // TOOL_INTERACTIVE only builds a TOOL_MENU when Pgm().IsGUI(), so a headless holder
+    // has none to add to.  Only the right-click presentation is lost; the actions
+    // themselves still run from their hotkeys.
+    if( m_menu )
+    {
+        CONDITIONAL_MENU& ctxMenu = m_menu->GetMenu();
 
-    // clang-format off
-    ctxMenu.AddItem( ACTIONS::arcPosture,          inDrawingArc,      200 );
-    ctxMenu.AddItem( ACTIONS::deleteLastPoint,     inManagedShape,    200 );
-    ctxMenu.AddItem( ACTIONS::finishInteractive,   inManagedShape,    200 );
-    // clang-format on
+        // clang-format off
+        ctxMenu.AddItem( ACTIONS::arcPosture,          inDrawingArc,      200 );
+        ctxMenu.AddItem( ACTIONS::deleteLastPoint,     inManagedShape,    200 );
+        ctxMenu.AddItem( ACTIONS::finishInteractive,   inManagedShape,    200 );
+        // clang-format on
+    }
 
     return true;
 }
@@ -103,11 +110,39 @@ SCH_LAYER_ID EE_GRAPHIC_TOOL::getShapeLayer() const
 }
 
 
+SYMBOL_EDIT_FRAME* EE_GRAPHIC_TOOL::symbolEditFrame() const
+{
+    // A dynamic_cast of the editor rather than a frame() static_cast: it is well defined
+    // on a holder that is not a frame, and answers non-null exactly when
+    // IsSymbolEditor() does, because the symbol editor is a frame.
+    return dynamic_cast<SYMBOL_EDIT_FRAME*>( m_editor );
+}
+
+
+EDA_UNITS EE_GRAPHIC_TOOL::getUserUnits() const
+{
+    // A window's setting.  Only the assistant overlay's distance labels read it, so
+    // without a frame they are written in raw internal units instead of the user's
+    // choice; the geometry is the same either way.
+    return m_frame ? m_frame->GetUserUnits() : EDA_UNITS::UNSCALED;
+}
+
+
+void EE_GRAPHIC_TOOL::setMsgPanel( EDA_ITEM* aItem ) const
+{
+    // The message panel is part of the frame's window: without one there is nowhere to
+    // show the shape's dimensions.  The drawing itself is unaffected.
+    if( m_frame )
+        m_frame->SetMsgPanel( aItem );
+}
+
+
 int EE_GRAPHIC_TOOL::getDefaultTextSize() const
 {
     if( IsSymbolEditor() )
     {
-        const SYMBOL_EDITOR_SETTINGS* cfg = frame<SYMBOL_EDIT_FRAME>()->libeditconfig();
+        SYMBOL_EDIT_FRAME*            symFrame = symbolEditFrame();
+        const SYMBOL_EDITOR_SETTINGS* cfg = symFrame ? symFrame->libeditconfig() : nullptr;
 
         return schIUScale.MilsToIU( cfg ? cfg->m_Defaults.text_size : DEFAULT_TEXT_SIZE );
     }
@@ -121,7 +156,10 @@ void EE_GRAPHIC_TOOL::applySymbolEditorFlags( SCH_ITEM& aItem ) const
     if( !IsSymbolEditor() )
         return;
 
-    SYMBOL_EDIT_FRAME* symFrame = frame<SYMBOL_EDIT_FRAME>();
+    SYMBOL_EDIT_FRAME* symFrame = symbolEditFrame();
+
+    if( !symFrame )
+        return;
 
     if( symFrame->GetDrawSpecificUnit() )
         aItem.SetUnit( symFrame->GetUnit() );
@@ -135,19 +173,18 @@ void EE_GRAPHIC_TOOL::commitItem( SCH_COMMIT& aCommit, std::unique_ptr<SCH_ITEM>
 {
     aItem->ClearEditFlags();
 
-    if( IsSymbolEditor() )
+    if( SYMBOL_EDIT_FRAME* symFrame = symbolEditFrame() )
     {
-        SYMBOL_EDIT_FRAME* symFrame = frame<SYMBOL_EDIT_FRAME>();
-        LIB_SYMBOL*        symbol = symFrame->GetCurSymbol();
+        LIB_SYMBOL* symbol = symFrame->GetCurSymbol();
 
-        aCommit.Modify( symbol, frame()->GetScreen() );
+        aCommit.Modify( symbol, m_editor->GetScreen() );
         symbol->AddDrawItem( aItem.release() );
         aCommit.Push( aDescription );
         symFrame->RebuildView();
     }
     else
     {
-        aCommit.Add( aItem.release(), frame()->GetScreen() );
+        aCommit.Add( aItem.release(), m_editor->GetScreen() );
         aCommit.Push( aDescription );
     }
 }
@@ -168,6 +205,11 @@ int EE_GRAPHIC_TOOL::DrawShape( const TOOL_EVENT& aEvent )
     if( m_inDrawingTool )
         return 0;
 
+    // A text box is finished in the text properties dialog — that is where its text is
+    // typed.  Without a window to parent it there is nothing this action can do.
+    if( isTextBox && !m_frame )
+        return 0;
+
     REENTRANCY_GUARD guard( &m_inDrawingTool );
 
     KIGFX::VIEW_CONTROLS* controls = getViewControls();
@@ -183,12 +225,12 @@ int EE_GRAPHIC_TOOL::DrawShape( const TOOL_EVENT& aEvent )
     m_toolMgr->RunAction( ACTIONS::selectionClear );
 
     TOOL_EVENT         originalEvent = aEvent;
-    SCOPED_TOOL_PUSHER raii( frame(), originalEvent );
+    SCOPED_TOOL_PUSHER raii( m_toolMgr->GetToolHolder(), originalEvent );
 
     auto setCursor =
             [&]()
             {
-                frame()->GetCanvas()->SetCurrentCursor( KICURSOR::PENCIL );
+                m_editor->SetCurrentCursor( KICURSOR::PENCIL );
             };
 
     auto cleanup =
@@ -253,7 +295,7 @@ int EE_GRAPHIC_TOOL::DrawShape( const TOOL_EVENT& aEvent )
             if( evt->IsMoveTool() )
             {
                 // Make sure we come back after the move tool runs
-                frame()->PushTool( originalEvent );
+                m_toolMgr->GetToolHolder()->PushTool( originalEvent );
             }
 
             break;
@@ -326,7 +368,8 @@ int EE_GRAPHIC_TOOL::DrawShape( const TOOL_EVENT& aEvent )
                 if( isTextBox )
                 {
                     SCH_TEXTBOX*           textbox = static_cast<SCH_TEXTBOX*>( item.get() );
-                    DIALOG_TEXT_PROPERTIES dlg( frame(), textbox );
+                    // m_frame is non-null here: a text box without one declined above.
+                    DIALOG_TEXT_PROPERTIES dlg( m_frame, textbox );
 
                     getViewControls()->SetAutoPan( false );
                     getViewControls()->CaptureCursor( false );
@@ -386,7 +429,7 @@ int EE_GRAPHIC_TOOL::DrawShape( const TOOL_EVENT& aEvent )
             m_view->ClearPreview();
             m_view->AddToPreview( item->Clone() );
 
-            frame()->SetMsgPanel( item.get() );
+            setMsgPanel( item.get() );
         }
         else if( evt->IsDblClick( BUT_LEFT ) && !item )
         {
@@ -398,7 +441,8 @@ int EE_GRAPHIC_TOOL::DrawShape( const TOOL_EVENT& aEvent )
             if( !item )
                 m_toolMgr->VetoContextMenuMouseWarp();
 
-            m_menu->ShowContextMenu( m_selectionTool->GetSelection() );
+            if( m_menu )
+                m_menu->ShowContextMenu( m_selectionTool->GetSelection() );
         }
         else if( item && evt->IsAction( &ACTIONS::redo ) )
         {
@@ -416,7 +460,7 @@ int EE_GRAPHIC_TOOL::DrawShape( const TOOL_EVENT& aEvent )
 
     getViewControls()->SetAutoPan( false );
     getViewControls()->CaptureCursor( false );
-    frame()->GetCanvas()->SetCurrentCursor( KICURSOR::ARROW );
+    m_editor->SetCurrentCursor( KICURSOR::ARROW );
     return 0;
 }
 
@@ -456,13 +500,13 @@ int EE_GRAPHIC_TOOL::DrawArc( const TOOL_EVENT& aEvent )
     arc->SetFlags( IS_NEW );
 
     TOOL_EVENT         originalEvent = aEvent;
-    SCOPED_TOOL_PUSHER raii( m_frame, originalEvent );
+    SCOPED_TOOL_PUSHER raii( m_toolMgr->GetToolHolder(), originalEvent );
     Activate();
 
     if( aEvent.HasPosition() )
         initialPts.push_back( aEvent.Position() );
 
-    ARC_DRAW_BEHAVIOR arcBehavior( schIUScale, frame()->GetUserUnits() );
+    ARC_DRAW_BEHAVIOR arcBehavior( schIUScale, getUserUnits() );
 
     SHAPE_DRAW_RESULT result = SHAPE_DRAW_RESULT::NEXT_SHAPE;
 
@@ -526,13 +570,13 @@ int EE_GRAPHIC_TOOL::DrawEllipseArc( const TOOL_EVENT& aEvent )
     std::unique_ptr<SCH_SHAPE> arc = makeNewEllipseArc();
 
     TOOL_EVENT         originalEvent = aEvent;          // This can change out from under us when the event loop runs
-    SCOPED_TOOL_PUSHER raii( m_frame, originalEvent );
+    SCOPED_TOOL_PUSHER raii( m_toolMgr->GetToolHolder(), originalEvent );
     Activate();
 
     if( aEvent.HasPosition() )
         initialPts.push_back( aEvent.Position() );
 
-    ELLIPSE_ARC_DRAW_BEHAVIOR ellipseBehavior( schIUScale, frame()->GetUserUnits() );
+    ELLIPSE_ARC_DRAW_BEHAVIOR ellipseBehavior( schIUScale, getUserUnits() );
 
     SHAPE_DRAW_RESULT result = SHAPE_DRAW_RESULT::NEXT_SHAPE;
 
@@ -596,13 +640,13 @@ int EE_GRAPHIC_TOOL::DrawBezier( const TOOL_EVENT& aEvent )
     std::unique_ptr<SCH_SHAPE> bezier = makeNewBezier();
 
     TOOL_EVENT         originalEvent = aEvent;          // This can change out from under us when the event loop runs
-    SCOPED_TOOL_PUSHER raii( m_frame, originalEvent );
+    SCOPED_TOOL_PUSHER raii( m_toolMgr->GetToolHolder(), originalEvent );
     Activate();
 
     if( aEvent.HasPosition() )
         initialPts.push_back( aEvent.Position() );
 
-    BEZIER_DRAW_BEHAVIOR bezierBehavior( schIUScale, frame()->GetUserUnits() );
+    BEZIER_DRAW_BEHAVIOR bezierBehavior( schIUScale, getUserUnits() );
 
     SHAPE_DRAW_RESULT result = SHAPE_DRAW_RESULT::NEXT_SHAPE;
 
@@ -668,7 +712,7 @@ SHAPE_DRAW_RESULT EE_GRAPHIC_TOOL::drawManagedShape( const TOOL_EVENT& aTool,
     auto setCursor =
             [&]()
             {
-                frame()->GetCanvas()->SetCurrentCursor( KICURSOR::PENCIL );
+                m_editor->SetCurrentCursor( KICURSOR::PENCIL );
             };
 
     auto cleanup =
@@ -702,7 +746,7 @@ SHAPE_DRAW_RESULT EE_GRAPHIC_TOOL::drawManagedShape( const TOOL_EVENT& aTool,
         controls->CaptureCursor( true );
 
         preview.Add( aShape.get() );
-        frame()->SetMsgPanel( aShape.get() );
+        setMsgPanel( aShape.get() );
 
         started = true;
     }
@@ -744,7 +788,7 @@ SHAPE_DRAW_RESULT EE_GRAPHIC_TOOL::drawManagedShape( const TOOL_EVENT& aTool,
             if( evt->IsMoveTool() )
             {
                 // Make sure we come back after the move tool runs
-                m_frame->PushTool( aTool );
+                m_toolMgr->GetToolHolder()->PushTool( aTool );
             }
 
             cleanup();
@@ -761,7 +805,7 @@ SHAPE_DRAW_RESULT EE_GRAPHIC_TOOL::drawManagedShape( const TOOL_EVENT& aTool,
                 controls->CaptureCursor( true );
 
                 preview.Add( aShape.get() );
-                frame()->SetMsgPanel( aShape.get() );
+                setMsgPanel( aShape.get() );
                 started = true;
             }
 
@@ -796,11 +840,12 @@ SHAPE_DRAW_RESULT EE_GRAPHIC_TOOL::drawManagedShape( const TOOL_EVENT& aTool,
             if( !aShape )
                 m_toolMgr->VetoContextMenuMouseWarp();
 
-            m_menu->ShowContextMenu( m_selectionTool->GetSelection() );
+            if( m_menu )
+                m_menu->ShowContextMenu( m_selectionTool->GetSelection() );
         }
         else if( evt->IsAction( &ACTIONS::updateUnits ) )
         {
-            aBehavior.SetUnits( frame()->GetUserUnits() );
+            aBehavior.SetUnits( getUserUnits() );
             m_view->Update( &aBehavior.GetAssistant() );
             evt->SetPassEvent();
         }
@@ -825,9 +870,9 @@ SHAPE_DRAW_RESULT EE_GRAPHIC_TOOL::drawManagedShape( const TOOL_EVENT& aTool,
             aBehavior.ClearGeometryChanged();
 
             if( started )
-                frame()->SetMsgPanel( aShape.get() );
+                setMsgPanel( aShape.get() );
             else
-                frame()->SetMsgPanel( parent );
+                setMsgPanel( parent );
         }
     }
 
@@ -836,12 +881,12 @@ SHAPE_DRAW_RESULT EE_GRAPHIC_TOOL::drawManagedShape( const TOOL_EVENT& aTool,
     m_view->Remove( &preview );
 
     if( !started )
-        frame()->SetMsgPanel( parent );
+        setMsgPanel( parent );
 
     controls->SetAutoPan( false );
     controls->CaptureCursor( false );
     controls->ForceCursorPosition( false );
-    frame()->GetCanvas()->SetCurrentCursor( KICURSOR::ARROW );
+    m_editor->SetCurrentCursor( KICURSOR::ARROW );
 
     if( cancelled )
     {
@@ -863,17 +908,20 @@ int EE_GRAPHIC_TOOL::ImportGraphics( const TOOL_EVENT& aEvent )
     if( !parent )
         return 0;
 
-    if( IsSymbolEditor() )
+    if( SYMBOL_EDIT_FRAME* symFrame = symbolEditFrame() )
     {
-        SYMBOL_EDIT_FRAME* symFrame = frame<SYMBOL_EDIT_FRAME>();
-
         if( !symFrame->IsSymbolGraphicallyEditable() )
             return 0;
     }
 
+    // This action is the import dialog: what to import, and how, is chosen in it.
+    // Without a window to parent it there is nothing it can do.
+    if( !m_frame )
+        return 0;
+
     REENTRANCY_GUARD guard( &m_inDrawingTool );
 
-    DIALOG_IMPORT_GFX_SCH dlg( frame() );
+    DIALOG_IMPORT_GFX_SCH dlg( m_frame );
 
     // Set filename on drag-and-drop
     if( aEvent.HasParameter() )
@@ -907,7 +955,7 @@ int EE_GRAPHIC_TOOL::ImportGraphics( const TOOL_EVENT& aEvent )
                 if( IsSymbolEditor() )
                 {
                     LIB_SYMBOL* symbol = static_cast<LIB_SYMBOL*>( parent );
-                    commit.Modify( symbol, frame()->GetScreen() );
+                    commit.Modify( symbol, m_editor->GetScreen() );
 
                     for( SCH_ITEM* item : aItems )
                     {
@@ -918,13 +966,13 @@ int EE_GRAPHIC_TOOL::ImportGraphics( const TOOL_EVENT& aEvent )
                 else
                 {
                     for( SCH_ITEM* item : aItems )
-                        commit.Add( item, frame()->GetScreen() );
+                        commit.Add( item, m_editor->GetScreen() );
                 }
 
                 commit.Push( _( "Import Graphic" ) );
 
-                if( IsSymbolEditor() )
-                    frame<SYMBOL_EDIT_FRAME>()->RebuildView();
+                if( SYMBOL_EDIT_FRAME* symFrame = symbolEditFrame() )
+                    symFrame->RebuildView();
             };
 
     for( std::unique_ptr<EDA_ITEM>& ptr : list )
@@ -952,12 +1000,12 @@ int EE_GRAPHIC_TOOL::ImportGraphics( const TOOL_EVENT& aEvent )
     EDA_ITEMS selItems( selectedItems.begin(), selectedItems.end() );
     m_toolMgr->RunAction<EDA_ITEMS*>( ACTIONS::selectItems, &selItems );
 
-    SCOPED_TOOL_PUSHER raii( frame(), aEvent );
+    SCOPED_TOOL_PUSHER raii( m_toolMgr->GetToolHolder(), aEvent );
 
     auto setCursor =
             [&]()
             {
-                frame()->GetCanvas()->SetCurrentCursor( KICURSOR::MOVING );
+                m_editor->SetCurrentCursor( KICURSOR::MOVING );
             };
 
     Activate();
@@ -1009,7 +1057,8 @@ int EE_GRAPHIC_TOOL::ImportGraphics( const TOOL_EVENT& aEvent )
         }
         else if( evt->IsClick( BUT_RIGHT ) )
         {
-            m_menu->ShowContextMenu( m_selectionTool->GetSelection() );
+            if( m_menu )
+                m_menu->ShowContextMenu( m_selectionTool->GetSelection() );
         }
         else if( evt->IsClick( BUT_LEFT ) || evt->IsDblClick( BUT_LEFT )
                 || evt->IsAction( &ACTIONS::cursorClick ) || evt->IsAction( &ACTIONS::cursorDblClick ) )
@@ -1026,7 +1075,7 @@ int EE_GRAPHIC_TOOL::ImportGraphics( const TOOL_EVENT& aEvent )
     preview.Clear();
     m_view->Remove( &preview );
 
-    frame()->GetCanvas()->SetCurrentCursor( KICURSOR::ARROW );
+    m_editor->SetCurrentCursor( KICURSOR::ARROW );
     controls->ForceCursorPosition( false );
 
     return 0;

@@ -38,6 +38,21 @@ public:
 
     ~SCH_NAVIGATE_TOOL() { }
 
+    /**
+     * Runs on an editing context that is not a wxFrame.
+     *
+     * Everything it asks the editor for in order to *decide* where it could go — the
+     * document, its sheet hierarchy and its current sheet — is SCHEMATIC_HOLDER's, so
+     * the history is kept and the CanGo* predicates answer correctly with no frame.
+     * What it loses is the going: showing another sheet means swapping the canvas over
+     * to that sheet's screen, which is SCH_EDIT_FRAME::DisplayCurrentSheet() and has no
+     * equivalent on SCHEMATIC_HOLDER, so every action that changes sheet declines rather
+     * than moving the document's current sheet and leaving the editor showing the old
+     * one. Hypertext navigation declines too: the click that raises it, its popup menu
+     * and its info bar are all windows.
+     */
+    bool runsWithoutAFrame() const override { return true; }
+
     ///< Reset navigation history. Must be done when schematic changes
     void ResetHistory();
     ///< Remove deleted pages from history. Must be done when schematic

@@ -36,6 +36,7 @@
 #include <view/view_controls.h>
 #include <tools/sch_line_wire_bus_tool.h>
 #include <schematic.h>
+#include <schematic_holder.h>
 
 SCH_ALIGN_TOOL::SCH_ALIGN_TOOL() :
         SCH_TOOL_BASE<SCH_EDIT_FRAME>( "eeschema.Align" ),
@@ -56,7 +57,10 @@ bool SCH_ALIGN_TOOL::Init()
     if( !SCH_TOOL_BASE::Init() )
         return false;
 
-    if( !m_alignMenu )
+    // TOOL_INTERACTIVE only builds a TOOL_MENU — and the wxMenu under it — when
+    // Pgm().IsGUI(), so a headless holder has none to add to. Aligning works without
+    // the submenu; only the right-click presentation is lost.
+    if( !m_alignMenu && m_selectionTool && m_selectionTool->HasToolMenu() )
     {
         m_alignMenu = new CONDITIONAL_MENU( this );
         m_alignMenu->SetIcon( BITMAPS::align_items );
@@ -74,8 +78,11 @@ bool SCH_ALIGN_TOOL::Init()
         m_alignMenu->AddItem( SCH_ACTIONS::alignBottom, canAlign );
     }
 
-    CONDITIONAL_MENU& selToolMenu = m_selectionTool->GetToolMenu().GetMenu();
-    selToolMenu.AddMenu( m_alignMenu, SELECTION_CONDITIONS::MoreThan( 1 ), 100 );
+    if( m_alignMenu )
+    {
+        CONDITIONAL_MENU& selToolMenu = m_selectionTool->GetToolMenu().GetMenu();
+        selToolMenu.AddMenu( m_alignMenu, SELECTION_CONDITIONS::MoreThan( 1 ), 100 );
+    }
 
     setTransitions();
 
@@ -151,7 +158,7 @@ void SCH_ALIGN_TOOL::moveItem( SCH_ITEM* aItem, const VECTOR2I& aDelta, SCH_COMM
     if( delta == VECTOR2I( 0, 0 ) )
         return;
 
-    aCommit.Modify( aItem, m_frame->GetScreen(), RECURSE_MODE::RECURSE );
+    aCommit.Modify( aItem, m_editor->GetScreen(), RECURSE_MODE::RECURSE );
     aItem->Move( delta );
     aItem->ClearFlags( IS_MOVING );
     updateItem( aItem, true );
@@ -409,11 +416,12 @@ void SCH_ALIGN_TOOL::doAlignCleanup( SCH_COMMIT& aCommit, std::vector<ITEM_BOX>&
     lwbTool->TrimOverLappingWires( &aCommit, &alignedItems );
     lwbTool->AddJunctionsIfNeeded( &aCommit, &alignedItems );
 
-    for( EDA_ITEM* item : m_frame->GetScreen()->Items() )
+    for( EDA_ITEM* item : m_editor->GetScreen()->Items() )
         item->ClearTempFlags();
 
-    m_frame->Schematic().CleanUp( &aCommit );
+    if( SCHEMATIC* schematic = m_editor->GetSchematic() )
+        schematic->CleanUp( &aCommit );
 
-    for( EDA_ITEM* item : m_frame->GetScreen()->Items() )
+    for( EDA_ITEM* item : m_editor->GetScreen()->Items() )
         item->ClearEditFlags();
 }

@@ -27,6 +27,8 @@
 #include <fstream>
 #include <kiplatform/ui.h>
 #include <sch_sheet_path.h>
+#include <schematic.h>
+#include <schematic_holder.h>
 #include <wx/msgdlg.h>
 
 SCH_EDIT_TABLE_TOOL::SCH_EDIT_TABLE_TOOL() :
@@ -41,7 +43,10 @@ bool SCH_EDIT_TABLE_TOOL::Init()
     if( !SCH_TOOL_BASE::Init() )
         return false;
 
-    addMenus( m_selectionTool->GetToolMenu().GetMenu() );
+    // TOOL_INTERACTIVE only builds a TOOL_MENU when Pgm().IsGUI(), so a headless holder
+    // has no menu to add the row/column items to. The actions still run.
+    if( m_selectionTool && m_selectionTool->HasToolMenu() )
+        addMenus( m_selectionTool->GetToolMenu().GetMenu() );
 
     return true;
 }
@@ -71,7 +76,10 @@ int SCH_EDIT_TABLE_TOOL::EditTable( const TOOL_EVENT& aEvent )
         }
     }
 
-    if( parentTable )
+    // Editing a table's properties *is* the dialog, so without a frame to parent it
+    // there is nothing this action can do. The row, column and cell operations above
+    // are not dialogs and run either way.
+    if( parentTable && m_frame )
     {
         DIALOG_TABLE_PROPERTIES dlg( m_frame, parentTable );
 
@@ -114,8 +122,15 @@ int SCH_EDIT_TABLE_TOOL::ExportTableToCSV( const TOOL_EVENT& aEvent )
     if( !parentTable )
         return 0;
 
+    SCHEMATIC* schematic = m_editor->GetSchematic();
+
+    // The export is a file dialog, so it needs a window to parent it and a document to
+    // resolve text variables against. Without either there is nothing to export to.
+    if( !m_frame || !schematic )
+        return 0;
+
     // Get current sheet path for variable resolution
-    SCH_SHEET_PATH& currentSheet = m_frame->GetCurrentSheet();
+    SCH_SHEET_PATH& currentSheet = schematic->CurrentSheet();
 
     // Show file save dialog
     wxFileDialog saveDialog( m_frame, _( "Export Table to CSV" ), wxEmptyString, wxEmptyString,

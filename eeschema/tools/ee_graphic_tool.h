@@ -49,6 +49,19 @@ public:
 
     bool Init() override;
 
+    /**
+     * Runs on an editing context that is not a wxFrame.
+     *
+     * What it asks the editor for is SCHEMATIC_HOLDER's: the screen it commits new
+     * shapes to, and the cursor shape that says a click here draws. Without a frame it
+     * loses the windows: the message panel readout of the shape being drawn, the
+     * right-click menu, and the unit preference the drawing assistant labels distances
+     * with (they read in internal units instead). The two actions that *are* a dialog —
+     * drawing a text box, which ends in the text properties dialog, and importing
+     * graphics — decline to run rather than draw something the user never described.
+     */
+    bool runsWithoutAFrame() const override { return true; }
+
     int DrawShape( const TOOL_EVENT& aEvent );
     int DrawArc( const TOOL_EVENT& aEvent );
     int DrawBezier( const TOOL_EVENT& aEvent );
@@ -60,6 +73,31 @@ private:
 
     ///< The layer to use for new shapes in the current editor.
     SCH_LAYER_ID getShapeLayer() const;
+
+    /**
+     * The symbol editor's frame, or null when this is not the symbol editor.
+     *
+     * The symbol editor is always a wxFrame, so a null answer means a schematic
+     * context rather than a missing window.
+     */
+    SYMBOL_EDIT_FRAME* symbolEditFrame() const;
+
+    /**
+     * The units the drawing assistant labels distances in.
+     *
+     * The unit preference is a window's, and the assistant overlay is the only thing
+     * here that reads it — the geometry is in internal units either way — so an editor
+     * without a frame gets unscaled labels rather than no shape at all.
+     */
+    EDA_UNITS getUserUnits() const;
+
+    /**
+     * Show an item's properties in the message panel, where there is one.
+     *
+     * The message panel is part of the frame's window; an editor without one simply
+     * goes without the readout, and the drawing is unaffected.
+     */
+    void setMsgPanel( EDA_ITEM* aItem ) const;
 
     ///< Commit a completed item.
     void commitItem( SCH_COMMIT& aCommit, std::unique_ptr<SCH_ITEM> aItem, const wxString& aDescription );

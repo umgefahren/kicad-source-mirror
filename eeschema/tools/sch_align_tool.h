@@ -37,6 +37,16 @@ public:
 
     bool Init() override;
 
+    /**
+     * Runs on an editing context that is not a wxFrame.
+     *
+     * Everything it asks the editor for — the screen it modifies items on and the
+     * schematic it cleans up afterwards — is SCHEMATIC_HOLDER's. What it loses without
+     * a frame is the Align submenu on the right-click menu, because there is no menu
+     * to hang it from; the actions themselves still run.
+     */
+    bool runsWithoutAFrame() const override { return true; }
+
     int AlignTop( const TOOL_EVENT& aEvent );
     int AlignBottom( const TOOL_EVENT& aEvent );
     int AlignLeft( const TOOL_EVENT& aEvent );
