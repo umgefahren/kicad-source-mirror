@@ -609,8 +609,13 @@ BOOST_AUTO_TEST_CASE( TheConvertedRosterRunsHereAndTheRestStillDeclines )
     BOOST_CHECK( tools->GetTool<ZOOM_TOOL>() == nullptr );
     BOOST_CHECK( tools->GetTool<PICKER_TOOL>() == nullptr );
     BOOST_CHECK( tools->GetTool<SCH_GROUP_TOOL>() == nullptr );
-    BOOST_CHECK( tools->GetTool<PROPERTIES_TOOL>() == nullptr );
     BOOST_CHECK( tools->GetTool<EMBED_TOOL>() == nullptr );
+
+    // PROPERTIES_TOOL is the exception in that list, and not because anyone converted it:
+    // it is a bare TOOL_INTERACTIVE with no Init() of its own, so it never asks for a
+    // frame and has run here since before any of this. It forwards a selection change to
+    // whatever is showing a properties panel, which on this holder is nothing.
+    BOOST_CHECK( tools->GetTool<PROPERTIES_TOOL>() != nullptr );
 
     // The holder's selection is now the selection tool's own, and it is empty
     // rather than absent.
