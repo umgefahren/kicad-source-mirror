@@ -60,8 +60,9 @@ public:
      *
      * Most of what this tool places needs nothing but the screen, the schematic settings
      * and the repeat list, all of which are SCHEMATIC_HOLDER's: junctions, no-connects,
-     * wire-to-bus entries, sheet pins, tables, auto-placed sheet pins, a label whose name
-     * the wire it lands on already supplies, and an image handed in as a parameter.
+     * wire-to-bus entries, sheet pins, tables, rule areas, auto-placed sheet pins, a label
+     * whose name the wire it lands on already supplies, and an image handed in as a
+     * parameter.
      *
      * What needs a window, and declines without one saying so at the site:
      *
@@ -70,8 +71,6 @@ public:
      * * ::ImportSheet (place design block, import sheet) and ::DrawSheet — a chooser pane
      *   or file dialog picks the source, EditSheetProperties() names the sheet, and
      *   AnnotateSymbols() renumbers what comes in.
-     * * ::DrawRuleArea — its RULE_AREA_CREATE_HELPER is built on a SCH_EDIT_FRAME and
-     *   reads that frame's colour settings and screen.
      * * ::SyncSheetsPins and ::SyncAllSheetsPins — the action *is* DIALOG_SYNC_SHEET_PINS.
      * * a text item, and a label the attached wire does not name: both take their content
      *   from a properties dialog, so ::createNewText and ::createNewLabel give up.

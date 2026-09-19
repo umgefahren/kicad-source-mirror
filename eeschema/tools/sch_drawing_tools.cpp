@@ -2501,13 +2501,6 @@ int SCH_DRAWING_TOOLS::TwoClickPlace( const TOOL_EVENT& aEvent )
 
 int SCH_DRAWING_TOOLS::DrawRuleArea( const TOOL_EVENT& aEvent )
 {
-    // The outline itself needs nothing but the view, but every point of it is fed to a
-    // RULE_AREA_CREATE_HELPER, which is built on a SCH_EDIT_FRAME and reads its colour
-    // settings and its screen.  Until that helper is given the editing interface instead,
-    // this action needs a window.
-    if( !m_frame )
-        return 0;
-
     if( m_inDrawingTool )
         return 0;
 
@@ -2518,7 +2511,7 @@ int SCH_DRAWING_TOOLS::DrawRuleArea( const TOOL_EVENT& aEvent )
     EE_GRID_HELPER        grid( m_toolMgr );
     VECTOR2I              cursorPos;
 
-    RULE_AREA_CREATE_HELPER ruleAreaTool( *getView(), m_frame, m_toolMgr );
+    RULE_AREA_CREATE_HELPER ruleAreaTool( *getView(), m_editor, m_toolMgr );
     POLYGON_GEOM_MANAGER    polyGeomMgr( ruleAreaTool );
     bool                    started = false;
 

@@ -30,6 +30,7 @@ namespace KIGFX
 class VIEW;
 }
 
+class SCHEMATIC_HOLDER;
 class TOOL_MANAGER;
 
 /**
@@ -40,7 +41,7 @@ class TOOL_MANAGER;
 class RULE_AREA_CREATE_HELPER : public POLYGON_GEOM_MANAGER::CLIENT
 {
 public:
-    RULE_AREA_CREATE_HELPER( KIGFX::VIEW& aView, SCH_EDIT_FRAME* aFrame, TOOL_MANAGER* aMgr );
+    RULE_AREA_CREATE_HELPER( KIGFX::VIEW& aView, SCHEMATIC_HOLDER* aEditor, TOOL_MANAGER* aMgr );
 
     virtual ~RULE_AREA_CREATE_HELPER();
 
@@ -76,8 +77,8 @@ private:
     ///< view that show the preview item
     KIGFX::VIEW& m_parentView;
 
-    ///< The active schematic edit frame
-    SCH_EDIT_FRAME* m_frame;
+    ///< Whatever is editing the schematic; not necessarily a window.
+    SCHEMATIC_HOLDER* m_editor;
 
     ///< The rule area in progress
     std::unique_ptr<SCH_RULE_AREA> m_rule_area;

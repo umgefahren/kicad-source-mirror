@@ -23,15 +23,16 @@
 #include <sch_commit.h>
 #include <sch_edit_frame.h>
 #include <sch_rule_area.h>
+#include <schematic_holder.h>
 #include <tool/tool_manager.h>
 #include <tools/sch_actions.h>
 #include <tools/rule_area_create_helper.h>
 
 
-RULE_AREA_CREATE_HELPER::RULE_AREA_CREATE_HELPER( KIGFX::VIEW& aView, SCH_EDIT_FRAME* aFrame,
+RULE_AREA_CREATE_HELPER::RULE_AREA_CREATE_HELPER( KIGFX::VIEW& aView, SCHEMATIC_HOLDER* aEditor,
                                                   TOOL_MANAGER* aMgr ) :
         m_parentView( aView ),
-        m_frame( aFrame ), m_toolManager( aMgr )
+        m_editor( aEditor ), m_toolManager( aMgr )
 {
     m_parentView.Add( &m_previewItem );
 }
@@ -61,7 +62,7 @@ void RULE_AREA_CREATE_HELPER::commitRuleArea( std::unique_ptr<SCH_RULE_AREA> aRu
 
     SCH_RULE_AREA* ruleArea = aRuleArea.release();
 
-    commit.Add( ruleArea, m_frame->GetScreen() );
+    commit.Add( ruleArea, m_editor->GetScreen() );
     commit.Push( _( "Draw Rule Area" ) );
 
     m_toolManager->RunAction<EDA_ITEM*>( ACTIONS::selectItem, ruleArea );
@@ -78,14 +79,17 @@ bool RULE_AREA_CREATE_HELPER::OnFirstPoint( POLYGON_GEOM_MANAGER& aMgr )
     {
         m_toolManager->RunAction( ACTIONS::selectionClear );
 
-        SCH_RENDER_SETTINGS renderSettings;
-        COLOR_SETTINGS*     colorSettings = m_frame->GetColorSettings();
-        renderSettings.LoadColors( colorSettings );
-
-        COLOR4D color = renderSettings.GetLayerColor( LAYER_RULE_AREAS );
-        m_previewItem.SetLineColor( color );
-        m_previewItem.SetLeaderColor( color );
-        m_previewItem.SetFillColor( color.WithAlpha( 0.2 ) );
+        // The editor's own render settings rather than a fresh set loaded from the colour
+        // store: they are the colours the canvas is actually drawing this schematic with,
+        // which is what the preview should match. Null only where there is no canvas at
+        // all, and then the preview simply keeps its default colours.
+        if( SCH_RENDER_SETTINGS* renderSettings = m_editor->GetRenderSettings() )
+        {
+            COLOR4D color = renderSettings->GetLayerColor( LAYER_RULE_AREAS );
+            m_previewItem.SetLineColor( color );
+            m_previewItem.SetLeaderColor( color );
+            m_previewItem.SetFillColor( color.WithAlpha( 0.2 ) );
+        }
 
         m_parentView.SetVisible( &m_previewItem, true );
 
