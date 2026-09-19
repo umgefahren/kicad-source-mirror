@@ -7,8 +7,8 @@
 //! The generated bindings, exactly as bindgen emits them.
 //!
 //! Public because a `-sys` crate that hides its raw layer is no use to anyone
-//! who needs something the wrapper does not expose yet — the action registry,
-//! for one. Prefer [`crate::Session`].
+//! who needs something the wrapper does not expose yet. Prefer [`crate::Session`]
+//! and [`crate::actions`].
 //!
 //! The struct layout assertions bindgen generates are compiled as tests here,
 //! which is the Rust and C sides agreeing about every field offset. They are the

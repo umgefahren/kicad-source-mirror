@@ -147,9 +147,8 @@ group data byte-identical, with a frame body of four commands.
 | M1 | Rust workspace; wgpu renderer; gpui-kit shell rendering a recorded draw stream from a golden file | nothing |
 | M2 | `RECORDING_GAL` + C ABI + a `sch-dump` tool that emits a draw stream from a real `.kicad_sch` | C++ build |
 | M3 | Live linkage: Rust loads the host library, renders live, forwards input into `TOOL_MANAGER` | M1, M2 |
-| — | *M3's third clause is satisfied and misleading. Input reaches the manager; the manager has no tools. See "Where this actually got to".* | |
 | M4 | Menus and toolbars generated from the action registry; select / move / wire tools driving the C++ tools | M3 |
-| — | *Done. The three named tools run on a holder that is not a `wxFrame`, plus undo, redo and save. Seventeen other tool classes still decline one — see "Where this actually got to".* | |
+| — | *Done. Live menus, toolbars and the command palette resolve metadata and shortcuts from the C++ action registry. Select, move and wire run without a `wxFrame`, plus undo, redo and save. Dialog workflows remain deferred.* | |
 | M5 | Tests: C++ unit tests for `RECORDING_GAL`; Rust decoder and golden-image tests; headless UI interaction tests | M1–M4 |
 | M6 | CMake/Corrosion integration, CI, documentation | M5 |
 
@@ -187,11 +186,12 @@ drag, scroll and key press is forwarded into `TOOL_MANAGER::ProcessEvent` as a
 clicking or dragging a box, move what is selected, draw a wire, undo and redo, and
 save a file KiCad reopens.
 
-What has **not** landed is the rest of eeschema. Seventeen of the twenty-one tool
-classes still learn their `m_frame` from the tool holder and decline when the holder
-is not a frame, so `InitTools()` drops them, and all 124 dialogs are untouched.
-**See `06-what-is-missing.md`** for which tools run, what each remaining one costs,
-and the four findings that cost this stage most of its time.
+The remaining gaps are dialog workflows, shared tools that still require a
+frame, and the host interfaces listed in `06-what-is-missing.md`. Most eeschema
+tool classes now initialize without a frame, including rotate and delete;
+initialization does not make their dialog actions usable. The action-registry
+presentation work and its live verification are documented in
+[`08-action-registry.md`](08-action-registry.md).
 
 Three predictions in this document are worth revisiting.
 
@@ -219,7 +219,7 @@ for every remaining tool.
 
 * Reimplementing the `.kicad_sch` / `.kicad_sym` file format in Rust. File I/O
   stays in C++.
-* Porting the ~200 wx dialogs. The initial shell covers the canvas, menus,
+* Porting the 124 eeschema wx dialog sources. The initial shell covers the canvas, menus,
   toolbars, docks and status bar; dialogs are bridged or deferred, and the
   survey records which tool actions depend on one.
 * Touching pcbnew, gerbview, the 3D viewer or the project manager.

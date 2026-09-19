@@ -21,8 +21,9 @@ dialogs are untouched, so **wxWidgets has not been removed from anything** and t
 wx editor is still the only complete way to edit a schematic. That document says
 exactly which tools run, what each one can and cannot do there, and why.
 
-For the design, start with **`01-plan.md`**. For the latest hands-on UI checks and
-fixes, see [`07-ui-bugfix-pass.md`](07-ui-bugfix-pass.md).
+For the design, start with **`01-plan.md`**. For the latest registry milestone,
+hands-on UI checks and next steps, see [`08-action-registry.md`](08-action-registry.md).
+The earlier input and repaint fixes are in [`07-ui-bugfix-pass.md`](07-ui-bugfix-pass.md).
 
 | Document | What it is | Who it is for |
 |---|---|---|
@@ -33,6 +34,8 @@ fixes, see [`07-ui-bugfix-pass.md`](07-ui-bugfix-pass.md).
 | `04-host-seam.md` | The C++ host that owns a schematic session without a `wxFrame`, the C ABI and the shared library Rust links, and what feeding `TOOL_MANAGER` from Rust would still take | Anyone continuing the migration |
 | `05-porting-guide.md` | **How to do this again for pcbnew.** What is reusable unchanged, what is genuinely different about a board editor, and the traps — including the two designs we got wrong and had to redo | Read before starting the next editor |
 | `06-what-is-missing.md` | **What this is not, and what an editor still needs.** What the C++ bridge does and does not yet carry, stage by stage, with Stages 1–4b done and the remaining cost measured per tool | Read first if you are judging scope |
+| `07-ui-bugfix-pass.md` | Live verification of input, repainting and editing fixes | UI testing |
+| `08-action-registry.md` | Registry-backed menus/toolbars, live verification, known shortcut-display defects and next work | Current milestone and follow-up |
 
 Two more places hold the parts that are code rather than prose:
 

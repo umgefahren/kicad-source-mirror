@@ -146,6 +146,20 @@ semantics. The canvas takes keyboard focus at startup and on click, and regains
 it after the command palette closes. macOS supports Command shortcuts, including
 Command-Shift-Z for redo, alongside the Control aliases.
 
+Live sessions build menus, toolbar tooltips and command-palette entries from an
+owned snapshot of KiCad's action registry, read after opening the session. Rust
+keeps the menu hierarchy, toolbar order and icon mapping; labels, descriptions
+and primary/alternate shortcuts come from C++. Shortcut names cross the ABI as
+strings resolved by KiCad, without a Rust copy of wx key codes. Missing registry
+actions are omitted from menus and disabled in toolbars. Shell operations such
+as zoom and panel visibility remain local, and replay mode retains the standalone
+catalogue. A registered action is not a guarantee that its dialog is available.
+The snapshot is fixed on first registry access and does not refresh after later
+hotkey or locale changes. The live check found missing wire shortcut hints and
+Control hints on macOS where Command also works; see
+[`08-action-registry.md`](../docs/rust-migration/08-action-registry.md) for
+verification results and follow-up work.
+
 Drag with the middle or secondary mouse button to pan. A secondary click without
 dragging opens the context menu on release.
 

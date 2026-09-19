@@ -8,10 +8,10 @@
 //! The tool palette: which drawing tools exist and how they present.
 //!
 //! Every entry names a real KiCad `TOOL_ACTION` (the strings come from
-//! `eeschema/tools/sch_actions.cpp` and `common/tool/actions.cpp`), so when
-//! `ACTION_REGISTRY` starts enumerating actions headlessly this table becomes a
-//! lookup into it rather than a second source of truth. The icons and the
-//! ordering are the shell's own business and stay here either way.
+//! `eeschema/tools/sch_actions.cpp` and `common/tool/actions.cpp`), and
+//! the live shell resolves labels, help and shortcuts from `ActionRegistry`.
+//! The strings below are the recorded-stream fallback; icons, cursor shapes
+//! and ordering are presentation choices owned by the shell.
 
 use gpui_kit::CursorStyle;
 use gpui_kit::assets::IconName;

@@ -12,7 +12,7 @@ use std::rc::Rc;
 
 use gpui_kit::TestSupportExt;
 use gpui_kit::assets::IconName;
-use gpui_kit::base::GlobalState;
+use gpui_kit::base::{Disableable, GlobalState};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::command::{Command, CommandGroup, CommandItem, CommandState};
 use gpui_kit::component::dock::{
@@ -31,9 +31,9 @@ use gpui_kit::{
 
 use crate::canvas::{CanvasContextMenu, CanvasElement, CanvasState};
 use crate::commands::{
-    self, CancelTool, CycleGrid, OpenCommandPalette, Quit, RunAction, ToggleFrameStats, ToggleGrid,
-    ToggleLeftPanel, ToggleRightPanel, ToggleTheme, ToggleUnits, ZoomActualSize, ZoomIn, ZoomOut,
-    ZoomToFit, ZoomToObjects,
+    self, ActionRegistry, CancelTool, CycleGrid, OpenCommandPalette, Quit, RunAction,
+    ToggleFrameStats, ToggleGrid, ToggleLeftPanel, ToggleRightPanel, ToggleTheme, ToggleUnits,
+    ZoomActualSize, ZoomIn, ZoomOut, ZoomToFit, ZoomToObjects,
 };
 use crate::document::SharedDocument;
 use crate::grid::Units;
@@ -54,9 +54,23 @@ pub fn init(cx: &mut App) {
     install_menus(cx);
 }
 
+/// Initialise the live shell from the host's action metadata.
+///
+/// Install before creating any windows, so menus, shortcuts and toolbars all
+/// resolve against the same snapshot. `init` remains the recorded-stream mode.
+pub fn init_with_registry(cx: &mut App, registry: ActionRegistry) {
+    cx.set_global(registry);
+    init(cx);
+}
+
 /// Bind the default key map.
 pub fn install_key_bindings(cx: &mut App) {
-    let (bindings, rejected) = commands::key_bindings();
+    let (bindings, rejected) = if let Some(registry) = cx.try_global::<ActionRegistry>() {
+        commands::key_bindings_with_registry(registry)
+    } else {
+        let (bindings, rejected) = commands::key_bindings();
+        (bindings, rejected.into_iter().map(str::to_owned).collect())
+    };
     debug_assert!(
         rejected.is_empty(),
         "unparsable default keystrokes: {rejected:?}"
@@ -66,10 +80,12 @@ pub fn install_key_bindings(cx: &mut App) {
 
 /// Publish the menu bar so [`AppMenuBar`] can draw it.
 pub fn install_menus(cx: &mut App) {
-    let menus = commands::app_menus()
-        .into_iter()
-        .map(|menu| menu.owned())
-        .collect();
+    let menus = if let Some(registry) = cx.try_global::<ActionRegistry>() {
+        commands::app_menus_with_registry(registry)
+    } else {
+        commands::app_menus()
+    };
+    let menus = menus.into_iter().map(|menu| menu.owned()).collect();
     GlobalState::global_mut(cx).set_app_menus(menus);
 }
 
@@ -120,28 +136,32 @@ impl CanvasPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let menu = PopupMenu::build(window, cx, |menu, _, _| {
-            menu.menu("Cut", Box::new(RunAction::new("common.Interactive.cut")))
-                .menu("Copy", Box::new(RunAction::new("common.Interactive.copy")))
-                .menu(
-                    "Paste",
-                    Box::new(RunAction::new("common.Interactive.paste")),
-                )
-                .separator()
-                .menu(
-                    "Properties...",
-                    Box::new(RunAction::new("eeschema.InteractiveEdit.properties")),
-                )
-                .menu(
-                    "Delete",
-                    Box::new(RunAction::new("common.Interactive.delete")),
-                )
-                .separator()
-                .menu(
-                    "Select All",
-                    Box::new(RunAction::new("common.Interactive.selectAll")),
-                )
-                .menu("Zoom to Fit", Box::new(ZoomToFit))
+        let menu = PopupMenu::build(window, cx, |mut menu, _, cx| {
+            for group in [
+                &[
+                    ("Cut", "common.Interactive.cut"),
+                    ("Copy", "common.Interactive.copy"),
+                    ("Paste", "common.Interactive.paste"),
+                ][..],
+                &[
+                    ("Properties...", "eeschema.InteractiveEdit.properties"),
+                    ("Delete", "common.Interactive.delete"),
+                ][..],
+                &[("Select All", "common.Interactive.selectAll")][..],
+            ] {
+                let mut populated = false;
+                for (fallback, id) in group {
+                    let presentation = action_presentation(cx, id, fallback, "", None);
+                    if presentation.available {
+                        menu = menu.menu(presentation.label, Box::new(RunAction::new(*id)));
+                        populated = true;
+                    }
+                }
+                if populated {
+                    menu = menu.separator();
+                }
+            }
+            menu.menu("Zoom to Fit", Box::new(ZoomToFit))
                 .action_context(self.focus_handle.clone())
         });
 
@@ -823,36 +843,41 @@ impl SchematicShell {
             .bg(theme.background)
             .border_b_1()
             .border_color(theme.border)
-            .child(action_button(
+            .child(registry_action_button(
                 "tb-new",
                 IconName::FilePlus,
                 "New Schematic",
-                Box::new(RunAction::new("common.Control.new")),
+                "common.Control.new",
+                cx,
             ))
-            .child(action_button(
+            .child(registry_action_button(
                 "tb-open",
                 IconName::FolderOpen,
                 "Open...",
-                Box::new(RunAction::new("common.Control.open")),
+                "common.Control.open",
+                cx,
             ))
-            .child(action_button(
+            .child(registry_action_button(
                 "tb-save",
                 IconName::Save,
                 "Save",
-                Box::new(RunAction::new("common.Control.save")),
+                "common.Control.save",
+                cx,
             ))
             .child(toolbar_separator(cx))
-            .child(action_button(
+            .child(registry_action_button(
                 "tb-undo",
                 IconName::Undo2,
                 "Undo",
-                Box::new(RunAction::new("common.Interactive.undo")),
+                "common.Interactive.undo",
+                cx,
             ))
-            .child(action_button(
+            .child(registry_action_button(
                 "tb-redo",
                 IconName::Redo2,
                 "Redo",
-                Box::new(RunAction::new("common.Interactive.redo")),
+                "common.Interactive.redo",
+                cx,
             ))
             .child(toolbar_separator(cx))
             .child(action_button(
@@ -860,37 +885,43 @@ impl SchematicShell {
                 IconName::ZoomIn,
                 "Zoom In",
                 Box::new(ZoomIn),
+                cx,
             ))
             .child(action_button(
                 "tb-zoom-out",
                 IconName::ZoomOut,
                 "Zoom Out",
                 Box::new(ZoomOut),
+                cx,
             ))
             .child(action_button(
                 "tb-zoom-fit",
                 IconName::Scan,
                 "Zoom to Fit Sheet",
                 Box::new(ZoomToFit),
+                cx,
             ))
             .child(toolbar_separator(cx))
-            .child(action_button(
+            .child(registry_action_button(
                 "tb-erc",
                 IconName::CircleCheck,
                 "Electrical Rules Checker",
-                Box::new(RunAction::new("eeschema.InspectionTool.runERC")),
+                "eeschema.InspectionTool.runERC",
+                cx,
             ))
-            .child(action_button(
+            .child(registry_action_button(
                 "tb-annotate",
                 IconName::Hash,
                 "Annotate Schematic",
-                Box::new(RunAction::new("eeschema.EditorControl.annotate")),
+                "eeschema.EditorControl.annotate",
+                cx,
             ))
-            .child(action_button(
+            .child(registry_action_button(
                 "tb-pcb",
                 IconName::CircuitBoard,
                 "Update PCB from Schematic",
-                Box::new(RunAction::new("common.Control.updatePcbFromSchematic")),
+                "common.Control.updatePcbFromSchematic",
+                cx,
             ))
             .child(div().flex_1())
             .child(
@@ -985,10 +1016,13 @@ impl SchematicShell {
                     .py_2()
                     .children(TOOLS.iter().map(|spec| {
                         let action: Box<dyn Action> = Box::new(RunAction::new(spec.id.as_str()));
-                        let tooltip = match spec.shortcut {
-                            Some(key) => format!("{} ({})", spec.label, pretty_key(key)),
-                            None => spec.label.to_string(),
-                        };
+                        let presentation = action_presentation(
+                            cx,
+                            spec.id.as_str(),
+                            spec.label,
+                            spec.description,
+                            spec.shortcut,
+                        );
                         div()
                             .v_flex()
                             // Without this the buttons compress to fit rather
@@ -1012,8 +1046,9 @@ impl SchematicShell {
                                     // see which tool is active from outside.
                                     .selected(active == spec.tool)
                                     .toggled(active == spec.tool)
-                                    .accessibility_label(spec.label)
-                                    .tooltip(tooltip)
+                                    .accessibility_label(presentation.label)
+                                    .tooltip(presentation.tooltip)
+                                    .disabled(!presentation.available)
                                     .on_click(dispatch(action)),
                             )
                     })),
@@ -1184,12 +1219,23 @@ impl SchematicShell {
             });
 
         let mut grouped: Vec<(String, Vec<CommandItem>)> = Vec::new();
-        for (path, spec) in commands::all_commands() {
-            let label = commands::label_of(&spec);
+        let commands = if let Some(registry) = cx.try_global::<ActionRegistry>() {
+            commands::all_commands_with_registry(registry)
+                .into_iter()
+                .map(|(path, spec)| (path, spec.label.clone(), spec.action()))
+                .collect::<Vec<_>>()
+        } else {
+            commands::all_commands()
+                .into_iter()
+                .map(|(path, spec)| (path, commands::label_of(&spec).to_owned(), spec.action()))
+                .collect()
+        };
+        for (path, label, action) in commands {
+            let keywords = [label.to_lowercase(), path.to_lowercase()];
             let item = CommandItem::new()
                 .label(label)
-                .keywords([label.to_lowercase(), path.to_lowercase()])
-                .action(spec.action());
+                .keywords(keywords)
+                .action(action);
             match grouped.iter_mut().find(|(name, _)| *name == path) {
                 Some((_, items)) => items.push(item),
                 None => grouped.push((path, vec![item])),
@@ -1302,13 +1348,99 @@ impl Render for SchematicShell {
     }
 }
 
+/// Presentation is resolved once for every surface from the same registry.
+struct ActionPresentation {
+    label: String,
+    tooltip: String,
+    available: bool,
+}
+
+fn action_presentation(
+    cx: &App,
+    id: &str,
+    fallback_label: &str,
+    fallback_description: &str,
+    fallback_key: Option<&str>,
+) -> ActionPresentation {
+    let (label, description, key, available) = match cx.try_global::<ActionRegistry>() {
+        Some(registry) => match registry.get(id) {
+            Some(info) => (
+                info.label.as_str(),
+                info.description.as_str(),
+                (!info.hotkey.is_empty()).then_some(info.hotkey.as_str()),
+                true,
+            ),
+            None => (
+                fallback_label,
+                "Action unavailable in this host",
+                None,
+                false,
+            ),
+        },
+        None => (fallback_label, fallback_description, fallback_key, true),
+    };
+    let mut tooltip = match key {
+        Some(key) => format!("{label} ({})", pretty_key(key)),
+        None => label.to_owned(),
+    };
+    if !description.is_empty() && description != label {
+        tooltip.push('\n');
+        tooltip.push_str(description);
+    }
+    ActionPresentation {
+        label: label.to_owned(),
+        tooltip,
+        available,
+    }
+}
+
+fn registry_action_button(
+    id: &'static str,
+    icon: IconName,
+    fallback_label: &'static str,
+    action_id: &'static str,
+    cx: &App,
+) -> Button {
+    let presentation = action_presentation(cx, action_id, fallback_label, "", None);
+    Button::new(id)
+        .ghost()
+        .with_size(px(30.))
+        .icon(icon)
+        .accessibility_label(presentation.label)
+        .tooltip(presentation.tooltip)
+        .disabled(!presentation.available)
+        .on_click(dispatch(Box::new(RunAction::new(action_id))))
+}
+
 /// A ghost icon button that dispatches `action` when clicked.
 fn action_button(
     id: &'static str,
     icon: IconName,
     tooltip: &'static str,
     action: Box<dyn Action>,
+    cx: &App,
 ) -> Button {
+    let resolved = cx.try_global::<ActionRegistry>().and_then(|registry| {
+        commands::all_commands().into_iter().find_map(|(_, spec)| {
+            (spec.action().name() == action.name())
+                .then(|| registry.resolve(&spec))
+                .flatten()
+        })
+    });
+    let label = resolved
+        .as_ref()
+        .map_or(tooltip, |spec| spec.label.as_str())
+        .to_owned();
+    let tooltip = resolved.map_or_else(
+        || tooltip.to_owned(),
+        |spec| {
+            if spec.description.is_empty() {
+                spec.label
+            } else {
+                format!("{}\n{}", spec.label, spec.description)
+            }
+        },
+    );
     let for_tooltip = action.boxed_clone();
     Button::new(id)
         .ghost()
@@ -1317,7 +1449,7 @@ fn action_button(
         // but invisible on a light background.
         .with_size(px(30.))
         .icon(icon)
-        .accessibility_label(tooltip)
+        .accessibility_label(label)
         .tooltip_with_action(tooltip, for_tooltip.as_ref(), None)
         .on_click(dispatch(action))
 }

@@ -29,6 +29,7 @@
 #include <bitmaps/bitmap_info.h>
 #include <bitmaps/bitmaps_list.h>
 #include <gal/recording/draw_stream.h>
+#include <hotkeys_basic.h>
 #include <ki_exception.h>
 #include <locale_io.h>
 #include <pgm_base.h>
@@ -233,6 +234,8 @@ struct ACTION_RECORD
     std::string m_ToolName;
 
     ksch_action m_Abi;
+    std::string m_HotkeyName;
+    std::string m_HotkeyAltName;
 };
 
 
@@ -346,6 +349,11 @@ const std::vector<ACTION_RECORD>& actionTable()
             record.m_Abi.default_hotkey_alt = action->GetDefaultHotKeyAlt();
             record.m_Abi.hotkey = action->GetHotKey();
             record.m_Abi.hotkey_alt = action->GetHotKeyAlt();
+            if( record.m_Abi.hotkey )
+                record.m_HotkeyName = KeyNameFromKeyCode( record.m_Abi.hotkey ).utf8_string();
+
+            if( record.m_Abi.hotkey_alt )
+                record.m_HotkeyAltName = KeyNameFromKeyCode( record.m_Abi.hotkey_alt ).utf8_string();
             record.m_Abi.scope = static_cast<std::int32_t>( action->GetScope() );
 
             record.m_Abi.flags = 0;
@@ -1039,6 +1047,27 @@ extern "C" ksch_status ksch_action_at( uint32_t aIndex, ksch_action* aOut )
                           return KSCH_ERR_OUT_OF_RANGE;
 
                       *aOut = table[aIndex].m_Abi;
+                      return KSCH_OK;
+                  } );
+}
+
+
+extern "C" ksch_status ksch_action_hotkey_names( uint32_t aIndex, const char** aPrimary,
+                                                  const char** aAlternate )
+{
+    if( !aPrimary || !aAlternate )
+        return KSCH_ERR_INVALID_ARG;
+
+    return guard( nullptr,
+                  [&]() -> ksch_status
+                  {
+                      const std::vector<ACTION_RECORD>& table = actionTable();
+
+                      if( aIndex >= table.size() )
+                          return KSCH_ERR_OUT_OF_RANGE;
+
+                      *aPrimary = table[aIndex].m_HotkeyName.c_str();
+                      *aAlternate = table[aIndex].m_HotkeyAltName.c_str();
                       return KSCH_OK;
                   } );
 }

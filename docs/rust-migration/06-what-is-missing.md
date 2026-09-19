@@ -37,16 +37,16 @@ project rather than a stage.
 
 ## Exactly where it stops
 
-One fact, checkable in a minute:
+The eeschema tool roster conversion is complete except for
+`SCH_DESIGN_BLOCK_CONTROL`. The converted tools still decline work that requires
+a dialog; shared tools in `common/` also retain frame dependencies. See the
+[per-tool table](#what-each-converted-tool-actually-does) for the distinction
+between initialization and usable behavior.
 
-**Four tool classes run; seventeen still decline.** `SCH_HOST::registerTools()`
-registers the same twenty-one classes `SCH_EDIT_FRAME::setupTools()` does, plus
-`SCH_HOST_CONTROL` for undo, redo and save. `TOOL_MANAGER::InitTools()` keeps
-`SCH_SELECTION_TOOL`, `SCH_MOVE_TOOL`, `SCH_LINE_WIRE_BUS_TOOL` and
-`SCH_HOST_CONTROL`, and unregisters and deletes the rest, because each of those
-still sets `m_frame` from the tool holder and returns false when the holder is not
-its frame type. `qa/tests/eeschema/test_sch_host.cpp` pins that roster
-exhaustively, so converting another one fails the test and says so.
+Live menus, toolbars and the command palette now resolve action metadata from
+the C++ registry. This does not expose handler availability or dynamic checked
+state. The [registry milestone report](08-action-registry.md) records the live
+verification, shortcut-display defects and recommended next steps.
 
 So the pipeline now is:
 
@@ -61,8 +61,8 @@ So the pipeline now is:
                                             every edit a tool makes
 ```
 
-and what a *complete* editor needs is not another arrow but the same conversion
-applied seventeen more times, plus the dialogs, which is Stage 5.
+A complete editor still needs the remaining host seams, shared-tool conversions,
+functional document panels and dialog workflows (Stage 5).
 
 ## What is already done and does not need redoing
 
@@ -77,7 +77,7 @@ Worth being clear about, because it changes the size of what remains:
 | `kicad-gal` | Validating decoder, 58 tests |
 | `kicad-sch-render` | Stream → gpui primitives, 89 tests |
 | `kicad-sch-ui` | Shell, 82 tests, the interaction ones against real hit testing |
-| Action registry | 440 actions enumerable headless with icons and hotkeys |
+| Action registry | Owned Rust metadata drives live menus, toolbars and the command palette; primary/alternate shortcut names cross the ABI as strings |
 | `kicad-sch-sys` | The ABI linked from Rust, 14 checks against the live host |
 | Live re-render | The canvas asks the session for the frame it is about to paint |
 | A non-frame `TOOLS_HOLDER` | Defined rather than undefined: 16 checked casts in eeschema, 7 more entry points in `common/`, 11 tests |
@@ -1030,13 +1030,9 @@ Stage 5 is a separate project, and it is now the thing standing between this and
 editor someone would choose: 124 dialog sources, and most of the 61 frame methods
 `SCH_EDITOR_CONTROL` wants are a dialog each.
 
-**The honest summary of this branch is that it finishes the rendering third of the
-problem, wires the input path, and completes the editing loop for four tools —
-select, move, draw a wire, undo, save — while leaving seventeen tool classes and
-every dialog frame-bound.** A user can do real work with it and would miss almost
-everything: no rotate, no delete, no properties, no symbol placement, no ERC, no
-netlist, no find and replace. What has changed since the last revision of this
-document is not the amount of eeschema that works but the *kind* of question that
-remains: it was "can a tool run at all without a wxFrame", answered by finding out
-that `TOOL_MANAGER` had no tools in it, and it is now "how many of the twenty-one
-does anyone want to convert", answered per tool in the table above.
+The branch now provides rendering, host input and the converted eeschema editing
+tools, plus registry-backed command presentation. Dialogs, shared-tool frame
+dependencies and the remaining model seams still limit it. Rotate and delete
+are available; symbol placement, properties, ERC and find-and-replace workflows
+are not complete. See [the current follow-up order](08-action-registry.md#next-work)
+for the next UI work, and the interface additions listed above for host work.

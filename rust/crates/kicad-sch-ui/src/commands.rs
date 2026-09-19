@@ -19,9 +19,9 @@
 //!
 //! So: [`ShellCommand`] covers what the shell does (declared with
 //! `gpui_kit::actions!`, one unit struct each), and [`RunAction`] carries a
-//! KiCad `TOOL_ACTION` name for everything else. When `ACTION_REGISTRY` lands,
-//! [`MENUS`] below can be replaced by a walk over it without touching any
-//! other part of the shell.
+//! KiCad `TOOL_ACTION` name for everything else. [`MENUS`] supplies layout;
+//! [`ActionRegistry`] supplies live KiCad labels and configured shortcuts.
+//! The static metadata is retained for standalone replay without a C++ host.
 
 use std::rc::Rc;
 
@@ -217,6 +217,327 @@ impl CommandSpec {
             CommandKind::Shell(command) => command.reported_id(),
         }
     }
+}
+
+/// Owned metadata copied from the host's action registry.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ActionInfo {
+    /// Stable TOOL_ACTION name.
+    pub name: String,
+    /// Localized menu label, without wx mnemonic markup.
+    pub label: String,
+    /// Localized help text.
+    pub description: String,
+    /// Configured shortcut; normalized to gpui notation by `ActionRegistry::new`.
+    pub hotkey: String,
+    /// Alternate configured shortcut.
+    pub hotkey_alt: String,
+}
+
+/// Snapshot of KiCad's registered actions for this editor.
+#[derive(Clone, Debug, Default)]
+pub struct ActionRegistry {
+    actions: std::collections::BTreeMap<String, ActionInfo>,
+}
+
+impl gpui_kit::Global for ActionRegistry {}
+
+impl ActionRegistry {
+    /// Copy a host snapshot and translate KiCad's key names once.
+    pub fn new(actions: Vec<ActionInfo>) -> Self {
+        Self {
+            actions: actions
+                .into_iter()
+                .map(|mut info| {
+                    info.hotkey = normalize_hotkey(&info.hotkey);
+                    info.hotkey_alt = normalize_hotkey(&info.hotkey_alt);
+                    info.label = strip_mnemonics(&info.label);
+                    (info.name.clone(), info)
+                })
+                .collect(),
+        }
+    }
+
+    /// Look up a registered action by its stable name.
+    pub fn get(&self, name: &str) -> Option<&ActionInfo> {
+        self.actions.get(name)
+    }
+
+    /// Resolve a layout slot against the host, omitting unavailable actions.
+    pub fn resolve(&self, spec: &CommandSpec) -> Option<ResolvedCommand> {
+        let info = self.get(spec.reported_id());
+        if info.is_none() && !matches!(spec.kind, CommandKind::Shell(_)) {
+            return None;
+        }
+        let label = info
+            .map(|i| {
+                if i.label.is_empty() {
+                    i.name.clone()
+                } else {
+                    i.label.clone()
+                }
+            })
+            .unwrap_or_else(|| label_of(spec).to_string());
+        let key = match info {
+            Some(info) => (!info.hotkey.is_empty()).then(|| info.hotkey.clone()),
+            None => key_of(spec).map(str::to_string),
+        };
+        Some(ResolvedCommand {
+            label,
+            description: info.map(|i| i.description.clone()).unwrap_or_default(),
+            key,
+            kind: spec.kind,
+            icon: spec.icon.or_else(|| match spec.kind {
+                CommandKind::Tool(tool) => Some(tool.spec().icon),
+                _ => None,
+            }),
+        })
+    }
+}
+
+/// A layout command enriched with owned registry metadata.
+#[derive(Clone, Debug)]
+pub struct ResolvedCommand {
+    /// Localized presentation label.
+    pub label: String,
+    /// Localized help text.
+    pub description: String,
+    /// Configured gpui shortcut.
+    pub key: Option<String>,
+    /// Dispatch target.
+    pub kind: CommandKind,
+    /// UI-owned icon for this layout slot.
+    pub icon: Option<IconName>,
+}
+
+impl ResolvedCommand {
+    /// Construct the typed gpui action.
+    pub fn action(&self) -> Box<dyn Action> {
+        match self.kind {
+            CommandKind::Shell(command) => command.action(),
+            _ => Box::new(RunAction::new(self.reported_id())),
+        }
+    }
+
+    /// Stable action name reported to the host.
+    pub fn reported_id(&self) -> &'static str {
+        match self.kind {
+            CommandKind::Kicad(id) => id,
+            CommandKind::Tool(tool) => tool.id().as_str(),
+            CommandKind::Shell(command) => command.reported_id(),
+        }
+    }
+}
+
+fn strip_mnemonics(label: &str) -> String {
+    let mut chars = label
+        .split('\t')
+        .next()
+        .unwrap_or_default()
+        .chars()
+        .peekable();
+    let mut result = String::new();
+    while let Some(ch) = chars.next() {
+        if ch != '&' {
+            result.push(ch);
+        } else if chars.peek() == Some(&'&') {
+            result.push('&');
+            chars.next();
+        }
+    }
+    result
+}
+
+/// Convert KiCad's `KeyNameFromKeyCode` output into gpui keystroke notation.
+fn normalize_hotkey(value: &str) -> String {
+    let mut rest = value.trim();
+    let mut modifiers = String::new();
+    loop {
+        let modifier = [
+            ("Ctrl+", "ctrl-"),
+            ("Cmd+", "cmd-"),
+            ("RawCtrl+", "ctrl-"),
+            ("Alt+", "alt-"),
+            ("Option+", "alt-"),
+            ("Meta+", "cmd-"),
+            ("Win+", "super-"),
+            ("Super+", "super-"),
+            ("Shift+", "shift-"),
+        ]
+        .into_iter()
+        .find(|(prefix, _)| rest.starts_with(prefix));
+        let Some((prefix, translated)) = modifier else {
+            break;
+        };
+        modifiers.push_str(translated);
+        rest = &rest[prefix.len()..];
+    }
+    let key = match rest {
+        "" | "<unassigned>" => return String::new(),
+        "Esc" => "escape",
+        "Del" => "delete",
+        "Back" => "backspace",
+        "Ins" => "insert",
+        "PgUp" => "pageup",
+        "PgDn" => "pagedown",
+        "Return" => "enter",
+        key => key,
+    };
+    modifiers.push_str(&key.to_lowercase());
+    modifiers
+}
+
+/// Build native menus from layout slots present in the live registry.
+pub fn app_menus_with_registry(registry: &ActionRegistry) -> Vec<Menu> {
+    fn items(entries: &[MenuEntry], registry: &ActionRegistry) -> Vec<MenuItem> {
+        let mut result = Vec::new();
+        for entry in entries {
+            let item = match entry {
+                MenuEntry::Separator => {
+                    if result.is_empty() || matches!(result.last(), Some(MenuItem::Separator)) {
+                        continue;
+                    }
+                    MenuItem::Separator
+                }
+                MenuEntry::Submenu {
+                    label,
+                    items: children,
+                } => {
+                    let children = items(children, registry);
+                    if children.is_empty() {
+                        continue;
+                    }
+                    MenuItem::Submenu(Menu {
+                        name: (*label).into(),
+                        items: children,
+                        disabled: false,
+                    })
+                }
+                MenuEntry::Command(spec) => {
+                    let Some(command) = registry.resolve(spec) else {
+                        continue;
+                    };
+                    MenuItem::Action {
+                        name: command.label.clone().into(),
+                        action: command.action(),
+                        os_action: None,
+                        checked: false,
+                        disabled: false,
+                    }
+                }
+            };
+            result.push(item);
+        }
+        if matches!(result.last(), Some(MenuItem::Separator)) {
+            result.pop();
+        }
+        result
+    }
+    MENUS
+        .iter()
+        .filter_map(|menu| {
+            let items = items(menu.items, registry);
+            (!items.is_empty()).then(|| Menu {
+                name: menu.name.into(),
+                items,
+                disabled: false,
+            })
+        })
+        .collect()
+}
+
+/// Palette commands for the live editor, using registry labels and shortcuts.
+pub fn all_commands_with_registry(registry: &ActionRegistry) -> Vec<(String, ResolvedCommand)> {
+    all_commands()
+        .into_iter()
+        .filter_map(|(path, spec)| registry.resolve(&spec).map(|command| (path, command)))
+        .collect()
+}
+
+/// Bind configured host shortcuts, retaining the shell's Escape cancellation.
+pub fn key_bindings_with_registry(registry: &ActionRegistry) -> (Vec<KeyBinding>, Vec<String>) {
+    let mut bindings = Vec::new();
+    let mut rejected = Vec::new();
+    let mut bound = std::collections::HashSet::from(["escape".to_string()]);
+    let commands = all_commands_with_registry(registry);
+    let mut requested = Vec::new();
+    for (_, command) in &commands {
+        let alternate = registry
+            .get(command.reported_id())
+            .map(|info| info.hotkey_alt.as_str());
+        for keys in [command.key.as_deref(), alternate]
+            .into_iter()
+            .flatten()
+            .filter(|key| !key.is_empty())
+        {
+            requested.push((keys.to_string(), keys, command));
+        }
+    }
+    // Configured shortcuts take precedence over compatibility aliases.
+    #[cfg(target_os = "macos")]
+    {
+        let aliases: Vec<_> = requested
+            .iter()
+            .filter_map(|(keys, original, command)| {
+                let alias = if keys.starts_with("ctrl-") {
+                    Some(if keys == "ctrl-y" {
+                        "cmd-shift-z".to_string()
+                    } else {
+                        keys.replacen("ctrl-", "cmd-", 1)
+                    })
+                } else if keys.starts_with("cmd-") {
+                    Some(
+                        if keys == "cmd-shift-z"
+                            && command.reported_id() == "common.Interactive.redo"
+                        {
+                            "ctrl-y".to_string()
+                        } else {
+                            keys.replacen("cmd-", "ctrl-", 1)
+                        },
+                    )
+                } else {
+                    None
+                };
+                alias.map(|alias| (alias, *original, *command))
+            })
+            .collect();
+        requested.extend(aliases);
+    }
+    for (keys, original, command) in requested {
+        if !bound.insert(keys.clone()) {
+            continue;
+        }
+        let action = match command.kind {
+            CommandKind::Tool(_) => Box::new(RunAction {
+                id: command.reported_id().into(),
+                hotkey: Some(original.to_string().into()),
+            }) as Box<dyn Action>,
+            _ => command.action(),
+        };
+        match KeyBinding::load(
+            &keys,
+            action,
+            context_for(&keys),
+            false,
+            None,
+            &gpui_kit::DummyKeyboardMapper,
+        ) {
+            Ok(binding) => bindings.push(binding),
+            Err(_) => rejected.push(keys),
+        }
+    }
+    match KeyBinding::load(
+        "escape",
+        ShellCommand::CancelTool.action(),
+        context_for("escape"),
+        false,
+        None,
+        &gpui_kit::DummyKeyboardMapper,
+    ) {
+        Ok(binding) => bindings.push(binding),
+        Err(_) => rejected.push("escape".to_string()),
+    }
+    (bindings, rejected)
 }
 
 /// An entry in a menu.
@@ -790,7 +1111,10 @@ pub fn key_bindings() -> (Vec<KeyBinding>, Vec<&'static str>) {
 /// Modified shortcuts are left global on purpose: Ctrl+S should save whether or
 /// not a text field has focus.
 fn context_for(keys: &str) -> Option<Rc<KeyBindingContextPredicate>> {
-    let modified = keys.contains("ctrl-") || keys.contains("alt-") || keys.contains("cmd-");
+    let modified = keys.contains("ctrl-")
+        || keys.contains("alt-")
+        || keys.contains("cmd-")
+        || keys.contains("super-");
     if modified {
         return None;
     }
@@ -811,6 +1135,108 @@ pub fn tool_for_action(id: &str) -> Option<Tool> {
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    #[test]
+    fn registry_metadata_controls_labels_keys_and_availability() {
+        let registry = ActionRegistry::new(vec![ActionInfo {
+            name: "common.Control.save".into(),
+            label: "&Save && Close\tCtrl+S".into(),
+            description: "Configured save".into(),
+            hotkey: "Ctrl+Shift+S".into(),
+            hotkey_alt: "F2".into(),
+        }]);
+        let commands = all_commands_with_registry(&registry);
+        let save = commands
+            .iter()
+            .find(|(_, c)| c.reported_id() == "common.Control.save")
+            .unwrap();
+        assert_eq!(save.1.label, "Save & Close");
+        assert_eq!(save.1.key.as_deref(), Some("ctrl-shift-s"));
+        assert_eq!(save.1.description, "Configured save");
+        assert!(
+            !commands
+                .iter()
+                .any(|(_, c)| c.reported_id() == "common.Control.open")
+        );
+        assert!(
+            commands
+                .iter()
+                .any(|(_, c)| c.reported_id() == "kicad.ui.toggleTheme")
+        );
+        let (bindings, rejected) = key_bindings_with_registry(&registry);
+        assert!(rejected.is_empty(), "{rejected:?}");
+        assert!(
+            bindings
+                .iter()
+                .any(|b| b.keystrokes()[0].inner().key == "f2")
+        );
+        let menus = app_menus_with_registry(&registry);
+        let file = menus.iter().find(|m| m.name == "File").unwrap();
+        assert!(matches!(&file.items[0], MenuItem::Action { name, .. } if name == "Save & Close"));
+        assert!(!matches!(file.items.last(), Some(MenuItem::Separator)));
+    }
+
+    #[test]
+    fn registry_tool_shortcut_uses_configured_cursor_hotkey() {
+        let registry = ActionRegistry::new(vec![ActionInfo {
+            name: Tool::DrawWire.id().as_str().into(),
+            label: "Wire from registry".into(),
+            hotkey: "Shift+W".into(),
+            hotkey_alt: "F4".into(),
+            ..Default::default()
+        }]);
+        let (bindings, rejected) = key_bindings_with_registry(&registry);
+        assert!(rejected.is_empty());
+        let wire: Vec<_> = bindings
+            .iter()
+            .filter_map(|binding| {
+                binding
+                    .action()
+                    .as_any()
+                    .downcast_ref::<RunAction>()
+                    .filter(|action| action.id.as_ref() == Tool::DrawWire.id().as_str())
+            })
+            .collect();
+        assert_eq!(wire.len(), 2);
+        assert!(
+            wire.iter()
+                .any(|action| action.hotkey.as_deref() == Some("shift-w"))
+        );
+        assert!(
+            wire.iter()
+                .any(|action| action.hotkey.as_deref() == Some("f4"))
+        );
+        let unassigned = ActionRegistry::new(vec![ActionInfo {
+            name: Tool::DrawWire.id().as_str().into(),
+            label: "Wire".into(),
+            ..Default::default()
+        }]);
+        assert!(
+            all_commands_with_registry(&unassigned)
+                .iter()
+                .find(|(_, command)| command.reported_id() == Tool::DrawWire.id().as_str())
+                .unwrap()
+                .1
+                .key
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn registry_hotkeys_translate_named_keys_and_literal_plus() {
+        for (host, gpui) in [
+            ("Cmd+Shift+Z", "cmd-shift-z"),
+            ("Option+Shift+X", "alt-shift-x"),
+            ("Ctrl++", "ctrl-+"),
+            ("Shift+Space", "shift-space"),
+            ("Esc", "escape"),
+            ("Del", "delete"),
+            ("PgUp", "pageup"),
+            ("", ""),
+        ] {
+            assert_eq!(normalize_hotkey(host), gpui);
+        }
+    }
 
     /// Single-key shortcuts must not fire while a text field has focus, or the
     /// command palette cannot be typed into.

@@ -84,6 +84,9 @@ use std::path::PathBuf;
 
 use kicad_gal::DecodeError;
 
+mod actions;
+pub use actions::{actions, ActionInfo};
+
 /// Re-exported so that a caller needs one dependency, not two, to hold a frame.
 pub use kicad_gal::{Stream, StreamView};
 

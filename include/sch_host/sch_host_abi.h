@@ -849,6 +849,16 @@ KISCH_API uint32_t ksch_action_count( void );
 KISCH_API ksch_status ksch_action_at( uint32_t aIndex, ksch_action* aOut );
 
 /**
+ * Textual primary and alternate hotkeys for the action at @p aIndex.
+ *
+ * Uses KiCad's platform-specific key names (e.g. "Cmd+Z", "Ctrl+Z", "Esc").
+ * Both outputs are required. Strings live for the process lifetime and are
+ * empty for an unbound key. This keeps WXK numeric constants out of callers.
+ */
+KISCH_API ksch_status ksch_action_hotkey_names( uint32_t aIndex, const char** aPrimary,
+                                              const char** aAlternate );
+
+/**
  * Look an action up by its dotted name.
  *
  * @return ::KSCH_OK, or ::KSCH_ERR_OUT_OF_RANGE if no action has that name.

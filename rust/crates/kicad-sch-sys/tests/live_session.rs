@@ -52,6 +52,10 @@ fn main() {
     // already gone to stderr by then.
     let checks: &[(&str, fn())] = &[
         (
+            "registry metadata is owned, sorted and available without a session",
+            live::registry_metadata_is_owned,
+        ),
+        (
             "loading reports the hierarchy the fixture recorded",
             live::loading_reports_the_hierarchy,
         ),
@@ -142,6 +146,23 @@ fn main() {
 
 #[cfg(ksch_linked)]
 mod live {
+    pub fn registry_metadata_is_owned() {
+        let first = kicad_sch_sys::actions().expect("registry before runtime initialization");
+        assert!(
+            first.len() > 100,
+            "the actual KiCad registry must be linked"
+        );
+        assert!(first.windows(2).all(|pair| pair[0].name < pair[1].name));
+        let wire = first
+            .iter()
+            .find(|action| action.name == "eeschema.InteractiveDrawingLineWireBus.drawWires")
+            .expect("schematic wire action");
+        assert!(!wire.friendly_name.is_empty());
+        assert_eq!(wire.icon_name, "add_line");
+        assert!(!wire.hotkey_name.is_empty());
+        assert_eq!(first, kicad_sch_sys::actions().unwrap());
+    }
+
     use std::fmt::Debug;
     use std::fs::File;
     use std::path::{Path, PathBuf};

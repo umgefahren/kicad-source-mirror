@@ -1503,3 +1503,56 @@ fn secondary_drag_pans_without_opening_a_menu(cx: &mut TestAppContext) {
             .any(|event| matches!(event, ShellEvent::KeyDown { key, .. } if key == "r"))
     );
 }
+
+/// The live host's metadata reaches the rendered chrome, and missing registry
+/// actions cannot dispatch even though their disabled buttons retain layout.
+#[gpui_kit::test]
+fn live_registry_controls_toolbar_and_tool_palette(cx: &mut TestAppContext) {
+    let registry = commands::ActionRegistry::new(vec![
+        commands::ActionInfo {
+            name: "common.Control.save".into(),
+            label: "Save from host".into(),
+            description: "Host save help".into(),
+            hotkey: "Ctrl+S".into(),
+            ..Default::default()
+        },
+        commands::ActionInfo {
+            name: Tool::DrawWire.id().as_str().into(),
+            label: "Wire from host".into(),
+            description: "Host wire help".into(),
+            hotkey: "W".into(),
+            ..Default::default()
+        },
+    ]);
+    cx.update(|cx| cx.set_global(registry));
+    let harness = open(cx);
+    cx.update_window(harness.window, |_, window, _| {
+        assert_eq!(window.find("tb-save").label(), Some("Save from host"));
+        assert_eq!(window.find("tool-wire").label(), Some("Wire from host"));
+    })
+    .unwrap();
+
+    click(cx, &harness, "tb-open");
+    click(cx, &harness, "tool-symbol");
+    assert!(
+        harness.sink.invoked_actions().is_empty(),
+        "missing actions must not dispatch"
+    );
+    click(cx, &harness, "tb-save");
+    assert!(harness.sink.events().iter().any(|event| matches!(
+        event, ShellEvent::ActionInvoked(id) if id.as_str() == "common.Control.save"
+    )));
+    click(cx, &harness, "tb-palette");
+    cx.update_window(harness.window, |_, window, cx| {
+        window.render_frame(cx);
+        window.input("Wire from host", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(harness.window, |_, window, cx| {
+        window.render_frame(cx);
+        let state = harness.shell.read(cx).command_state().read(cx);
+        assert_eq!(state.matched_count(), 1, "palette searches the host label");
+    })
+    .unwrap();
+}

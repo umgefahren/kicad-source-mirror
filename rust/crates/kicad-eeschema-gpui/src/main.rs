@@ -26,6 +26,7 @@ use gpui_kit::component::theme::ThemeMode;
 use gpui_kit::{App, AppContext as _, Bounds, WindowBounds, WindowOptions, point, px, size};
 use kicad_sch_render::SchematicRenderer;
 use kicad_sch_sys::{Session, Stream, Viewport};
+use kicad_sch_ui::commands::{ActionInfo, ActionRegistry};
 use kicad_sch_ui::document::{LiveDocument, SharedDocument, shared_document};
 use kicad_sch_ui::input::ViewportState;
 use kicad_sch_ui::panels::DocumentSource;
@@ -351,6 +352,22 @@ fn file_label(path: &Path) -> gpui_kit::SharedString {
         .into()
 }
 
+/// Adapt owned host metadata without making the UI crate depend on the C ABI.
+fn ui_action_registry(actions: Vec<kicad_sch_sys::ActionInfo>) -> ActionRegistry {
+    ActionRegistry::new(
+        actions
+            .into_iter()
+            .map(|action| ActionInfo {
+                name: action.name,
+                label: action.menu_label,
+                description: action.description,
+                hotkey: action.hotkey_name,
+                hotkey_alt: action.hotkey_alt_name,
+            })
+            .collect(),
+    )
+}
+
 fn main() {
     let options = match parse_args(std::env::args().skip(1)) {
         Ok(options) => options,
@@ -381,12 +398,33 @@ fn main() {
         None => None,
     };
 
+    // Read after opening the session, once the host has initialized its tools
+    // and hotkeys. Replay keeps its standalone command catalogue.
+    let registry = if loaded
+        .as_ref()
+        .is_some_and(|loaded| loaded.session.is_some())
+    {
+        match kicad_sch_sys::actions() {
+            Ok(actions) => Some(ui_action_registry(actions)),
+            Err(error) => {
+                eprintln!("could not read KiCad's action registry: {error}");
+                std::process::exit(1);
+            }
+        }
+    } else {
+        None
+    };
+
     gpui_kit::application()
         // The full Lucide catalogue rather than the default hundred: the tool
         // palette alone needs a dozen icons outside the default set.
         .with_assets(gpui_kit::assets::AllAssets)
         .run(move |cx: &mut App| {
-            shell::init(cx);
+            if let Some(registry) = registry {
+                shell::init_with_registry(cx, registry);
+            } else {
+                shell::init(cx);
+            }
             if options.light {
                 kicad_sch_ui::theme::apply(ThemeMode::Light, None, cx);
             }
@@ -491,6 +529,27 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn live_registry_builds_menus_and_parseable_shortcuts() {
+        if !kicad_sch_sys::is_available() {
+            return;
+        }
+        let registry = super::ui_action_registry(kicad_sch_sys::actions().unwrap());
+        let commands = kicad_sch_ui::commands::all_commands_with_registry(&registry);
+        let wire = commands
+            .iter()
+            .find(|(_, command)| {
+                command.reported_id() == "eeschema.InteractiveDrawingLineWireBus.drawWires"
+            })
+            .unwrap();
+        assert_eq!(wire.1.key.as_deref(), Some("w"));
+        assert!(!wire.1.label.is_empty());
+        let (bindings, rejected) = kicad_sch_ui::commands::key_bindings_with_registry(&registry);
+        assert!(rejected.is_empty(), "unparsed host shortcuts: {rejected:?}");
+        assert!(bindings.len() > 20);
+        assert!(!kicad_sch_ui::commands::app_menus_with_registry(&registry).is_empty());
+    }
+
     use super::*;
 
     fn parse(args: &[&str]) -> Result<Options, String> {
