@@ -62,6 +62,7 @@
 #include <sch_label.h>
 #include <sch_bitmap.h>
 #include <schematic.h>
+#include <schematic_holder.h>
 #include <sch_commit.h>
 #include <scoped_set_reset.h>
 #include <libraries/legacy_symbol_library.h>
@@ -103,14 +104,16 @@ SCH_DRAWING_TOOLS::SCH_DRAWING_TOOLS() :
 
 bool SCH_DRAWING_TOOLS::Init()
 {
-    // Declines a tool holder that is not this tool's frame; see SCH_TOOL_BASE::Init().
+    // Declines a holder that is not a SCHEMATIC_HOLDER; see SCH_TOOL_BASE::Init().
     if( !SCH_TOOL_BASE::Init() )
         return false;
 
     auto belowRootSheetCondition =
             [this]( const SELECTION& aSel )
             {
-                return m_frame->GetCurrentSheet().Last() != &m_frame->Schematic().Root();
+                SCHEMATIC* schematic = m_editor->GetSchematic();
+
+                return schematic && schematic->CurrentSheet().Last() != &schematic->Root();
             };
 
     // some interactive drawing tools can undo the last point
@@ -126,13 +129,19 @@ bool SCH_DRAWING_TOOLS::Init()
                 return m_mode == MODE::RULE_AREA;
             };
 
-    CONDITIONAL_MENU& ctxMenu = m_menu->GetMenu();
+    // TOOL_INTERACTIVE only builds a TOOL_MENU — and the wxMenu under it — when
+    // Pgm().IsGUI(), so a headless holder has none to add to. These three are right-click
+    // presentation; the actions behind them still run.
+    if( m_menu )
+    {
+        CONDITIONAL_MENU& ctxMenu = m_menu->GetMenu();
 
-    // clang-format off
-    ctxMenu.AddItem( SCH_ACTIONS::leaveSheet,      belowRootSheetCondition, 150 );
-    ctxMenu.AddItem( SCH_ACTIONS::closeOutline,    inDrawingRuleArea,       200 );
-    ctxMenu.AddItem( ACTIONS::deleteLastPoint,     canUndoPoint,            200 );
-    // clang-format on
+        // clang-format off
+        ctxMenu.AddItem( SCH_ACTIONS::leaveSheet,      belowRootSheetCondition, 150 );
+        ctxMenu.AddItem( SCH_ACTIONS::closeOutline,    inDrawingRuleArea,       200 );
+        ctxMenu.AddItem( ACTIONS::deleteLastPoint,     canUndoPoint,            200 );
+        // clang-format on
+    }
 
     return true;
 }
@@ -144,6 +153,17 @@ int SCH_DRAWING_TOOLS::PlaceSymbol( const TOOL_EVENT& aEvent )
 
     SCH_SYMBOL* symbol = toolParams.m_Symbol;
 
+    // Placing a symbol begins in the library chooser, and continues there after every
+    // placement unless the caller handed us one symbol to drop.  That chooser is a dialog
+    // and PickSymbolFromLibrary(), GetLibSymbol() and Prj() are all the frame's, so without
+    // a window there is no way to answer "which symbol?".  We own the parameterised one, so
+    // free it rather than leak it on the way out.
+    if( !m_frame )
+    {
+        delete symbol;
+        return 0;
+    }
+
     // If we get a parameterised symbol, we probably just want to place that and get out of the placement tool,
     // rather than popping up the chooser afterwards.  A multi-unit symbol may still request that its remaining
     // units be placed before the tool exits.
@@ -154,7 +174,7 @@ int SCH_DRAWING_TOOLS::PlaceSymbol( const TOOL_EVENT& aEvent )
     bool                        ignorePrimePosition = false;
     COMMON_SETTINGS*            common_settings = Pgm().GetCommonSettings();
     SCHEMATIC_SETTINGS&         schSettings = m_frame->Schematic().Settings();
-    SCH_SCREEN*                 screen = m_frame->GetScreen();
+    SCH_SCREEN*                 screen = m_editor->GetScreen();
     bool                        keepSymbol = false;
     bool                        placeAllUnits = toolParams.m_PlaceAllUnits;
 
@@ -192,7 +212,7 @@ int SCH_DRAWING_TOOLS::PlaceSymbol( const TOOL_EVENT& aEvent )
     }
 
     TOOL_EVENT         originalEvent = aEvent;          // This can change out from under us when the event loop runs
-    SCOPED_TOOL_PUSHER raii( m_frame, originalEvent );
+    SCOPED_TOOL_PUSHER raii( m_toolMgr->GetToolHolder(), originalEvent );
 
     auto addSymbol =
             [this]( SCH_SYMBOL* aSymbol )
@@ -213,7 +233,7 @@ int SCH_DRAWING_TOOLS::PlaceSymbol( const TOOL_EVENT& aEvent )
     auto setCursor =
             [&]()
             {
-                m_frame->GetCanvas()->SetCurrentCursor( symbol ? KICURSOR::MOVING : KICURSOR::COMPONENT );
+                m_editor->SetCurrentCursor( symbol ? KICURSOR::MOVING : KICURSOR::COMPONENT );
             };
 
     auto cleanup =
@@ -232,7 +252,7 @@ int SCH_DRAWING_TOOLS::PlaceSymbol( const TOOL_EVENT& aEvent )
     auto annotate =
             [&]()
             {
-                EESCHEMA_SETTINGS* cfg = m_frame->eeconfig();
+                EESCHEMA_SETTINGS* cfg = m_editor->eeconfig();
 
                 // Then we need to annotate all instances by sheet
                 for( SCH_SHEET_PATH& instance : newInstances )
@@ -346,7 +366,7 @@ int SCH_DRAWING_TOOLS::PlaceSymbol( const TOOL_EVENT& aEvent )
             if( evt->IsMoveTool() )
             {
                 // Make sure we come back after the move tool runs
-                frame()->PushTool( originalEvent );
+                m_toolMgr->GetToolHolder()->PushTool( originalEvent );
             }
 
             break;
@@ -389,7 +409,7 @@ int SCH_DRAWING_TOOLS::PlaceSymbol( const TOOL_EVENT& aEvent )
                 }
 
                 // Pick the symbol to be placed
-                bool footprintPreviews = m_frame->eeconfig()->m_Appearance.footprint_preview;
+                bool footprintPreviews = m_editor->eeconfig()->m_Appearance.footprint_preview;
                 PICKED_SYMBOL sel = m_frame->PickSymbolFromLibrary( &filter, *historyList, alreadyPlaced,
                                                                     footprintPreviews );
 
@@ -416,7 +436,7 @@ int SCH_DRAWING_TOOLS::PlaceSymbol( const TOOL_EVENT& aEvent )
                                             GRID_HELPER_GRIDS::GRID_CONNECTABLE );
                 }
 
-                EESCHEMA_SETTINGS*    cfg = m_frame->eeconfig();
+                EESCHEMA_SETTINGS*    cfg = m_editor->eeconfig();
 
                 // Only convert between power symbol types. Regular (non-power) symbols must
                 // never be promoted to power symbols just because the default is set to
@@ -464,7 +484,7 @@ int SCH_DRAWING_TOOLS::PlaceSymbol( const TOOL_EVENT& aEvent )
                 existingRefs.AddItem( placedSymbolReference );
                 existingRefs.SortByReferenceOnly();
 
-                if( m_frame->eeconfig()->m_AutoplaceFields.enable )
+                if( m_editor->eeconfig()->m_AutoplaceFields.enable )
                 {
                     // Not placed yet, so pass a nullptr screen reference
                     symbol->AutoplaceFields( nullptr, AUTOPLACE_AUTO );
@@ -476,12 +496,12 @@ int SCH_DRAWING_TOOLS::PlaceSymbol( const TOOL_EVENT& aEvent )
             else
             {
                 m_view->ClearPreview();
-                m_frame->AddToScreen( symbol, screen );
+                m_editor->AddToScreen( symbol, screen );
 
-                if( m_frame->eeconfig()->m_AutoplaceFields.enable )
+                if( m_editor->eeconfig()->m_AutoplaceFields.enable )
                     symbol->AutoplaceFields( screen, AUTOPLACE_AUTO );
 
-                m_frame->SaveCopyForRepeatItem( symbol );
+                m_editor->SaveCopyForRepeatItem( symbol );
 
                 SCH_COMMIT commit( m_toolMgr );
                 commit.Added( symbol, screen );
@@ -574,7 +594,9 @@ int SCH_DRAWING_TOOLS::PlaceSymbol( const TOOL_EVENT& aEvent )
             if( !symbol )
                 m_toolMgr->VetoContextMenuMouseWarp();
 
-            m_menu->ShowContextMenu( m_selectionTool->GetSelection() );
+            // The menu is only built when Pgm().IsGUI(); see ::Init.
+            if( m_menu )
+                m_menu->ShowContextMenu( m_selectionTool->GetSelection() );
         }
         else if( evt->Category() == TC_COMMAND && evt->Action() == TA_CHOICE_MENU_CHOICE )
         {
@@ -658,7 +680,7 @@ int SCH_DRAWING_TOOLS::PlaceSymbol( const TOOL_EVENT& aEvent )
 
     getViewControls()->SetAutoPan( false );
     getViewControls()->CaptureCursor( false );
-    m_frame->GetCanvas()->SetCurrentCursor( KICURSOR::ARROW );
+    m_editor->SetCurrentCursor( KICURSOR::ARROW );
 
     return 0;
 }
@@ -669,6 +691,11 @@ int SCH_DRAWING_TOOLS::PlaceNextSymbolUnit( const TOOL_EVENT& aEvent )
     const SCH_ACTIONS::PLACE_SYMBOL_UNIT_PARAMS& params = aEvent.Parameter<SCH_ACTIONS::PLACE_SYMBOL_UNIT_PARAMS>();
     SCH_SYMBOL* symbol = params.m_Symbol;
     int requestedUnit = params.m_Unit;
+
+    // All this does is hand the next unit to ::PlaceSymbol, which cannot run without the
+    // library chooser's window.  There is nothing to hand it to without one.
+    if( !m_frame )
+        return 0;
 
     // TODO: get from selection
     if( !symbol )
@@ -773,10 +800,17 @@ static std::optional<VECTOR2I> designBlockAnchor( const std::vector<SCH_ITEM*>& 
 
 int SCH_DRAWING_TOOLS::ImportSheet( const TOOL_EVENT& aEvent )
 {
+    // Which design block, or which file, is asked for in a chooser pane or a file dialog,
+    // and what comes back is read in by SCH_EDIT_FRAME::LoadSheetFromFile() and annotated
+    // by its AnnotateSymbols().  All of those are the frame's, so this action is a window
+    // from end to end.
+    if( !m_frame )
+        return 0;
+
     COMMON_SETTINGS*      common_settings = Pgm().GetCommonSettings();
-    EESCHEMA_SETTINGS*    cfg = m_frame->eeconfig();
+    EESCHEMA_SETTINGS*    cfg = m_editor->eeconfig();
     SCHEMATIC_SETTINGS&   schSettings = m_frame->Schematic().Settings();
-    SCH_SCREEN*           screen = m_frame->GetScreen();
+    SCH_SCREEN*           screen = m_editor->GetScreen();
     SCH_SHEET_PATH&       sheetPath = m_frame->GetCurrentSheet();
 
     KIGFX::VIEW_CONTROLS* controls = getViewControls();
@@ -838,8 +872,8 @@ int SCH_DRAWING_TOOLS::ImportSheet( const TOOL_EVENT& aEvent )
     auto setCursor =
             [&]()
             {
-                m_frame->GetCanvas()->SetCurrentCursor( designBlock ? KICURSOR::MOVING
-                                                                    : KICURSOR::COMPONENT );
+                m_editor->SetCurrentCursor( designBlock ? KICURSOR::MOVING
+                                                        : KICURSOR::COMPONENT );
             };
 
     auto placeSheetContents =
@@ -867,7 +901,7 @@ int SCH_DRAWING_TOOLS::ImportSheet( const TOOL_EVENT& aEvent )
                 m_frame->SetSheetNumberAndCount();
 
                 m_frame->SyncView();
-                m_frame->OnModify();
+                m_editor->OnModify();
                 m_frame->HardRedraw(); // Full reinit of the current screen and the display.
 
                 SCH_GROUP* group = nullptr;
@@ -1078,7 +1112,7 @@ int SCH_DRAWING_TOOLS::ImportSheet( const TOOL_EVENT& aEvent )
 
     // We're placing a sheet as a sheet, we need to run a small tool loop to get the starting
     // coordinate of the sheet drawing
-    SCOPED_TOOL_PUSHER raii( m_frame, aEvent );
+    SCOPED_TOOL_PUSHER raii( m_toolMgr->GetToolHolder(), aEvent );
 
     Activate();
 
@@ -1137,7 +1171,9 @@ int SCH_DRAWING_TOOLS::ImportSheet( const TOOL_EVENT& aEvent )
             if( !designBlock )
                 m_toolMgr->VetoContextMenuMouseWarp();
 
-            m_menu->ShowContextMenu( m_selectionTool->GetSelection() );
+            // The menu is only built when Pgm().IsGUI(); see ::Init.
+            if( m_menu )
+                m_menu->ShowContextMenu( m_selectionTool->GetSelection() );
         }
         else if( evt->IsAction( &ACTIONS::duplicate )
                  || evt->IsAction( &SCH_ACTIONS::repeatDrawItem ) )
@@ -1150,7 +1186,7 @@ int SCH_DRAWING_TOOLS::ImportSheet( const TOOL_EVENT& aEvent )
         }
     }
 
-    m_frame->GetCanvas()->SetCurrentCursor( KICURSOR::ARROW );
+    m_editor->SetCurrentCursor( KICURSOR::ARROW );
     return 0;
 }
 
@@ -1182,15 +1218,15 @@ int SCH_DRAWING_TOOLS::PlaceImage( const TOOL_EVENT& aEvent )
     }
 
     TOOL_EVENT         originalEvent = aEvent;          // This can change out from under us when the event loop runs
-    SCOPED_TOOL_PUSHER raii( m_frame, originalEvent );
+    SCOPED_TOOL_PUSHER raii( m_toolMgr->GetToolHolder(), originalEvent );
 
     auto setCursor =
             [&]()
             {
                 if( image )
-                    m_frame->GetCanvas()->SetCurrentCursor( KICURSOR::MOVING );
+                    m_editor->SetCurrentCursor( KICURSOR::MOVING );
                 else
-                    m_frame->GetCanvas()->SetCurrentCursor( KICURSOR::ARROW );
+                    m_editor->SetCurrentCursor( KICURSOR::ARROW );
             };
 
     auto cleanup =
@@ -1241,7 +1277,9 @@ int SCH_DRAWING_TOOLS::PlaceImage( const TOOL_EVENT& aEvent )
 
         if( evt->IsCancelInteractive() || ( image && evt->IsAction( &ACTIONS::undo ) ) )
         {
-            m_frame->GetInfoBar()->Dismiss();
+            // An info bar is a window; without one there is no hint to take back down.
+            if( m_frame )
+                m_frame->GetInfoBar()->Dismiss();
 
             if( image )
                 cleanup();
@@ -1262,7 +1300,10 @@ int SCH_DRAWING_TOOLS::PlaceImage( const TOOL_EVENT& aEvent )
 
             if( image )
             {
-                m_frame->ShowInfoBarMsg( _( "Press <ESC> to cancel image creation." ) );
+                // Without an info bar the hint is lost, not the gesture.
+                if( m_frame )
+                    m_frame->ShowInfoBarMsg( _( "Press <ESC> to cancel image creation." ) );
+
                 evt->SetPassEvent( false );
                 continue;
             }
@@ -1270,7 +1311,7 @@ int SCH_DRAWING_TOOLS::PlaceImage( const TOOL_EVENT& aEvent )
             if( evt->IsMoveTool() )
             {
                 // Make sure we come back after the move tool is done
-                m_frame->PushTool( originalEvent );
+                m_toolMgr->GetToolHolder()->PushTool( originalEvent );
             }
 
             break;
@@ -1282,6 +1323,12 @@ int SCH_DRAWING_TOOLS::PlaceImage( const TOOL_EVENT& aEvent )
             if( !image )
             {
                 m_toolMgr->RunAction( ACTIONS::selectionClear );
+
+                // Choosing the file is a dialog, and without a window to parent it there
+                // is no way to ask which image to place.  Leave rather than loop on a
+                // click we cannot answer; an image handed in as a parameter still places.
+                if( !m_frame )
+                    break;
 
                 wxFileDialog dlg( m_frame, _( "Choose Image" ), m_mruPath, wxEmptyString, FILEEXT::ImageFileWildcard(),
                                   wxFD_OPEN );
@@ -1329,7 +1376,7 @@ int SCH_DRAWING_TOOLS::PlaceImage( const TOOL_EVENT& aEvent )
 
                 image->SetFlags( IS_NEW | IS_MOVING );
 
-                m_frame->SaveCopyForRepeatItem( image );
+                m_editor->SaveCopyForRepeatItem( image );
 
                 m_view->ClearPreview();
                 m_view->AddToPreview( image, false );   // Add, but not give ownership
@@ -1343,7 +1390,7 @@ int SCH_DRAWING_TOOLS::PlaceImage( const TOOL_EVENT& aEvent )
             else
             {
                 SCH_COMMIT commit( m_toolMgr );
-                commit.Add( image, m_frame->GetScreen() );
+                commit.Add( image, m_editor->GetScreen() );
                 commit.Push( _( "Place Image" ) );
 
                 image = nullptr;
@@ -1361,7 +1408,9 @@ int SCH_DRAWING_TOOLS::PlaceImage( const TOOL_EVENT& aEvent )
             if( !image )
                 m_toolMgr->VetoContextMenuMouseWarp();
 
-            m_menu->ShowContextMenu( m_selectionTool->GetSelection() );
+            // The menu is only built when Pgm().IsGUI(); see ::Init.
+            if( m_menu )
+                m_menu->ShowContextMenu( m_selectionTool->GetSelection() );
         }
         else if( evt->IsAction( &ACTIONS::duplicate )
                  || evt->IsAction( &SCH_ACTIONS::repeatDrawItem )
@@ -1385,7 +1434,10 @@ int SCH_DRAWING_TOOLS::PlaceImage( const TOOL_EVENT& aEvent )
             m_view->ClearPreview();
             m_view->AddToPreview( image, false );   // Add, but not give ownership
             m_view->RecacheAllItems();              // Bitmaps are cached in Opengl
-            m_frame->SetMsgPanel( image );
+
+            // The message panel is the frame's status area; there is none to fill without it.
+            if( m_frame )
+                m_frame->SetMsgPanel( image );
         }
         else if( image && evt->IsAction( &ACTIONS::doDelete ) )
         {
@@ -1407,7 +1459,7 @@ int SCH_DRAWING_TOOLS::PlaceImage( const TOOL_EVENT& aEvent )
 
     getViewControls()->SetAutoPan( false );
     getViewControls()->CaptureCursor( false );
-    m_frame->GetCanvas()->SetCurrentCursor( KICURSOR::ARROW );
+    m_editor->SetCurrentCursor( KICURSOR::ARROW );
 
     return 0;
 }
@@ -1422,7 +1474,7 @@ int SCH_DRAWING_TOOLS::SingleClickPlace( const TOOL_EVENT& aEvent )
     SCH_ITEM*             previewItem;
     bool                  loggedInfoBarError = false;
     wxString              description;
-    SCH_SCREEN*           screen = m_frame->GetScreen();
+    SCH_SCREEN*           screen = m_editor->GetScreen();
     bool                  allowRepeat = false;  // Set to true to allow new item repetition
 
     if( m_inDrawingTool )
@@ -1476,12 +1528,12 @@ int SCH_DRAWING_TOOLS::SingleClickPlace( const TOOL_EVENT& aEvent )
     cursorPos = aEvent.HasPosition() ? aEvent.Position() : controls->GetMousePosition();
 
     TOOL_EVENT         originalEvent = aEvent;          // This can change out from under us when the event loop runs
-    SCOPED_TOOL_PUSHER raii( m_frame, originalEvent );
+    SCOPED_TOOL_PUSHER raii( m_toolMgr->GetToolHolder(), originalEvent );
 
     auto setCursor =
             [&]()
             {
-                m_frame->GetCanvas()->SetCurrentCursor( KICURSOR::PLACE );
+                m_editor->SetCurrentCursor( KICURSOR::PLACE );
             };
 
     Activate();
@@ -1521,7 +1573,7 @@ int SCH_DRAWING_TOOLS::SingleClickPlace( const TOOL_EVENT& aEvent )
             if( evt->IsMoveTool() )
             {
                 // Make sure we come back after the move tool runs
-                frame()->PushTool( originalEvent );
+                m_toolMgr->GetToolHolder()->PushTool( originalEvent );
             }
 
             break;
@@ -1537,7 +1589,7 @@ int SCH_DRAWING_TOOLS::SingleClickPlace( const TOOL_EVENT& aEvent )
                 {
                     SCH_COMMIT commit( m_toolMgr );
                     commit.Removed( existingItem, screen );
-                    m_frame->RemoveFromScreen( existingItem, screen );
+                    m_editor->RemoveFromScreen( existingItem, screen );
                     commit.Push( _( "Remove No Connect Flag" ) );
                 }
             }
@@ -1547,11 +1599,15 @@ int SCH_DRAWING_TOOLS::SingleClickPlace( const TOOL_EVENT& aEvent )
                 {
                     if( !screen->IsExplicitJunctionAllowed( cursorPos ) )
                     {
-                        m_frame->ShowInfoBarError( _( "Junction location contains no joinable wires and/or pins." ) );
+                        // The info bar is a window: without one the junction is still
+                        // refused, the user just does not get told why.
+                        if( m_frame )
+                            m_frame->ShowInfoBarError( _( "Junction location contains no joinable wires and/or pins." ) );
+
                         loggedInfoBarError = true;
                         continue;
                     }
-                    else if( loggedInfoBarError )
+                    else if( loggedInfoBarError && m_frame )
                     {
                         m_frame->GetInfoBar()->Dismiss();
                     }
@@ -1563,7 +1619,8 @@ int SCH_DRAWING_TOOLS::SingleClickPlace( const TOOL_EVENT& aEvent )
                     SCH_LINE_WIRE_BUS_TOOL* lwbTool = m_toolMgr->GetTool<SCH_LINE_WIRE_BUS_TOOL>();
                     lwbTool->AddJunction( &commit, screen, cursorPos );
 
-                    m_frame->Schematic().CleanUp( &commit );
+                    if( SCHEMATIC* schematic = m_editor->GetSchematic() )
+                        schematic->CleanUp( &commit );
 
                     commit.Push( description );
                 }
@@ -1573,15 +1630,16 @@ int SCH_DRAWING_TOOLS::SingleClickPlace( const TOOL_EVENT& aEvent )
                     const_cast<KIID&>( newItem->m_Uuid ) = KIID();
                     newItem->SetPosition( cursorPos );
                     newItem->SetFlags( IS_NEW );
-                    m_frame->AddToScreen( newItem, screen );
+                    m_editor->AddToScreen( newItem, screen );
 
                     if( allowRepeat )
-                        m_frame->SaveCopyForRepeatItem( newItem );
+                        m_editor->SaveCopyForRepeatItem( newItem );
 
                     SCH_COMMIT commit( m_toolMgr );
                     commit.Added( newItem, screen );
 
-                    m_frame->Schematic().CleanUp( &commit );
+                    if( SCHEMATIC* schematic = m_editor->GetSchematic() )
+                        schematic->CleanUp( &commit );
 
                     commit.Push( description );
                 }
@@ -1592,14 +1650,19 @@ int SCH_DRAWING_TOOLS::SingleClickPlace( const TOOL_EVENT& aEvent )
         }
         else if( evt->IsClick( BUT_RIGHT ) )
         {
-            m_menu->ShowContextMenu( m_selectionTool->GetSelection() );
+            // The menu is only built when Pgm().IsGUI(); see ::Init.
+            if( m_menu )
+                m_menu->ShowContextMenu( m_selectionTool->GetSelection() );
         }
         else if( evt->IsAction( &ACTIONS::refreshPreview ) || evt->IsMotion() )
         {
             previewItem->SetPosition( cursorPos );
             m_view->ClearPreview();
             m_view->AddToPreview( previewItem->Clone() );
-            m_frame->SetMsgPanel( previewItem );
+
+            // The message panel is the frame's status area; there is none to fill without it.
+            if( m_frame )
+                m_frame->SetMsgPanel( previewItem );
         }
         else if( evt->Category() == TC_COMMAND )
         {
@@ -1630,7 +1693,10 @@ int SCH_DRAWING_TOOLS::SingleClickPlace( const TOOL_EVENT& aEvent )
                 m_view->ClearPreview();
                 m_view->AddToPreview( previewItem->Clone() );
             }
-            else if( evt->IsAction( &SCH_ACTIONS::properties ) )
+            // Editing the item about to be placed *is* the dialog, so without a window to
+            // parent it there is nothing this branch can do.  Placement itself does not
+            // need one.
+            else if( evt->IsAction( &SCH_ACTIONS::properties ) && m_frame )
             {
                 switch( type )
                 {
@@ -1688,7 +1754,7 @@ int SCH_DRAWING_TOOLS::SingleClickPlace( const TOOL_EVENT& aEvent )
     delete previewItem;
     m_view->ClearPreview();
 
-    m_frame->GetCanvas()->SetCurrentCursor( KICURSOR::ARROW );
+    m_editor->SetCurrentCursor( KICURSOR::ARROW );
     controls->ForceCursorPosition( false );
 
     return 0;
@@ -1697,7 +1763,7 @@ int SCH_DRAWING_TOOLS::SingleClickPlace( const TOOL_EVENT& aEvent )
 
 SCH_LINE* SCH_DRAWING_TOOLS::findWire( const VECTOR2I& aPosition )
 {
-    for( SCH_ITEM* item : m_frame->GetScreen()->Items().Overlapping( SCH_LINE_T, aPosition ) )
+    for( SCH_ITEM* item : m_editor->GetScreen()->Items().Overlapping( SCH_LINE_T, aPosition ) )
     {
         SCH_LINE* line = static_cast<SCH_LINE*>( item );
 
@@ -1716,7 +1782,12 @@ wxString SCH_DRAWING_TOOLS::findWireLabelDriverName( SCH_LINE* aWire )
 {
     wxASSERT( aWire->IsWire() );
 
-    SCH_SHEET_PATH sheetPath = m_frame->GetCurrentSheet();
+    SCHEMATIC* schematic = m_editor->GetSchematic();
+
+    if( !schematic )
+        return wxEmptyString;
+
+    SCH_SHEET_PATH sheetPath = schematic->CurrentSheet();
 
     const auto labelDriverName = []( const auto& aConnection ) -> wxString
     {
@@ -1730,7 +1801,7 @@ wxString SCH_DRAWING_TOOLS::findWireLabelDriverName( SCH_LINE* aWire )
 
     if( ADVANCED_CFG::GetCfg().m_ConnectivityEngine )
     {
-        const auto connection = m_frame->Schematic().Connectivity().Connection( aWire->m_Uuid, sheetPath.PathRef() );
+        const auto connection = schematic->Connectivity().Connection( aWire->m_Uuid, sheetPath.PathRef() );
         return connection ? labelDriverName( *connection ) : wxString();
     }
 
@@ -1792,7 +1863,7 @@ bool SCH_DRAWING_TOOLS::createNewLabel( const VECTOR2I& aPosition, int aType,
 
     // The normal parent is the current screen for these labels, set by SCH_SCREEN::Append()
     // but it is also used during placement for SCH_HIERLABEL before beeing appended
-    labelItem->SetParent( m_frame->GetScreen() );
+    labelItem->SetParent( m_editor->GetScreen() );
 
     labelItem->SetTextSize( VECTOR2I( settings.m_DefaultTextSize, settings.m_DefaultTextSize ) );
 
@@ -1811,7 +1882,7 @@ bool SCH_DRAWING_TOOLS::createNewLabel( const VECTOR2I& aPosition, int aType,
         // Auto-create from attached wire
         labelItem->SetText( netName );
     }
-    else
+    else if( m_frame )
     {
         DIALOG_LABEL_PROPERTIES dlg( m_frame, labelItem, true );
 
@@ -1824,6 +1895,14 @@ bool SCH_DRAWING_TOOLS::createNewLabel( const VECTOR2I& aPosition, int aType,
             delete labelItem;
             return false;
         }
+    }
+    else
+    {
+        // A label the attached wire already names is placed above without asking anything.
+        // Any other one has to be typed into a dialog, and there is no window to put one
+        // in, so this is as far as it goes.
+        delete labelItem;
+        return false;
     }
 
     if( aType != LAYER_NETCLASS_REFS )
@@ -1855,6 +1934,11 @@ bool SCH_DRAWING_TOOLS::createNewLabel( const VECTOR2I& aPosition, int aType,
 
 SCH_TEXT* SCH_DRAWING_TOOLS::createNewText( const VECTOR2I& aPosition )
 {
+    // Unlike a label, a free text item has nothing to take its content from but the
+    // properties dialog, so without a window to parent one there is nothing to place.
+    if( !m_frame )
+        return nullptr;
+
     SCHEMATIC*          schematic = getModel<SCHEMATIC>();
     SCHEMATIC_SETTINGS& settings = schematic->Settings();
     SCH_TEXT*           textItem = nullptr;
@@ -1949,23 +2033,23 @@ int SCH_DRAWING_TOOLS::TwoClickPlace( const TOOL_EVENT& aEvent )
     m_toolMgr->RunAction( ACTIONS::selectionClear );
 
     TOOL_EVENT         originalEvent = aEvent;          // This can change out from under us when the event loop runs
-    SCOPED_TOOL_PUSHER raii( m_frame, originalEvent );
+    SCOPED_TOOL_PUSHER raii( m_toolMgr->GetToolHolder(), originalEvent );
 
     auto setCursor =
             [&]()
             {
                 if( item )
-                    m_frame->GetCanvas()->SetCurrentCursor( KICURSOR::PLACE );
+                    m_editor->SetCurrentCursor( KICURSOR::PLACE );
                 else if( isText )
-                    m_frame->GetCanvas()->SetCurrentCursor( KICURSOR::TEXT );
+                    m_editor->SetCurrentCursor( KICURSOR::TEXT );
                 else if( isGlobalLabel )
-                    m_frame->GetCanvas()->SetCurrentCursor( KICURSOR::LABEL_GLOBAL );
+                    m_editor->SetCurrentCursor( KICURSOR::LABEL_GLOBAL );
                 else if( isNetLabel || isClassLabel )
-                    m_frame->GetCanvas()->SetCurrentCursor( KICURSOR::LABEL_NET );
+                    m_editor->SetCurrentCursor( KICURSOR::LABEL_NET );
                 else if( isHierLabel )
-                    m_frame->GetCanvas()->SetCurrentCursor( KICURSOR::LABEL_HIER );
+                    m_editor->SetCurrentCursor( KICURSOR::LABEL_HIER );
                 else
-                    m_frame->GetCanvas()->SetCurrentCursor( KICURSOR::PENCIL );
+                    m_editor->SetCurrentCursor( KICURSOR::PENCIL );
             };
 
     auto updatePreview =
@@ -1978,7 +2062,10 @@ int SCH_DRAWING_TOOLS::TwoClickPlace( const TOOL_EVENT& aEvent )
                                          m_view->AddToPreview( aChild, false );
                                      },
                                      RECURSE_MODE::NO_RECURSE );
-                m_frame->SetMsgPanel( item );
+
+                // The message panel is the frame's status area; there is none without it.
+                if( m_frame )
+                    m_frame->SetMsgPanel( item );
             };
 
     auto cleanup =
@@ -2049,7 +2136,9 @@ int SCH_DRAWING_TOOLS::TwoClickPlace( const TOOL_EVENT& aEvent )
 
         if( evt->IsCancelInteractive() || evt->IsAction( &ACTIONS::undo ) )
         {
-            m_frame->GetInfoBar()->Dismiss();
+            // An info bar is a window; without one there is no hint to take back down.
+            if( m_frame )
+                m_frame->GetInfoBar()->Dismiss();
 
             if( item )
                 cleanup();
@@ -2067,7 +2156,10 @@ int SCH_DRAWING_TOOLS::TwoClickPlace( const TOOL_EVENT& aEvent )
 
             if( item )
             {
-                m_frame->ShowInfoBarMsg( _( "Press <ESC> to cancel item creation." ) );
+                // Without an info bar the hint is lost, not the gesture.
+                if( m_frame )
+                    m_frame->ShowInfoBarMsg( _( "Press <ESC> to cancel item creation." ) );
+
                 evt->SetPassEvent( false );
                 continue;
             }
@@ -2081,7 +2173,7 @@ int SCH_DRAWING_TOOLS::TwoClickPlace( const TOOL_EVENT& aEvent )
             if( evt->IsMoveTool() )
             {
                 // Make sure we come back after the move tool runs
-                frame()->PushTool( originalEvent );
+                m_toolMgr->GetToolHolder()->PushTool( originalEvent );
             }
 
             break;
@@ -2152,10 +2244,16 @@ int SCH_DRAWING_TOOLS::TwoClickPlace( const TOOL_EVENT& aEvent )
 
                     if( !sheet )
                     {
-                        m_statusPopup = std::make_unique<STATUS_TEXT_POPUP>( m_frame );
-                        m_statusPopup->SetText( _( "Click over a sheet." ) );
-                        m_statusPopup->Move( KIPLATFORM::UI::GetMousePosition() + wxPoint( 20, 20 ) );
-                        m_statusPopup->PopupFor( 2000 );
+                        // The popup is a window: without one the click is still ignored,
+                        // the user just does not get told to aim at a sheet.
+                        if( m_frame )
+                        {
+                            m_statusPopup = std::make_unique<STATUS_TEXT_POPUP>( m_frame );
+                            m_statusPopup->SetText( _( "Click over a sheet." ) );
+                            m_statusPopup->Move( KIPLATFORM::UI::GetMousePosition() + wxPoint( 20, 20 ) );
+                            m_statusPopup->PopupFor( 2000 );
+                        }
+
                         item = nullptr;
                     }
                     else
@@ -2173,10 +2271,15 @@ int SCH_DRAWING_TOOLS::TwoClickPlace( const TOOL_EVENT& aEvent )
 
                             if( !label )
                             {
-                                m_statusPopup = std::make_unique<STATUS_TEXT_POPUP>( m_frame );
-                                m_statusPopup->SetText( _( "No new hierarchical labels found." ) );
-                                m_statusPopup->Move( KIPLATFORM::UI::GetMousePosition() + wxPoint( 20, 20 ) );
-                                m_statusPopup->PopupFor( 2000 );
+                                // The popup is a window; the tool still ends either way.
+                                if( m_frame )
+                                {
+                                    m_statusPopup = std::make_unique<STATUS_TEXT_POPUP>( m_frame );
+                                    m_statusPopup->SetText( _( "No new hierarchical labels found." ) );
+                                    m_statusPopup->Move( KIPLATFORM::UI::GetMousePosition() + wxPoint( 20, 20 ) );
+                                    m_statusPopup->PopupFor( 2000 );
+                                }
+
                                 item = nullptr;
                                 break;
                             }
@@ -2212,7 +2315,7 @@ int SCH_DRAWING_TOOLS::TwoClickPlace( const TOOL_EVENT& aEvent )
                 if( item )
                     prepItemForPlacement( item, cursorPos );
 
-                if( m_frame->GetMoveWarpsCursor() )
+                if( m_toolMgr->GetToolHolder()->GetMoveWarpsCursor() )
                     controls->SetCursorPosition( cursorPos, false );
 
                 m_toolMgr->PostAction( ACTIONS::refreshPreview );
@@ -2222,22 +2325,22 @@ int SCH_DRAWING_TOOLS::TwoClickPlace( const TOOL_EVENT& aEvent )
                 item->ClearFlags( IS_MOVING );
 
                 if( item->IsConnectable() )
-                    m_frame->AutoRotateItem( m_frame->GetScreen(), item );
+                    m_editor->AutoRotateItem( m_editor->GetScreen(), item );
 
                 if( isSheetPin && sheet )
                 {
                     // Sheet pins are owned by their parent sheet.
-                    commit.Modify( sheet, m_frame->GetScreen() );
+                    commit.Modify( sheet, m_editor->GetScreen() );
                     sheet->AddPin( (SCH_SHEET_PIN*) item );
                 }
                 else
                 {
-                    m_frame->SaveCopyForRepeatItem( item );
-                    m_frame->AddToScreen( item, m_frame->GetScreen() );
-                    commit.Added( item, m_frame->GetScreen() );
+                    m_editor->SaveCopyForRepeatItem( item );
+                    m_editor->AddToScreen( item, m_editor->GetScreen() );
+                    commit.Added( item, m_editor->GetScreen() );
                 }
 
-                item->AutoplaceFields( m_frame->GetScreen(), AUTOPLACE_AUTO );
+                item->AutoplaceFields( m_editor->GetScreen(), AUTOPLACE_AUTO );
 
                 commit.Push( description );
 
@@ -2266,10 +2369,15 @@ int SCH_DRAWING_TOOLS::TwoClickPlace( const TOOL_EVENT& aEvent )
 
                     if( !label )
                     {
-                        m_statusPopup = std::make_unique<STATUS_TEXT_POPUP>( m_frame );
-                        m_statusPopup->SetText( _( "No new hierarchical labels found." ) );
-                        m_statusPopup->Move( KIPLATFORM::UI::GetMousePosition() + wxPoint( 20, 20 ) );
-                        m_statusPopup->PopupFor( 2000 );
+                        // The popup is a window; the tool still ends either way.
+                        if( m_frame )
+                        {
+                            m_statusPopup = std::make_unique<STATUS_TEXT_POPUP>( m_frame );
+                            m_statusPopup->SetText( _( "No new hierarchical labels found." ) );
+                            m_statusPopup->Move( KIPLATFORM::UI::GetMousePosition() + wxPoint( 20, 20 ) );
+                            m_statusPopup->PopupFor( 2000 );
+                        }
+
                         break;
                     }
 
@@ -2289,7 +2397,9 @@ int SCH_DRAWING_TOOLS::TwoClickPlace( const TOOL_EVENT& aEvent )
             if( !item )
                 m_toolMgr->VetoContextMenuMouseWarp();
 
-            m_menu->ShowContextMenu( m_selectionTool->GetSelection() );
+            // The menu is only built when Pgm().IsGUI(); see ::Init.
+            if( m_menu )
+                m_menu->ShowContextMenu( m_selectionTool->GetSelection() );
         }
         else if( item && evt->IsSelectionEvent() )
         {
@@ -2332,7 +2442,10 @@ int SCH_DRAWING_TOOLS::TwoClickPlace( const TOOL_EVENT& aEvent )
             item->CalcEdit( cursorPos );
             m_view->ClearPreview();
             m_view->AddToPreview( item->Clone() );
-            m_frame->SetMsgPanel( item );
+
+            // The message panel is the frame's status area; there is none without it.
+            if( m_frame )
+                m_frame->SetMsgPanel( item );
         }
         else if( item && evt->IsAction( &ACTIONS::doDelete ) )
         {
@@ -2374,7 +2487,7 @@ int SCH_DRAWING_TOOLS::TwoClickPlace( const TOOL_EVENT& aEvent )
     controls->SetAutoPan( false );
     controls->CaptureCursor( false );
     controls->ForceCursorPosition( false );
-    m_frame->GetCanvas()->SetCurrentCursor( KICURSOR::ARROW );
+    m_editor->SetCurrentCursor( KICURSOR::ARROW );
 
     if( m_dialogSyncSheetPin && m_dialogSyncSheetPin->CanPlaceMore() )
     {
@@ -2388,6 +2501,13 @@ int SCH_DRAWING_TOOLS::TwoClickPlace( const TOOL_EVENT& aEvent )
 
 int SCH_DRAWING_TOOLS::DrawRuleArea( const TOOL_EVENT& aEvent )
 {
+    // The outline itself needs nothing but the view, but every point of it is fed to a
+    // RULE_AREA_CREATE_HELPER, which is built on a SCH_EDIT_FRAME and reads its colour
+    // settings and its screen.  Until that helper is given the editing interface instead,
+    // this action needs a window.
+    if( !m_frame )
+        return 0;
+
     if( m_inDrawingTool )
         return 0;
 
@@ -2409,12 +2529,12 @@ int SCH_DRAWING_TOOLS::DrawRuleArea( const TOOL_EVENT& aEvent )
     m_toolMgr->RunAction( ACTIONS::selectionClear );
 
     TOOL_EVENT         originalEvent = aEvent;          // This can change out from under us when the event loop runs
-    SCOPED_TOOL_PUSHER raii( m_frame, originalEvent );
+    SCOPED_TOOL_PUSHER raii( m_toolMgr->GetToolHolder(), originalEvent );
 
     auto setCursor =
             [&]()
             {
-                m_frame->GetCanvas()->SetCurrentCursor( KICURSOR::PENCIL );
+                m_editor->SetCurrentCursor( KICURSOR::PENCIL );
             };
 
     auto cleanup =
@@ -2450,8 +2570,9 @@ int SCH_DRAWING_TOOLS::DrawRuleArea( const TOOL_EVENT& aEvent )
         cursorPos = grid.Align( controls->GetMousePosition(), GRID_HELPER_GRIDS::GRID_CONNECTABLE );
         controls->ForceCursorPosition( true, cursorPos );
 
-        polyGeomMgr.SetLeaderMode( m_frame->eeconfig()->m_Drawing.line_mode == LINE_MODE_FREE ? LEADER_MODE::DIRECT
-                                                                                              : LEADER_MODE::DEG45 );
+        polyGeomMgr.SetLeaderMode( m_editor->eeconfig()->m_Drawing.line_mode == LINE_MODE_FREE
+                                           ? LEADER_MODE::DIRECT
+                                           : LEADER_MODE::DEG45 );
 
         if( evt->IsCancelInteractive() )
         {
@@ -2480,7 +2601,7 @@ int SCH_DRAWING_TOOLS::DrawRuleArea( const TOOL_EVENT& aEvent )
             if( evt->IsMoveTool() )
             {
                 // Make sure we come back after the move tool runs
-                frame()->PushTool( originalEvent );
+                m_toolMgr->GetToolHolder()->PushTool( originalEvent );
             }
 
             break;
@@ -2490,7 +2611,9 @@ int SCH_DRAWING_TOOLS::DrawRuleArea( const TOOL_EVENT& aEvent )
             if( !started )
                 m_toolMgr->VetoContextMenuMouseWarp();
 
-            m_menu->ShowContextMenu( m_selectionTool->GetSelection() );
+            // The menu is only built when Pgm().IsGUI(); see ::Init.
+            if( m_menu )
+                m_menu->ShowContextMenu( m_selectionTool->GetSelection() );
         }
         // events that lock in nodes
         else if(   evt->IsClick( BUT_LEFT ) || evt->IsDblClick( BUT_LEFT )
@@ -2567,7 +2690,7 @@ int SCH_DRAWING_TOOLS::DrawRuleArea( const TOOL_EVENT& aEvent )
 
     getViewControls()->SetAutoPan( false );
     getViewControls()->CaptureCursor( false );
-    m_frame->GetCanvas()->SetCurrentCursor( KICURSOR::ARROW );
+    m_editor->SetCurrentCursor( KICURSOR::ARROW );
     return 0;
 }
 
@@ -2593,12 +2716,12 @@ int SCH_DRAWING_TOOLS::DrawTable( const TOOL_EVENT& aEvent )
     m_toolMgr->RunAction( ACTIONS::selectionClear );
 
     TOOL_EVENT         originalEvent = aEvent;          // This can change out from under us when the event loop runs
-    SCOPED_TOOL_PUSHER raii( m_frame, originalEvent );
+    SCOPED_TOOL_PUSHER raii( m_toolMgr->GetToolHolder(), originalEvent );
 
     auto setCursor =
             [&]()
             {
-                m_frame->GetCanvas()->SetCurrentCursor( KICURSOR::PENCIL );
+                m_editor->SetCurrentCursor( KICURSOR::PENCIL );
             };
 
     auto cleanup =
@@ -2662,7 +2785,7 @@ int SCH_DRAWING_TOOLS::DrawTable( const TOOL_EVENT& aEvent )
             if( evt->IsMoveTool() )
             {
                 // Make sure we come back after the move tool runs
-                frame()->PushTool( originalEvent );
+                m_toolMgr->GetToolHolder()->PushTool( originalEvent );
             }
 
             break;
@@ -2697,13 +2820,23 @@ int SCH_DRAWING_TOOLS::DrawTable( const TOOL_EVENT& aEvent )
             table->SetFlags( IS_NEW );
             table->Normalize();
 
-            DIALOG_TABLE_PROPERTIES dlg( m_frame, table );
+            // The dialog is the user's chance to amend what they dragged out before it is
+            // committed.  Without a window to parent one there is nobody to ask, so the
+            // table that was drawn is what gets committed.
+            bool placeIt = true;
 
-            // QuasiModal required for Scintilla auto-complete
-            if( dlg.ShowQuasiModal() == wxID_OK )
+            if( m_frame )
+            {
+                DIALOG_TABLE_PROPERTIES dlg( m_frame, table );
+
+                // QuasiModal required for Scintilla auto-complete
+                placeIt = dlg.ShowQuasiModal() == wxID_OK;
+            }
+
+            if( placeIt )
             {
                 SCH_COMMIT commit( m_toolMgr );
-                commit.Add( table, m_frame->GetScreen() );
+                commit.Add( table, m_editor->GetScreen() );
                 commit.Push( _( "Draw Table" ) );
 
                 m_selectionTool->AddItemToSel( table );
@@ -2757,7 +2890,10 @@ int SCH_DRAWING_TOOLS::DrawTable( const TOOL_EVENT& aEvent )
 
             m_view->ClearPreview();
             m_view->AddToPreview( table->Clone() );
-            m_frame->SetMsgPanel( table );
+
+            // The message panel is the frame's status area; there is none without it.
+            if( m_frame )
+                m_frame->SetMsgPanel( table );
         }
         else if( evt->IsDblClick( BUT_LEFT ) && !table )
         {
@@ -2769,7 +2905,9 @@ int SCH_DRAWING_TOOLS::DrawTable( const TOOL_EVENT& aEvent )
             if( !table )
                 m_toolMgr->VetoContextMenuMouseWarp();
 
-            m_menu->ShowContextMenu( m_selectionTool->GetSelection() );
+            // The menu is only built when Pgm().IsGUI(); see ::Init.
+            if( m_menu )
+                m_menu->ShowContextMenu( m_selectionTool->GetSelection() );
         }
         else if( evt->IsAction( &ACTIONS::duplicate )
                 || evt->IsAction( &SCH_ACTIONS::repeatDrawItem )
@@ -2801,7 +2939,7 @@ int SCH_DRAWING_TOOLS::DrawTable( const TOOL_EVENT& aEvent )
 
     getViewControls()->SetAutoPan( false );
     getViewControls()->CaptureCursor( false );
-    m_frame->GetCanvas()->SetCurrentCursor( KICURSOR::ARROW );
+    m_editor->SetCurrentCursor( KICURSOR::ARROW );
     return 0;
 }
 
@@ -2833,6 +2971,13 @@ int SCH_DRAWING_TOOLS::DrawSheet( const TOOL_EVENT& aEvent )
         filename = designBlock->GetSchematicFile();
     }
 
+    // A sheet is only placed once SCH_EDIT_FRAME::EditSheetProperties() has been through
+    // its dialog to give it a name and a file, and the symbols it brings in are annotated
+    // by the frame as well.  Both are windows, so this action is one.  The parameters are
+    // consumed above so that declining here does not leak them.
+    if( !m_frame )
+        return 0;
+
     if( ( isDrawSheetCopy || isDrawSheetFromDesignBlock ) && !wxFileExists( filename ) )
     {
         wxMessageBox( wxString::Format( _( "File '%s' does not exist." ), filename ) );
@@ -2844,7 +2989,7 @@ int SCH_DRAWING_TOOLS::DrawSheet( const TOOL_EVENT& aEvent )
 
     REENTRANCY_GUARD guard( &m_inDrawingTool );
 
-    EESCHEMA_SETTINGS*    cfg = m_frame->eeconfig();
+    EESCHEMA_SETTINGS*    cfg = m_editor->eeconfig();
     SCHEMATIC_SETTINGS&   schSettings = m_frame->Schematic().Settings();
     KIGFX::VIEW_CONTROLS* controls = getViewControls();
     EE_GRID_HELPER        grid( m_toolMgr );
@@ -2854,12 +2999,12 @@ int SCH_DRAWING_TOOLS::DrawSheet( const TOOL_EVENT& aEvent )
     m_toolMgr->RunAction( ACTIONS::selectionClear );
 
     TOOL_EVENT         originalEvent = aEvent;          // This can change out from under us when the event loop runs
-    SCOPED_TOOL_PUSHER raii( m_frame, originalEvent );
+    SCOPED_TOOL_PUSHER raii( m_toolMgr->GetToolHolder(), originalEvent );
 
     auto setCursor =
             [&]()
             {
-                m_frame->GetCanvas()->SetCurrentCursor( KICURSOR::PENCIL );
+                m_editor->SetCurrentCursor( KICURSOR::PENCIL );
             };
 
     auto cleanup =
@@ -2930,7 +3075,7 @@ int SCH_DRAWING_TOOLS::DrawSheet( const TOOL_EVENT& aEvent )
             if( evt->IsMoveTool() )
             {
                 // Make sure we come back after the move tool runs
-                frame()->PushTool( originalEvent );
+                m_toolMgr->GetToolHolder()->PushTool( originalEvent );
             }
 
             break;
@@ -2981,7 +3126,7 @@ int SCH_DRAWING_TOOLS::DrawSheet( const TOOL_EVENT& aEvent )
             }
             else if( isDrawSheetFromDesignBlock )
             {
-                wxString   sn = UniqueSheetName( m_frame->GetScreen(), designBlock->GetLibId().GetLibItemName() );
+                wxString   sn = UniqueSheetName( m_editor->GetScreen(), designBlock->GetLibId().GetLibItemName() );
                 wxFileName fn( filename );
 
                 sheet->GetField( FIELD_T::SHEET_NAME )->SetText( sn );
@@ -3032,7 +3177,7 @@ int SCH_DRAWING_TOOLS::DrawSheet( const TOOL_EVENT& aEvent )
             {
                 m_view->ClearPreview();
 
-                sheet->AutoplaceFields( m_frame->GetScreen(), AUTOPLACE_AUTO );
+                sheet->AutoplaceFields( m_editor->GetScreen(), AUTOPLACE_AUTO );
 
                 // Use the commit we were provided or make our own
                 SCH_COMMIT  tempCommit = SCH_COMMIT( m_toolMgr );
@@ -3040,8 +3185,8 @@ int SCH_DRAWING_TOOLS::DrawSheet( const TOOL_EVENT& aEvent )
 
                 // We need to manually add the sheet to the screen otherwise annotation will not be able to find
                 // the sheet and its symbols to annotate.
-                m_frame->AddToScreen( sheet );
-                c.Added( sheet, m_frame->GetScreen() );
+                m_editor->AddToScreen( sheet );
+                c.Added( sheet, m_editor->GetScreen() );
 
                 // Refresh the hierarchy so the new sheet and its symbols are found during annotation.
                 // The cached hierarchy was built before this sheet was added.
@@ -3086,7 +3231,7 @@ int SCH_DRAWING_TOOLS::DrawSheet( const TOOL_EVENT& aEvent )
 
                 if( isDrawSheetFromDesignBlock && cfg->m_DesignBlockChooserPanel.place_as_group )
                 {
-                    SCH_SCREEN* screen = m_frame->GetScreen();
+                    SCH_SCREEN* screen = m_editor->GetScreen();
 
                     sheetGroup = new SCH_GROUP( screen );
                     sheetGroup->SetName( UniqueGroupName( screen, designBlock->GetLibId().GetLibItemName() ) );
@@ -3145,7 +3290,9 @@ int SCH_DRAWING_TOOLS::DrawSheet( const TOOL_EVENT& aEvent )
             if( !sheet )
                 m_toolMgr->VetoContextMenuMouseWarp();
 
-            m_menu->ShowContextMenu( m_selectionTool->GetSelection() );
+            // The menu is only built when Pgm().IsGUI(); see ::Init.
+            if( m_menu )
+                m_menu->ShowContextMenu( m_selectionTool->GetSelection() );
         }
         else if( sheet && evt->IsAction( &ACTIONS::redo ) )
         {
@@ -3163,7 +3310,7 @@ int SCH_DRAWING_TOOLS::DrawSheet( const TOOL_EVENT& aEvent )
 
     getViewControls()->SetAutoPan( false );
     getViewControls()->CaptureCursor( false );
-    m_frame->GetCanvas()->SetCurrentCursor( KICURSOR::ARROW );
+    m_editor->SetCurrentCursor( KICURSOR::ARROW );
 
     return 0;
 }
@@ -3177,6 +3324,8 @@ void SCH_DRAWING_TOOLS::sizeSheet( SCH_SHEET* aSheet, const VECTOR2I& aPos )
     size.x = std::max( size.x, schIUScale.MilsToIU( MIN_SHEET_WIDTH ) );
     size.y = std::max( size.y, schIUScale.MilsToIU( MIN_SHEET_HEIGHT ) );
 
+    // Only reached from ::DrawSheet, which declines without a frame: the nearest grid
+    // position is EDA_DRAW_FRAME's and has no equivalent on the editing interface.
     VECTOR2I grid = m_frame->GetNearestGridPosition( pos + size );
     aSheet->Resize( VECTOR2I( grid.x - pos.x, grid.y - pos.y ) );
 }
@@ -3185,6 +3334,12 @@ void SCH_DRAWING_TOOLS::sizeSheet( SCH_SHEET* aSheet, const VECTOR2I& aPos )
 int SCH_DRAWING_TOOLS::doSyncSheetsPins( std::list<SCH_SHEET_PATH> sheetPaths, SCH_SHEET* aInitialSheet )
 {
     if( !sheetPaths.size() )
+        return 0;
+
+    // Synchronising sheet pins *is* DIALOG_SYNC_SHEET_PINS: it owns the comparison, and
+    // the placement the agent below drives is started from its buttons.  Without a window
+    // to parent it there is nothing to run.
+    if( !m_frame )
         return 0;
 
     m_dialogSyncSheetPin = std::make_unique<DIALOG_SYNC_SHEET_PINS>(
@@ -3210,7 +3365,7 @@ int SCH_DRAWING_TOOLS::doSyncSheetsPins( std::list<SCH_SHEET_PATH> sheetPaths, S
 
                         // The push already updated the R-tree and republished connectivity
                         updateItem( aItem, false );
-                        m_frame->OnModify();
+                        m_editor->OnModify();
                     },
                     [&]( EDA_ITEM* aItem, SCH_SHEET_PATH aPath )
                     {
@@ -3270,9 +3425,11 @@ int SCH_DRAWING_TOOLS::SyncSheetsPins( const TOOL_EVENT& aEvent )
         }
     }
 
-    if ( sheet )
+    SCHEMATIC* schematic = m_editor->GetSchematic();
+
+    if( sheet && schematic )
     {
-        SCH_SHEET_PATH current = m_frame->GetCurrentSheet();
+        SCH_SHEET_PATH current = schematic->CurrentSheet();
         current.push_back( sheet );
         return doSyncSheetsPins( { current } );
     }
@@ -3297,12 +3454,18 @@ int SCH_DRAWING_TOOLS::AutoPlaceAllSheetPins( const TOOL_EVENT& aEvent )
 
     if( labels.empty() )
     {
-        SCOPED_TOOL_PUSHER raii( m_frame, aEvent );
+        SCOPED_TOOL_PUSHER raii( m_toolMgr->GetToolHolder(), aEvent );
 
-        m_statusPopup = std::make_unique<STATUS_TEXT_POPUP>( m_frame );
-        m_statusPopup->SetText( _( "No new hierarchical labels found." ) );
-        m_statusPopup->Move( KIPLATFORM::UI::GetMousePosition() + wxPoint( 20, 20 ) );
-        m_statusPopup->PopupFor( 2000 );
+        // The popup is a window; without one there is nothing to place either way, the
+        // user just does not get told why.
+        if( m_frame )
+        {
+            m_statusPopup = std::make_unique<STATUS_TEXT_POPUP>( m_frame );
+            m_statusPopup->SetText( _( "No new hierarchical labels found." ) );
+            m_statusPopup->Move( KIPLATFORM::UI::GetMousePosition() + wxPoint( 20, 20 ) );
+            m_statusPopup->PopupFor( 2000 );
+        }
+
         m_toolMgr->RunAction( ACTIONS::selectionClear );
         m_view->ClearPreview();
         return 0;
@@ -3311,7 +3474,7 @@ int SCH_DRAWING_TOOLS::AutoPlaceAllSheetPins( const TOOL_EVENT& aEvent )
     m_toolMgr->RunAction( ACTIONS::selectionClear );
 
     SCH_COMMIT commit( m_toolMgr );
-    commit.Modify( sheet, m_frame->GetScreen() );
+    commit.Modify( sheet, m_editor->GetScreen() );
 
     // Vertical pitch big enough to keep pin text from touching, snapped to grid.
     const int grid = schIUScale.MilsToIU( 50 );
@@ -3377,7 +3540,7 @@ int SCH_DRAWING_TOOLS::AutoPlaceAllSheetPins( const TOOL_EVENT& aEvent )
                     SCH_SHEET_PIN* pin = createNewSheetPinFromLabel( sheet, VECTOR2I( aX, y ), label );
                     pin->ClearFlags( IS_NEW | IS_MOVING );
                     sheet->AddPin( pin );
-                    pin->AutoplaceFields( m_frame->GetScreen(), AUTOPLACE_AUTO );
+                    pin->AutoplaceFields( m_editor->GetScreen(), AUTOPLACE_AUTO );
                 }
             };
 
@@ -3416,8 +3579,13 @@ int SCH_DRAWING_TOOLS::SyncAllSheetsPins( const TOOL_EVENT& aEvent )
     std::list<SCH_SHEET_PATH> sheetPaths;
     std::set<SCH_SCREEN*> visited;
 
+    SCHEMATIC* schematic = m_editor->GetSchematic();
+
+    if( !schematic )
+        return 0;
+
     // Build sheet paths for each top-level sheet (don't include virtual root in paths)
-    std::vector<SCH_SHEET*> topLevelSheets = m_frame->Schematic().GetTopLevelSheets();
+    std::vector<SCH_SHEET*> topLevelSheets = schematic->GetTopLevelSheets();
 
     for( SCH_SHEET* topSheet : topLevelSheets )
     {
@@ -3431,7 +3599,10 @@ int SCH_DRAWING_TOOLS::SyncAllSheetsPins( const TOOL_EVENT& aEvent )
 
     if( sheetPaths.size() == 0 )
     {
-        m_frame->ShowInfoBarMsg( _( "No sub schematic found in the current project" ) );
+        // An info bar is a window; there is still nothing to synchronise without one.
+        if( m_frame )
+            m_frame->ShowInfoBarMsg( _( "No sub schematic found in the current project" ) );
+
         return 0;
     }
 
