@@ -95,6 +95,18 @@ fn main() {
             "a second thread is refused, not raced",
             live::a_second_thread_is_refused,
         ),
+        (
+            "host input moves the cursor the tools read",
+            live::host_input_moves_the_cursor_the_tools_read,
+        ),
+        (
+            "a whole click gesture crosses the ABI and edits nothing",
+            live::a_click_gesture_crosses_and_edits_nothing,
+        ),
+        (
+            "an action no tool handles is reported, not an error",
+            live::an_unhandled_action_is_reported,
+        ),
     ];
 
     let mut failed = 0;
@@ -123,7 +135,9 @@ mod live {
     use std::path::{Path, PathBuf};
 
     use kicad_gal::Command;
-    use kicad_sch_sys::{Error, Session, Status, Stream, Viewport};
+    use kicad_sch_sys::{
+        Error, InputEvent, Modifiers, PointerButton, Session, Status, Stream, Viewport,
+    };
 
     /// The KiCad tree this crate lives in: three levels up from the manifest.
     fn tree_root() -> PathBuf {
@@ -553,6 +567,158 @@ mod live {
 
         // And unloading twice is documented as idempotent.
         session.unload().expect("unloading again is a no-op");
+    }
+
+    /// Input goes in as screen pixels and the cursor the *tools* read comes back in
+    /// internal units, having gone through the view transform and the grid.
+    ///
+    /// This is the round trip Stage 4 exists to make, exercised against the real
+    /// host rather than against a C++ test double.
+    pub fn host_input_moves_the_cursor_the_tools_read() {
+        let mut session = Session::open(&kitchen_sink()).expect("the fixture loads");
+
+        session
+            .set_viewport(&FIXTURE_VIEWPORT)
+            .expect("a viewport the fixtures use");
+        session.zoom_to_fit().expect("framing the page");
+
+        let before = session.editor_state().expect("the editor state");
+
+        assert!(
+            !before.pointer_over_canvas,
+            "nothing has reported a pointer yet"
+        );
+        assert_eq!(before.selection_count, 0);
+
+        let outcome = session
+            .dispatch_input(&InputEvent::PointerMotion {
+                screen: (100.0, 50.0),
+                modifiers: Modifiers::default(),
+            })
+            .expect("a pointer move is accepted");
+
+        // No eeschema tool runs on a holder that is not a frame, so nothing claims
+        // a motion event. That is the state of the seam, asserted rather than
+        // described.
+        assert!(!outcome.handled);
+
+        let after = session.editor_state().expect("the editor state");
+
+        assert!(after.pointer_over_canvas);
+        assert_ne!(
+            after.cursor, before.cursor,
+            "the cursor followed the pointer"
+        );
+
+        // In internal units, so on the scale of a page rather than of a pixel: a
+        // page is millions of internal units across, and a failure to convert would
+        // leave this at 100.
+        assert!(
+            after.cursor.0.abs() > 1000.0 || after.cursor.1.abs() > 1000.0,
+            "the cursor should be in internal units, got {:?}",
+            after.cursor
+        );
+
+        session
+            .dispatch_input(&InputEvent::PointerLeave)
+            .expect("losing the pointer is accepted");
+
+        let gone = session.editor_state().expect("the editor state");
+        assert!(!gone.pointer_over_canvas);
+    }
+
+    /// A whole gesture, and a key, across the boundary — and the document is
+    /// untouched by all of it, which is what "input reaches the framework and stops
+    /// there" means concretely.
+    pub fn a_click_gesture_crosses_and_edits_nothing() {
+        let mut session = Session::open(&kitchen_sink()).expect("the fixture loads");
+
+        session.set_viewport(&FIXTURE_VIEWPORT).expect("a viewport");
+        session.zoom_to_fit().expect("framing the page");
+
+        let before = session.document_info().expect("document info");
+
+        let gesture = [
+            InputEvent::PointerMotion {
+                screen: (400.0, 300.0),
+                modifiers: Modifiers::default(),
+            },
+            InputEvent::PointerDown {
+                button: PointerButton::Left,
+                screen: (400.0, 300.0),
+                modifiers: Modifiers::default(),
+            },
+            InputEvent::PointerMotion {
+                screen: (460.0, 300.0),
+                modifiers: Modifiers::default(),
+            },
+            InputEvent::PointerUp {
+                button: PointerButton::Left,
+                screen: (460.0, 300.0),
+                modifiers: Modifiers::default(),
+            },
+            InputEvent::Scroll {
+                screen: (460.0, 300.0),
+                delta: (0.0, 1.0),
+                modifiers: Modifiers {
+                    ctrl: true,
+                    alt: true,
+                    ..Modifiers::default()
+                },
+            },
+            InputEvent::KeyDown {
+                key: "w",
+                modifiers: Modifiers::default(),
+                auto_repeat: false,
+            },
+            // A name the host's table does not know is dropped rather than sent as
+            // key zero, and that is not an error: a UI forwards its whole key
+            // stream and some of it has no KiCad meaning.
+            InputEvent::KeyDown {
+                key: "no such key",
+                modifiers: Modifiers::default(),
+                auto_repeat: false,
+            },
+            InputEvent::KeyUp {
+                key: "w",
+                modifiers: Modifiers::default(),
+            },
+            InputEvent::Cancel,
+        ];
+
+        for event in &gesture {
+            session
+                .dispatch_input(event)
+                .unwrap_or_else(|error| panic!("{event:?} was refused: {error}"));
+        }
+
+        session.reset_input().expect("resetting the input state");
+
+        let after = session.document_info().expect("document info");
+
+        assert_eq!(after.modified, before.modified);
+        assert_eq!(after.item_count, before.item_count);
+
+        // And the session is still usable afterwards, which is the thing a crash
+        // in the dispatcher would take away.
+        let frame = session.render().expect("a frame after all that input");
+        assert!(!frame.groups().is_empty());
+    }
+
+    /// A UI built from the whole 440-action registry will offer plenty of actions
+    /// nothing handles. That has to be a report rather than an error.
+    pub fn an_unhandled_action_is_reported() {
+        let mut session = Session::open(&kitchen_sink()).expect("the fixture loads");
+
+        let missing = session
+            .run_action("no.such.action")
+            .expect("an unknown action is not an error");
+        assert!(!missing.handled);
+
+        let declined = session
+            .run_action("eeschema.InteractiveSelection.selectionActivate")
+            .expect("a real action with no tool behind it is not an error either");
+        assert!(!declined.handled);
     }
 
     /// The main-thread rule, as a check rather than a comment.

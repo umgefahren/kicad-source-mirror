@@ -121,6 +121,11 @@ impl CanvasPanel {
             modifiers,
             repeat: event.is_held,
         });
+        // As every mouse handler in `canvas.rs` does. A host that claimed the key may
+        // have changed the document, which sets the canvas' dirty flag — and without a
+        // repaint scheduled nothing consumes it until an unrelated event happens to
+        // cause one, so the window would keep showing the pre-keystroke frame.
+        cx.notify();
     }
 
     fn on_key_up(&mut self, event: &KeyUpEvent, _window: &mut Window, cx: &mut Context<Self>) {
@@ -135,6 +140,7 @@ impl CanvasPanel {
             key: keystroke.key.to_string(),
             modifiers,
         });
+        cx.notify();
     }
 }
 

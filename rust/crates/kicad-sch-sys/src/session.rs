@@ -21,7 +21,10 @@ use kicad_gal::abi::kgds_stream_view;
 use kicad_gal::{Stream, StreamView};
 
 use crate::ffi;
-use crate::{BBox, DocumentInfo, Error, SheetInfo, Status, Viewport};
+use crate::{
+    BBox, DocumentInfo, EditorState, Error, InputEvent, InputOutcome, Modifiers, PointerButton,
+    SheetInfo, Status, Viewport,
+};
 
 /// A schematic editor session: a document, a view and a recording canvas.
 ///
@@ -252,6 +255,96 @@ impl Session {
         self.check(unsafe { ffi::ksch_session_write_stream(self.raw.as_ptr(), path_c.as_ptr()) })
     }
 
+    /// Give one input event to the C++ tool framework.
+    ///
+    /// Takes `&mut self` because it can change the document, the selection and the
+    /// view — which is also why the outcome carries [`InputOutcome::redraw`]: a
+    /// frame recorded before this call may no longer match.
+    pub fn dispatch_input(&mut self, event: &InputEvent<'_>) -> Result<InputOutcome, Error> {
+        // The key name is borrowed for the duration of the call, which is what the
+        // header promises, so a CString that lives to the end of this function is
+        // exactly the right lifetime. Declared here rather than inside the match so
+        // that it outlives the raw struct pointing into it.
+        let key = match event {
+            InputEvent::KeyDown { key, .. } | InputEvent::KeyUp { key, .. } => {
+                Some(CString::new(*key).map_err(|_| Error::Failed {
+                    status: Status::InvalidArg,
+                    message: "a key name may not contain a NUL".to_string(),
+                })?)
+            }
+            _ => None,
+        };
+
+        let raw = raw_input(event, key.as_deref());
+        let mut flags: u32 = 0;
+
+        // SAFETY: a live handle, a struct we own for the call, and an out-parameter
+        // we own. The string `raw.key` points into outlives the call.
+        self.check(unsafe {
+            ffi::ksch_session_dispatch_input(self.raw.as_ptr(), &raw, &mut flags)
+        })?;
+
+        Ok(outcome(flags))
+    }
+
+    /// Forget which buttons are down, because the UI lost focus.
+    ///
+    /// Without it, a button released while the window was not focused leaves a tool
+    /// believing its drag is still running. The cursor position is kept.
+    pub fn reset_input(&mut self) -> Result<(), Error> {
+        // SAFETY: a live handle.
+        self.check(unsafe { ffi::ksch_session_reset_input(self.raw.as_ptr()) })
+    }
+
+    /// Run a registered action by its dotted name, as a menu or a toolbar does.
+    ///
+    /// An action no registered tool handles is `Ok` with
+    /// [`InputOutcome::handled`] false, not an error: a UI built from the whole
+    /// action registry will legitimately offer plenty of them.
+    pub fn run_action(&mut self, name: &str) -> Result<InputOutcome, Error> {
+        let name_c = CString::new(name).map_err(|_| Error::Failed {
+            status: Status::InvalidArg,
+            message: "an action name may not contain a NUL".to_string(),
+        })?;
+
+        let mut flags: u32 = 0;
+
+        // SAFETY: a live handle, a string borrowed for the call, and an
+        // out-parameter we own.
+        self.check(unsafe {
+            ffi::ksch_session_run_action(self.raw.as_ptr(), name_c.as_ptr(), &mut flags)
+        })?;
+
+        Ok(outcome(flags))
+    }
+
+    /// What the editor is doing: the cursor, the selection and the status text.
+    ///
+    /// `&mut self` because the C++ side is not const about it — reading the
+    /// selection asks the selection tool for it.
+    pub fn editor_state(&mut self) -> Result<EditorState, Error> {
+        let mut state = ffi::ksch_editor_state::default();
+
+        // SAFETY: a live handle and an out-parameter we own.
+        self.check(unsafe { ffi::ksch_session_editor_state(self.raw.as_ptr(), &mut state) })?;
+
+        // SAFETY: both strings are non-null and session-scoped, and are copied
+        // before anything else touches the session.
+        let tool_name = unsafe { borrowed_string(state.tool_name) };
+        let status_text = unsafe { borrowed_string(state.status_text) };
+
+        Ok(EditorState {
+            cursor: (state.cursor_x, state.cursor_y),
+            selection_count: state.selection_count,
+            pointer_over_canvas: state.flags
+                & ffi::ksch_editor_flag_KSCH_EDITOR_POINTER_OVER_CANVAS
+                != 0,
+            modified: state.flags & ffi::ksch_editor_flag_KSCH_EDITOR_MODIFIED != 0,
+            tool_name,
+            status_text,
+        })
+    }
+
     /// Turn a status code into a result, attaching the session's error string.
     fn check(&self, status: ffi::ksch_status) -> Result<(), Error> {
         if status == ffi::ksch_status_KSCH_OK {
@@ -287,6 +380,141 @@ impl std::fmt::Debug for Session {
             .field("loaded", &self.is_loaded())
             .finish()
     }
+}
+
+/// Unpack the result flags both input entry points return.
+fn outcome(flags: u32) -> InputOutcome {
+    InputOutcome {
+        handled: flags & ffi::ksch_input_result_KSCH_INPUT_HANDLED != 0,
+        redraw: flags & ffi::ksch_input_result_KSCH_INPUT_REDRAW != 0,
+    }
+}
+
+fn raw_modifiers(modifiers: Modifiers) -> u32 {
+    let mut bits = 0;
+
+    if modifiers.shift {
+        bits |= ffi::ksch_modifier_KSCH_MOD_SHIFT;
+    }
+    if modifiers.ctrl {
+        bits |= ffi::ksch_modifier_KSCH_MOD_CTRL;
+    }
+    if modifiers.alt {
+        bits |= ffi::ksch_modifier_KSCH_MOD_ALT;
+    }
+    if modifiers.meta {
+        bits |= ffi::ksch_modifier_KSCH_MOD_META;
+    }
+
+    bits
+}
+
+fn raw_button(button: PointerButton) -> i32 {
+    let value = match button {
+        PointerButton::Left => ffi::ksch_pointer_button_KSCH_BUTTON_LEFT,
+        PointerButton::Right => ffi::ksch_pointer_button_KSCH_BUTTON_RIGHT,
+        PointerButton::Middle => ffi::ksch_pointer_button_KSCH_BUTTON_MIDDLE,
+        PointerButton::Back => ffi::ksch_pointer_button_KSCH_BUTTON_BACK,
+        PointerButton::Forward => ffi::ksch_pointer_button_KSCH_BUTTON_FORWARD,
+    };
+
+    value as i32
+}
+
+/// Flatten an [`InputEvent`] into the ABI's tagged struct.
+///
+/// `key` is the NUL-terminated name for a key event, which the caller owns for the
+/// duration of the call — this only borrows it.
+fn raw_input(event: &InputEvent<'_>, key: Option<&CStr>) -> ffi::ksch_input_event {
+    let mut raw = ffi::ksch_input_event {
+        type_: ffi::ksch_input_type_KSCH_INPUT_POINTER_MOTION as i32,
+        button: ffi::ksch_pointer_button_KSCH_BUTTON_NONE as i32,
+        modifiers: 0,
+        flags: 0,
+        key: std::ptr::null(),
+        x: 0.0,
+        y: 0.0,
+        scroll_x: 0.0,
+        scroll_y: 0.0,
+    };
+
+    let pointer = |raw: &mut ffi::ksch_input_event, screen: (f64, f64), modifiers: Modifiers| {
+        raw.x = screen.0;
+        raw.y = screen.1;
+        raw.modifiers = raw_modifiers(modifiers);
+    };
+
+    match event {
+        InputEvent::PointerMotion { screen, modifiers } => {
+            raw.type_ = ffi::ksch_input_type_KSCH_INPUT_POINTER_MOTION as i32;
+            pointer(&mut raw, *screen, *modifiers);
+        }
+        InputEvent::PointerDown {
+            button,
+            screen,
+            modifiers,
+        } => {
+            raw.type_ = ffi::ksch_input_type_KSCH_INPUT_POINTER_DOWN as i32;
+            raw.button = raw_button(*button);
+            pointer(&mut raw, *screen, *modifiers);
+        }
+        InputEvent::PointerUp {
+            button,
+            screen,
+            modifiers,
+        } => {
+            raw.type_ = ffi::ksch_input_type_KSCH_INPUT_POINTER_UP as i32;
+            raw.button = raw_button(*button);
+            pointer(&mut raw, *screen, *modifiers);
+        }
+        InputEvent::PointerDoubleClick {
+            button,
+            screen,
+            modifiers,
+        } => {
+            raw.type_ = ffi::ksch_input_type_KSCH_INPUT_POINTER_DBLCLICK as i32;
+            raw.button = raw_button(*button);
+            pointer(&mut raw, *screen, *modifiers);
+        }
+        InputEvent::PointerLeave => {
+            raw.type_ = ffi::ksch_input_type_KSCH_INPUT_POINTER_LEAVE as i32;
+        }
+        InputEvent::Scroll {
+            screen,
+            delta,
+            modifiers,
+        } => {
+            raw.type_ = ffi::ksch_input_type_KSCH_INPUT_SCROLL as i32;
+            pointer(&mut raw, *screen, *modifiers);
+            raw.scroll_x = delta.0;
+            raw.scroll_y = delta.1;
+        }
+        InputEvent::KeyDown {
+            modifiers,
+            auto_repeat,
+            ..
+        } => {
+            raw.type_ = ffi::ksch_input_type_KSCH_INPUT_KEY_DOWN as i32;
+            raw.modifiers = raw_modifiers(*modifiers);
+
+            if *auto_repeat {
+                raw.flags |= ffi::ksch_input_flag_KSCH_INPUT_FLAG_AUTOREPEAT;
+            }
+        }
+        InputEvent::KeyUp { modifiers, .. } => {
+            raw.type_ = ffi::ksch_input_type_KSCH_INPUT_KEY_UP as i32;
+            raw.modifiers = raw_modifiers(*modifiers);
+        }
+        InputEvent::Cancel => {
+            raw.type_ = ffi::ksch_input_type_KSCH_INPUT_CANCEL as i32;
+        }
+    }
+
+    if let Some(key) = key {
+        raw.key = key.as_ptr();
+    }
+
+    raw
 }
 
 /// Stand up the process, once, and confirm we are on the thread that owns it.

@@ -1171,3 +1171,177 @@ fn a_canvas_over_a_fixed_stream_asks_for_nothing(cx: &mut TestAppContext) {
     })
     .expect("window is live");
 }
+
+/// A sink that reports what a host with a live tool would: it claimed the event,
+/// something changed, and here is how big the selection now is.
+///
+/// Nothing in the shipping path can report this yet, because no eeschema tool runs
+/// on a holder that is not a frame — so the two properties below are asserted
+/// against a stand-in rather than left untested until one does.
+#[derive(Clone, Default)]
+struct BusyHostSink {
+    dirty: Rc<std::cell::Cell<bool>>,
+    selection: usize,
+}
+
+impl kicad_sch_ui::input::InputSink for BusyHostSink {
+    fn handle(&mut self, _event: ShellEvent) {
+        self.dirty.set(true);
+    }
+
+    fn take_dirty(&mut self) -> bool {
+        self.dirty.replace(false)
+    }
+
+    fn selection_count(&self) -> usize {
+        self.selection
+    }
+}
+
+/// The arrow that makes an edit visible.
+///
+/// A tool that moves an item or changes the selection has changed what the next
+/// frame looks like, and the canvas cannot see any of it: it re-records when *it*
+/// moves the camera, and an edit is not that. So the sink is asked after every
+/// event, and a host that says something changed gets a fresh frame.
+#[gpui_kit::test]
+fn a_host_that_changed_something_gets_a_fresh_frame(cx: &mut TestAppContext) {
+    let (harness, document) = open_live(cx);
+
+    let sink = BusyHostSink {
+        dirty: Rc::new(std::cell::Cell::new(false)),
+        selection: 4,
+    };
+
+    cx.update_window(harness.window, |_, _, cx| {
+        let canvas = harness.shell.read(cx).canvas().clone();
+        canvas.update(cx, |canvas, _| canvas.set_sink(shared_sink(sink.clone())));
+    })
+    .expect("window is live");
+
+    let before = renders(cx, &harness);
+    let asked = document.borrow().renders();
+
+    // A tool activation is the cheapest event to post; what is under test is the
+    // sink's answer to it, not the event itself.
+    cx.update_window(harness.window, |_, _, cx| {
+        let canvas = harness.shell.read(cx).canvas().clone();
+        canvas.update(cx, |canvas, cx| {
+            canvas.emit(ShellEvent::ToolCancelled);
+            cx.notify();
+        });
+    })
+    .expect("window is live");
+    frame(cx, &harness);
+
+    assert_eq!(renders(cx, &harness), before + 1);
+    assert_eq!(document.borrow().renders(), asked + 1);
+
+    // ...and only once. The flag is consumed, so one edit does not re-record for
+    // ever, which would turn every click into a permanent recording loop.
+    frame(cx, &harness);
+    assert_eq!(renders(cx, &harness), before + 1);
+}
+
+/// The selection belongs to the C++ selection tool, so the shell has none of its
+/// own to count and the status bar reads the host's answer through the sink.
+#[gpui_kit::test]
+fn the_selection_count_comes_from_the_host(cx: &mut TestAppContext) {
+    let harness = open(cx);
+
+    cx.update_window(harness.window, |_, _, cx| {
+        let canvas = harness.shell.read(cx).canvas().clone();
+        // The default sink is the recorder, which has no host and says zero.
+        assert_eq!(canvas.read(cx).selection_count(), 0);
+
+        canvas.update(cx, |canvas, _| {
+            canvas.set_sink(shared_sink(BusyHostSink {
+                dirty: Rc::new(std::cell::Cell::new(false)),
+                selection: 9,
+            }))
+        });
+        assert_eq!(canvas.read(cx).selection_count(), 9);
+    })
+    .expect("window is live");
+}
+
+/// Two buttons held at once, released in the order they were pressed.
+///
+/// The shell tracks one press at a time — which is all its own selection band needs
+/// — so the second press overwrites the first, and the release of the *first* finds
+/// no matching record. It has to be reported anyway. A host that keeps per-button
+/// state would otherwise believe that button is still held for the rest of the
+/// session and turn every later pointer move into a drag from a stale origin, which
+/// is exactly the failure `HOST_TOOL_DISPATCHER` gave up wx's mouse-state poll on
+/// the promise that "the host delivers every up".
+#[gpui_kit::test]
+fn every_press_gets_a_release_even_with_two_buttons_held(cx: &mut TestAppContext) {
+    let harness = open(cx);
+
+    let canvas = cx
+        .update_window(harness.window, |_, window, cx| {
+            window.render_frame(cx);
+            window.find("canvas").bounds()
+        })
+        .expect("window is live");
+    let at = Point {
+        x: canvas.origin.x + px(150.),
+        y: canvas.origin.y + px(150.),
+    };
+
+    harness.sink.clear();
+
+    cx.update_window(harness.window, move |_, window, cx| {
+        // Left and Middle rather than Left and Right: a right click opens
+        // gpui-component's context menu, whose retained `PopupMenu` trips gpui's leak
+        // detector — the reason the right-click test in this file is `#[ignore]`d. The
+        // property under test is about two buttons, not about which two.
+        for button in [gpui_kit::MouseButton::Left, gpui_kit::MouseButton::Middle] {
+            window.dispatch_event(
+                gpui_kit::PlatformInput::MouseDown(gpui_kit::MouseDownEvent {
+                    button,
+                    position: at,
+                    modifiers: Default::default(),
+                    click_count: 1,
+                    first_mouse: false,
+                }),
+                cx,
+            );
+        }
+        // Released first-pressed-first, which is the order that loses the record.
+        for button in [gpui_kit::MouseButton::Left, gpui_kit::MouseButton::Middle] {
+            window.dispatch_event(
+                gpui_kit::PlatformInput::MouseUp(gpui_kit::MouseUpEvent {
+                    button,
+                    position: at,
+                    modifiers: Default::default(),
+                    click_count: 1,
+                }),
+                cx,
+            );
+        }
+        window.render_frame(cx);
+    })
+    .expect("window is live");
+    cx.run_until_parked();
+
+    let mut downs = Vec::new();
+    let mut ups = Vec::new();
+
+    for event in harness.sink.events() {
+        match event {
+            ShellEvent::PointerDown { button, .. } => downs.push(button),
+            ShellEvent::PointerUp { button, .. } => ups.push(button),
+            _ => {}
+        }
+    }
+
+    downs.sort_by_key(|button| format!("{button:?}"));
+    ups.sort_by_key(|button| format!("{button:?}"));
+
+    assert_eq!(downs, vec![PointerButton::Left, PointerButton::Middle]);
+    assert_eq!(
+        ups, downs,
+        "every button that went down has to come up: {ups:?}"
+    );
+}

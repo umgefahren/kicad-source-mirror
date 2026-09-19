@@ -19,7 +19,10 @@
 use std::fmt;
 use std::path::Path;
 
-use crate::{BBox, DocumentInfo, Error, SheetInfo, Stream, StreamView, Viewport};
+use crate::{
+    BBox, DocumentInfo, EditorState, Error, InputEvent, InputOutcome, SheetInfo, Stream,
+    StreamView, Viewport,
+};
 
 /// A schematic editor session, which this build cannot open.
 ///
@@ -113,6 +116,26 @@ impl Session {
 
     /// Unreachable: no `Session` can exist in this build.
     pub fn write_stream(&mut self, _path: &Path) -> Result<(), Error> {
+        match self.0 {}
+    }
+
+    /// Unreachable: no `Session` can exist in this build.
+    pub fn dispatch_input(&mut self, _event: &InputEvent<'_>) -> Result<InputOutcome, Error> {
+        match self.0 {}
+    }
+
+    /// Unreachable: no `Session` can exist in this build.
+    pub fn reset_input(&mut self) -> Result<(), Error> {
+        match self.0 {}
+    }
+
+    /// Unreachable: no `Session` can exist in this build.
+    pub fn run_action(&mut self, _name: &str) -> Result<InputOutcome, Error> {
+        match self.0 {}
+    }
+
+    /// Unreachable: no `Session` can exist in this build.
+    pub fn editor_state(&mut self) -> Result<EditorState, Error> {
         match self.0 {}
     }
 }

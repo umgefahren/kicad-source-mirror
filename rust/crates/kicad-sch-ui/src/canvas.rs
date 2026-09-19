@@ -44,7 +44,7 @@
 //! untouched view asks for nothing, which is what [`CanvasState::document_renders`]
 //! exists to make checkable.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use gpui_kit::prelude::*;
@@ -122,7 +122,11 @@ pub struct CanvasState {
     /// points of the same frame — this one in prepaint, before anything is
     /// painted, and that one in paint, on its way to the host — but they are
     /// always raised together, by [`CanvasState::invalidate_view`].
-    document_dirty: bool,
+    ///
+    /// A `Cell` because the host raises it too: [`CanvasState::emit`] takes
+    /// `&self` — it is called from the paint phase — and has to be able to mark the
+    /// document dirty when the sink reports that a tool changed something.
+    document_dirty: Cell<bool>,
     /// How many frames have been asked of the live document. The measurement
     /// behind "a redraw of an unchanged view costs nothing".
     document_renders: u64,
@@ -166,7 +170,7 @@ impl CanvasState {
                 size: size(px(1.), px(1.)),
             },
             viewport_dirty: true,
-            document_dirty: true,
+            document_dirty: Cell::new(true),
             document_renders: 0,
             document_error: None,
             fit_pending: true,
@@ -273,12 +277,18 @@ impl CanvasState {
             .map(|position| self.grid.snap(self.world(position)))
     }
 
-    /// How many items the document reports as selected.
+    /// How many items the host reports as selected.
     ///
-    /// Always zero until the host owns a selection; the status bar reads it
-    /// through here so that wiring the host up is a one-line change.
+    /// The selection belongs to the C++ selection tool, so the shell has none of
+    /// its own to count. Zero when no host is attached, and also zero while no
+    /// selection tool can run on a non-frame holder — the two are
+    /// indistinguishable from here, which is why the status bar says "selected"
+    /// rather than claiming a selection exists.
     pub fn selection_count(&self) -> usize {
-        0
+        self.sink
+            .try_borrow()
+            .map(|sink| sink.selection_count())
+            .unwrap_or(0)
     }
 
     /// Point the events somewhere else. Used by tests and by the host once it
@@ -308,7 +318,7 @@ impl CanvasState {
     /// resize. This is for changes it cannot: an edit, an undo, a sheet change,
     /// anything the host does to the document behind its back.
     pub fn mark_document_dirty(&mut self) {
-        self.document_dirty = true;
+        self.document_dirty.set(true);
     }
 
     /// How many frames the live document has been asked for.
@@ -336,13 +346,13 @@ impl CanvasState {
     /// along the edges for one frame, because the document culls to what it was
     /// told.
     fn refresh_document(&mut self) {
-        if !self.document_dirty {
+        if !self.document_dirty.get() {
             return;
         }
         let Some(document) = self.document.clone() else {
             // Nothing to ask. Clearing the flag anyway keeps a canvas over a
             // fixed stream from retrying every frame.
-            self.document_dirty = false;
+            self.document_dirty.set(false);
             return;
         };
         // A document that reached back into the shell would find this borrowed;
@@ -351,7 +361,7 @@ impl CanvasState {
         let Ok(mut document) = document.try_borrow_mut() else {
             return;
         };
-        self.document_dirty = false;
+        self.document_dirty.set(false);
         self.document_renders += 1;
 
         let viewport = self.viewport_state();
@@ -378,7 +388,7 @@ impl CanvasState {
     /// has to re-record.
     fn invalidate_view(&mut self) {
         self.viewport_dirty = true;
-        self.document_dirty = true;
+        self.document_dirty.set(true);
     }
 
     /// Post an event to the sink.
@@ -388,6 +398,14 @@ impl CanvasState {
         // the shell, and dropping the event beats aborting the frame.
         if let Ok(mut sink) = self.sink.try_borrow_mut() {
             sink.handle(event);
+
+            // A host tool that moved an item, changed the selection or moved the
+            // view has changed what the next frame looks like, and the canvas
+            // cannot see any of that: it re-records when it moves the camera
+            // itself, and an edit is not that. So the sink is asked, every time.
+            if sink.take_dirty() {
+                self.document_dirty.set(true);
+            }
         }
     }
 
@@ -798,20 +816,28 @@ fn install_mouse_handlers(state: &Entity<CanvasState>, hitbox: &Hitbox, window: 
             }
             window.release_pointer();
             state.update(cx, |state, cx| {
-                let Some(press) = state.press.take() else {
-                    return;
-                };
                 let Some(button) = map_button(event.button) else {
                     return;
                 };
-                if button != press.button {
-                    state.press = Some(press);
-                    return;
-                }
                 let modifiers = map_modifiers(event.modifiers);
                 let screen = state.local(event.position);
                 let world = state.world(event.position);
-                if press.dragging {
+
+                // `press` tracks one button, so with two held it describes the second.
+                // The release of the *first* therefore finds no matching press — and
+                // must be reported anyway: a host that keeps per-button state would
+                // otherwise believe that button is held for the rest of the session and
+                // turn every later pointer move into a drag from a stale origin.
+                // Only the drag bookkeeping depends on the match.
+                let dragging = match state.press {
+                    Some(press) if press.button == button => {
+                        state.press = None;
+                        press.dragging
+                    }
+                    _ => false,
+                };
+
+                if dragging {
                     state.emit(ShellEvent::DragEnd {
                         button,
                         screen,

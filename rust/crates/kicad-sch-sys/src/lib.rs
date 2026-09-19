@@ -338,6 +338,152 @@ impl Viewport {
     }
 }
 
+/// Which pointer button an [`InputEvent`] is about.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PointerButton {
+    /// The primary button.
+    Left,
+    /// The secondary button, which opens context menus.
+    Right,
+    /// The wheel button.
+    Middle,
+    /// The mouse-side "back" button.
+    Back,
+    /// The mouse-side "forward" button.
+    Forward,
+}
+
+/// The modifier keys held when an [`InputEvent`] happened.
+///
+/// `meta` is Command on macOS and Super elsewhere, matching what the shell calls
+/// it. The host maps these onto KiCad's own `MD_*` bits, so nothing here has to
+/// know what those are.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct Modifiers {
+    /// Shift.
+    pub shift: bool,
+    /// Control.
+    pub ctrl: bool,
+    /// Alt / Option.
+    pub alt: bool,
+    /// Command on macOS, Super elsewhere.
+    pub meta: bool,
+}
+
+/// One input event for the C++ tool framework.
+///
+/// Positions are in **screen pixels relative to the canvas' top-left**, not in
+/// internal units like the rest of this crate. That is the host's requirement
+/// rather than a convenience: it derives the world position itself, through the
+/// same view controls a tool reads the cursor back from, so that a cursor a tool
+/// has placed is the one the following events carry.
+///
+/// Keys travel as *names* — `"escape"`, `"pagedown"`, `"f11"`, `"w"` — and the
+/// host maps them onto KiCad's `WXK_*` codes. That mapping is deliberately on the
+/// C++ side, where the numbers come from `wx/defs.h` through a compiler; a table
+/// transcribed into Rust would be a silently broken shortcut per wrong entry.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum InputEvent<'a> {
+    /// The pointer moved.
+    PointerMotion {
+        /// Screen position, pixels from the canvas' top-left.
+        screen: (f64, f64),
+        /// Modifiers held.
+        modifiers: Modifiers,
+    },
+    /// A button went down.
+    PointerDown {
+        /// Which button.
+        button: PointerButton,
+        /// Screen position.
+        screen: (f64, f64),
+        /// Modifiers held.
+        modifiers: Modifiers,
+    },
+    /// A button came up.
+    PointerUp {
+        /// Which button.
+        button: PointerButton,
+        /// Screen position.
+        screen: (f64, f64),
+        /// Modifiers held.
+        modifiers: Modifiers,
+    },
+    /// A double click, sent *instead of* the second press of the pair.
+    PointerDoubleClick {
+        /// Which button.
+        button: PointerButton,
+        /// Screen position.
+        screen: (f64, f64),
+        /// Modifiers held.
+        modifiers: Modifiers,
+    },
+    /// The pointer left the canvas.
+    ///
+    /// Send it. It is the only notice the host gets that a button may have been
+    /// released where it will never hear about it, and without it a tool goes on
+    /// believing a drag is running.
+    PointerLeave,
+    /// The wheel turned, or a two-finger scroll.
+    Scroll {
+        /// Screen position.
+        screen: (f64, f64),
+        /// Delta in wheel detents; positive y is away from the user.
+        delta: (f64, f64),
+        /// Modifiers held.
+        modifiers: Modifiers,
+    },
+    /// A key went down.
+    KeyDown {
+        /// The key's name, in the shell's vocabulary.
+        key: &'a str,
+        /// Modifiers held.
+        modifiers: Modifiers,
+        /// Whether this is an auto-repeat rather than a fresh press.
+        auto_repeat: bool,
+    },
+    /// A key came up. Produces no tool event; KiCad's tools run off presses.
+    KeyUp {
+        /// The key's name.
+        key: &'a str,
+        /// Modifiers held.
+        modifiers: Modifiers,
+    },
+    /// Cancel whatever is running, as Escape does.
+    Cancel,
+}
+
+/// What the host did with an [`InputEvent`] or an action.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct InputOutcome {
+    /// A tool or a hotkey claimed it.
+    pub handled: bool,
+    /// Something asked for a repaint, so the frame the caller holds is stale.
+    ///
+    /// This is the only notice a UI gets that the document or the view changed
+    /// behind its back. Ignoring it shows a frame that no longer matches.
+    pub redraw: bool,
+}
+
+/// What the editor is doing, for a status bar and overlays.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct EditorState {
+    /// The cursor the *tools* see, in internal units: the pointer snapped to the
+    /// grid, or wherever a tool has forced it. Not the raw pointer position, which
+    /// the UI already knows.
+    pub cursor: (f64, f64),
+    /// Items currently selected.
+    pub selection_count: u32,
+    /// Whether the pointer is over the canvas, so a crosshair should be drawn.
+    pub pointer_over_canvas: bool,
+    /// Whether any screen has unsaved changes.
+    pub modified: bool,
+    /// The user-level tool on top of the tool stack; empty if none.
+    pub tool_name: String,
+    /// The last status text a tool asked to show; empty if none.
+    pub status_text: String,
+}
+
 /// An axis-aligned box in internal units.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct BBox {

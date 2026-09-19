@@ -31,6 +31,10 @@ use kicad_sch_ui::input::ViewportState;
 use kicad_sch_ui::panels::DocumentSource;
 use kicad_sch_ui::shell::{self, SchematicShell};
 
+mod host_sink;
+
+use host_sink::{HostInputSink, SharedSession};
+
 /// Command-line options. Hand-parsed: three flags do not justify a dependency
 /// in a crate that will eventually be started by C++ rather than by a shell.
 struct Options {
@@ -157,6 +161,13 @@ struct Loaded {
     /// camera moving over a fixed picture is the whole of what a `.kgds` can
     /// offer.
     document: Option<SharedDocument>,
+    /// The same session, for the sink to give input to.
+    ///
+    /// Two owners rather than one because the two directions are driven at
+    /// different points of a frame: the document is asked for geometry in prepaint,
+    /// and input is handed over in paint. `None` alongside a `None` document, for
+    /// the same reason: a recorded stream has nothing to send input to.
+    session: Option<SharedSession>,
     /// What to caption the window and panels with.
     source: DocumentSource,
 }
@@ -170,7 +181,7 @@ struct Loaded {
 /// sees it — the borrow cannot escape this method, which is why it is the
 /// document's job to install the frame rather than to return it.
 struct SchematicSession {
-    session: Session,
+    session: SharedSession,
 }
 
 impl LiveDocument for SchematicSession {
@@ -182,7 +193,15 @@ impl LiveDocument for SchematicSession {
         // `KIGFX::VIEW::Redraw` culls to the viewport it is given, so this is not
         // bookkeeping: the camera the session is told about decides which groups
         // the frame body references at all.
-        self.session
+        // Borrowed for the whole recording pass. The only other borrower is the
+        // input sink, which runs in paint rather than in prepaint, so this never
+        // contends — and if something ever makes it contend, the sink drops the
+        // event instead of panicking inside a frame.
+        let mut session = self.session.try_borrow_mut().map_err(|_| {
+            "the session is busy: something is asking for a frame from inside one".to_string()
+        })?;
+
+        session
             .set_viewport(&Viewport {
                 width_px: viewport.width.max(1.0) as u32,
                 height_px: viewport.height.max(1.0) as u32,
@@ -204,8 +223,7 @@ impl LiveDocument for SchematicSession {
         // This converges rather than oscillating: an unclamped request comes back
         // unchanged, because both sides carry the centre and the scale as `double`
         // and nothing rounds on the way through.
-        let granted = self
-            .session
+        let granted = session
             .viewport()
             .map_err(|error| format!("reading the viewport back: {error}"))?;
 
@@ -218,8 +236,7 @@ impl LiveDocument for SchematicSession {
                 .set_center([granted.center_x, granted.center_y]);
         }
 
-        let frame = self
-            .session
+        let frame = session
             .render()
             .map_err(|error| format!("recording a frame: {error}"))?;
         renderer.set_stream_view(&frame);
@@ -235,6 +252,7 @@ fn load_stream(path: &Path) -> Result<Loaded, String> {
     Ok(Loaded {
         stream,
         document: None,
+        session: None,
         source: DocumentSource::RecordedStream {
             file: file_label(path),
         },
@@ -268,9 +286,14 @@ fn load_schematic(path: &Path, width: u32, height: u32) -> Result<Loaded, String
         .render_owned()
         .map_err(|error| format!("rendering {}: {error}", path.display()))?;
 
+    let session: SharedSession = std::rc::Rc::new(std::cell::RefCell::new(session));
+
     Ok(Loaded {
         stream,
-        document: Some(shared_document(SchematicSession { session })),
+        document: Some(shared_document(SchematicSession {
+            session: session.clone(),
+        })),
+        session: Some(session),
         source: DocumentSource::Schematic {
             file: file_label(path),
         },
@@ -341,7 +364,7 @@ fn main() {
             let document = loaded.map(|loaded| {
                 let mut renderer = SchematicRenderer::new();
                 renderer.set_stream(loaded.stream);
-                (renderer, loaded.source, loaded.document)
+                (renderer, loaded.source, loaded.document, loaded.session)
             });
 
             let bounds = Bounds {
@@ -368,13 +391,25 @@ fn main() {
                     move |window, cx| {
                         let view = cx.new(|cx| {
                             let mut shell = match document {
-                                Some((renderer, source, live)) => {
+                                Some((renderer, source, live, session)) => {
+                                    // The sink is what makes the window an input
+                                    // source rather than a viewer: with a session
+                                    // behind it every pointer move, click and key
+                                    // press reaches the C++ tool framework. Without
+                                    // one — a recorded stream — there is nothing to
+                                    // send input to, and the null sink is honest.
+                                    let sink = match session {
+                                        Some(session) => kicad_sch_ui::input::shared_sink(
+                                            HostInputSink::new(session),
+                                        ),
+                                        None => kicad_sch_ui::input::shared_sink(
+                                            kicad_sch_ui::input::NullSink,
+                                        ),
+                                    };
                                     let mut shell = SchematicShell::new_with_document(
                                         std::rc::Rc::new(std::cell::RefCell::new(renderer)),
                                         source,
-                                        kicad_sch_ui::input::shared_sink(
-                                            kicad_sch_ui::input::NullSink,
-                                        ),
+                                        sink,
                                         window,
                                         cx,
                                     );

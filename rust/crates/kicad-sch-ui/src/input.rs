@@ -370,6 +370,27 @@ pub enum ShellEvent {
 pub trait InputSink {
     /// Consume one event.
     fn handle(&mut self, event: ShellEvent);
+
+    /// Whether the host changed something the canvas cannot see, since this was
+    /// last asked. Reading it clears it.
+    ///
+    /// A tool that moves an item, changes the selection or moves the view has
+    /// changed what the next frame should look like, and the canvas has no way to
+    /// notice: it re-records when *it* moves the camera, and an edit is not that.
+    /// So the sink is asked after every event, and a `true` marks the document
+    /// dirty. Defaulted to `false` for the sinks that cannot change anything.
+    fn take_dirty(&mut self) -> bool {
+        false
+    }
+
+    /// How many items the host reports as selected.
+    ///
+    /// The shell has no selection of its own — the C++ selection tool owns it — so
+    /// the status bar reads it from here. Defaulted to zero, which is also the
+    /// honest answer while no selection tool can run.
+    fn selection_count(&self) -> usize {
+        0
+    }
 }
 
 /// A sink that throws everything away.
