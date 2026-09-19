@@ -24,12 +24,15 @@
 #include <math/vector2d.h>
 #include <sch_sheet_path.h>
 #include <schematic_holder.h>
+#include <tool/canvas_holder.h>
 #include <tool/tools_holder.h>
 #include <undo_redo_holder.h>
+#include <units_provider.h>
 #include <wx/string.h>
 
 class ACTIONS;
 class HOST_TOOL_DISPATCHER;
+class GRID_HELPER;
 class SCHEMATIC;
 class SCH_ITEM;
 class SCH_SCREEN;
@@ -98,6 +101,16 @@ struct SCH_HOST_SHEET_INFO
  * what it needs. ::registerTools registers all of them regardless, so a tool
  * converted upstream of here starts working with no wiring changes.
  *
+ * It is also a CANVAS_HOLDER, which is the same idea one level up: the view, the grid
+ * and the units are what `COMMON_TOOLS` and `ZOOM_TOOL` need in order to pan, zoom, pick
+ * a grid and switch units, and those two tools are registered by every KiCad program and
+ * so could not be given an eeschema-shaped seam. Everything on that interface that is
+ * inherently a window — the status bar, the grid picker, the canvas widget — is left at
+ * the base class's "do nothing"/null, which is the honest answer here.
+ *
+ * It is a UNITS_PROVIDER for the same reason: ::GetUnitsProvider has to hand one out, and
+ * the session is the thing that knows which units the user is working in.
+ *
  * It is finally an UNDO_REDO_HOLDER, so an edit made here is recorded and can be
  * undone. The stacks used to be members of `EDA_BASE_FRAME`; the schematic-specific
  * half of undo is `SCH_UNDO_REDO`, which a frame and this host both run.
@@ -111,7 +124,8 @@ struct SCH_HOST_SHEET_INFO
  *
  * Not thread safe, and neither is anything it owns. One session per thread.
  */
-class SCH_HOST : public TOOLS_HOLDER, public SCHEMATIC_HOLDER, public UNDO_REDO_HOLDER
+class SCH_HOST : public TOOLS_HOLDER, public SCHEMATIC_HOLDER, public CANVAS_HOLDER,
+                 public UNITS_PROVIDER, public UNDO_REDO_HOLDER
 {
 public:
     SCH_HOST();
@@ -408,8 +422,87 @@ public:
      * A frame repaints synchronously; this host does not own the frame clock — the
      * consumer on the far side of the ABI does — so the honest answer is the same one
      * `RefreshCanvas()` gives, and ::TakeRedrawRequest is how the consumer collects it.
+     *
+     * One declaration, two base virtuals: SCHEMATIC_HOLDER and CANVAS_HOLDER both ask
+     * for this and agree on the signature, so this overrides both and neither name
+     * lookup nor the vtables are ambiguous.
      */
     void ForceRefreshCanvas() override { RefreshCanvas(); }
+
+    /**
+     * SCHEMATIC_HOLDER's spelling of ::SetCanvasCursor.
+     *
+     * CANVAS_HOLDER renames the cursor setter — `EDA_DRAW_FRAME::SetCurrentCursor` is
+     * not virtual, so a second base declaring that name would make every existing
+     * `m_frame->SetCurrentCursor()` ambiguous — and the two interfaces then both want
+     * the same thing of this host. Forwarding rather than assigning twice keeps one
+     * idea of what the cursor is.
+     */
+    void SetCurrentCursor( KICURSOR aCursor ) override { SetCanvasCursor( aCursor ); }
+
+    /// The shape the tools last asked the pointer to take.
+    KICURSOR GetCurrentCursor() const { return m_cursor; }
+
+    // ------------------------------------------------------- CANVAS_HOLDER
+
+    /**
+     * @copydoc CANVAS_HOLDER::GetDocumentExtents
+     *
+     * ::GetDocumentBBox is the host's own spelling of exactly this, written against
+     * `SCH_EDIT_FRAME::GetDocumentExtents()`, so there is one traversal and not two.
+     */
+    const BOX2I GetDocumentExtents( bool aIncludeAllVisible = true ) const override
+    {
+        return GetDocumentBBox( aIncludeAllVisible );
+    }
+
+    /**
+     * The page rectangle, which is what a frame's canvas would answer, and an empty
+     * box when nothing is loaded — there is then no page and no honest default.
+     */
+    BOX2I GetDefaultViewBBox() const override { return GetDocumentBBox( true ); }
+
+    /**
+     * The kiface's settings, which ::ensureKifaceSettings has already stood up.
+     *
+     * The same object ::eeconfig reads from — that one is this downcast to eeschema's
+     * type, exactly as `SCH_BASE_FRAME::eeconfig()` is of `EDA_BASE_FRAME::config()`.
+     */
+    APP_SETTINGS_BASE* config() const override;
+
+    /**
+     * Eeschema keeps its zoom and grid preferences in the application settings' own
+     * window block, as `EDA_BASE_FRAME` does; ::initGrid reads that same block.
+     */
+    WINDOW_SETTINGS* GetWindowSettings( APP_SETTINGS_BASE* aCfg ) override;
+
+    KIGFX::GAL_DISPLAY_OPTIONS& GetGalDisplayOptions() override { return m_displayOptions; }
+
+    /**
+     * Always the origin: eeschema has no movable grid origin, which is what every
+     * schematic frame answers too (`SCH_BASE_FRAME::GetGridOrigin()`).
+     */
+    const VECTOR2I& GetGridOrigin() const override;
+    void            SetGridOrigin( const VECTOR2I& aPosition ) override {}
+
+    bool GridVisible() const override;
+    void SetGridVisibility( bool aVisible ) override;
+
+    bool GridOverridden() const override;
+    void SetGridOverrides( bool aOverride ) override;
+
+    /// Eeschema's snapping rules, the ones `SCH_EDIT_FRAME::MakeGridHelper()` builds.
+    std::unique_ptr<GRID_HELPER> MakeGridHelper() override;
+
+    /// This session is its own units provider; see the class comment.
+    UNITS_PROVIDER* GetUnitsProvider() override { return this; }
+
+    /**
+     * A frame additionally refreshes what it has drawn in the old units and tells its
+     * children the units changed. Nothing here displays a formatted value, so the
+     * units are simply what they now are.
+     */
+    void SwitchUserUnits( EDA_UNITS aUnits ) override { SetUserUnits( aUnits ); }
 
     /**
      * Records the cursor a tool asked for, for a consumer that owns the real pointer.
@@ -417,10 +510,16 @@ public:
      * `HOST_VIEW_CONTROLS` already covers *where* the cursor is; this is what shape it
      * should be, which is the tools' way of saying what a click would do here.
      */
-    void SetCurrentCursor( KICURSOR aCursor ) override { m_cursor = aCursor; }
+    void SetCanvasCursor( KICURSOR aCursor ) override { m_cursor = aCursor; }
 
-    /// The shape the tools last asked the pointer to take.
-    KICURSOR GetCurrentCursor() const { return m_cursor; }
+    /**
+     * Records the redraw request, for the same reason ::ForceRefreshCanvas does.
+     *
+     * A frame rebuilds its GAL and repaints; there is no GAL to rebuild here — the
+     * recording one is not a device and cannot be lost — so what is left of "redraw
+     * everything" is telling the consumer its last frame is stale.
+     */
+    void HardRedraw() override { RefreshCanvas(); }
 
     // ---------------------------------------------------------- collaborators
 
@@ -455,6 +554,16 @@ private:
      * that tool would do this in a frame, and declines here.
      */
     void initGrid();
+
+    /**
+     * ::GetWindowSettings of ::config, for the accessors that are const.
+     *
+     * CANVAS_HOLDER's grid queries are const and `GetWindowSettings` is not — it cannot
+     * be, because `EDA_BASE_FRAME`'s is not — so the const ones come through here.
+     *
+     * @return null where there are no settings at all.
+     */
+    const WINDOW_SETTINGS* windowSettings() const;
 
     /// Re-read the sheet list into m_sheets after a load or a sheet change.
     void rebuildSheetList();

@@ -43,6 +43,7 @@
 #include <tool/tool_manager.h>
 #include <tool/zoom_tool.h>
 #include <tools/ee_graphic_tool.h>
+#include <tools/ee_grid_helper.h>
 #include <tools/sch_actions.h>
 #include <tools/sch_align_tool.h>
 #include <tools/sch_design_block_control.h>
@@ -74,6 +75,9 @@ static constexpr double ZOOM_FIT_MARGIN = 1.05;
 
 
 SCH_HOST::SCH_HOST() :
+        // The units a schematic frame starts in: EDA_BASE_FRAME's constructor sets
+        // millimetres, and SCH_BASE_FRAME passes it eeschema's 100 nm internal scale.
+        UNITS_PROVIDER( schIUScale, EDA_UNITS::MM ),
         m_schematic( nullptr ),
         m_currentSheetIndex( 0 ),
         m_viewportSize( 1920, 1080 ),
@@ -494,11 +498,107 @@ SCH_SELECTION_TOOL* SCH_HOST::GetSelectionTool()
 }
 
 
+APP_SETTINGS_BASE* SCH_HOST::config() const
+{
+    // What EDA_BASE_FRAME::config() resolves to: the kiface's settings, which
+    // ::ensureKifaceSettings has already guaranteed there are some of.
+    return Kiface().KifaceSettings();
+}
+
+
 EESCHEMA_SETTINGS* SCH_HOST::eeconfig() const
 {
-    // SCH_BASE_FRAME reads this from EDA_BASE_FRAME::config(), which resolves to the
-    // kiface's settings; ::ensureKifaceSettings has already guaranteed there are some.
-    return dynamic_cast<EESCHEMA_SETTINGS*>( Kiface().KifaceSettings() );
+    // SCH_BASE_FRAME::eeconfig() is this same line: the eeschema-typed view of the one
+    // settings object, rather than a second way of finding it.
+    return dynamic_cast<EESCHEMA_SETTINGS*>( config() );
+}
+
+
+WINDOW_SETTINGS* SCH_HOST::GetWindowSettings( APP_SETTINGS_BASE* aCfg )
+{
+    wxCHECK( aCfg, nullptr );
+
+    // Eeschema keeps one window block, as EDA_BASE_FRAME::GetWindowSettings() assumes;
+    // it is the block ::initGrid reads the grid list out of.
+    return &aCfg->m_Window;
+}
+
+
+const WINDOW_SETTINGS* SCH_HOST::windowSettings() const
+{
+    APP_SETTINGS_BASE* cfg = config();
+
+    if( !cfg )
+        return nullptr;
+
+    // The const accessors below have to go through the same function the rest of the
+    // tree does, or there would be two ideas of where the preferences live.
+    // ::GetWindowSettings only reads its argument, so this cast takes nothing away.
+    return const_cast<SCH_HOST*>( this )->GetWindowSettings( cfg );
+}
+
+
+const VECTOR2I& SCH_HOST::GetGridOrigin() const
+{
+    // Eeschema has no movable grid origin: SCH_BASE_FRAME::GetGridOrigin() is this same
+    // constant zero, and ::initGrid gives the GAL that zero to match.
+    static const VECTOR2I origin;
+
+    return origin;
+}
+
+
+bool SCH_HOST::GridVisible() const
+{
+    const WINDOW_SETTINGS* window = windowSettings();
+
+    // EDA_DRAW_FRAME::IsGridVisible() answers true with no settings, and so does this:
+    // the grid is drawn by default, and a missing preference is not a request to hide it.
+    return window ? window->grid.show : true;
+}
+
+
+void SCH_HOST::SetGridVisibility( bool aVisible )
+{
+    APP_SETTINGS_BASE* cfg = config();
+
+    wxCHECK( cfg, /* void */ );
+
+    GetWindowSettings( cfg )->grid.show = aVisible;
+
+    // The two things EDA_DRAW_FRAME::SetGridVisibility() does to its canvas: tell the GAL,
+    // and dirty the non-cached target the grid is drawn into. Its third, Refresh(), posts
+    // a paint event, which here is RefreshCanvas() recording that the frame is stale.
+    m_gal->SetGridVisibility( aVisible );
+    m_view->MarkTargetDirty( KIGFX::TARGET_NONCACHED );
+
+    RefreshCanvas();
+}
+
+
+bool SCH_HOST::GridOverridden() const
+{
+    const WINDOW_SETTINGS* window = windowSettings();
+
+    return window ? window->grid.overrides_enabled : false;
+}
+
+
+void SCH_HOST::SetGridOverrides( bool aOverride )
+{
+    APP_SETTINGS_BASE* cfg = config();
+
+    wxCHECK( cfg, /* void */ );
+
+    GetWindowSettings( cfg )->grid.overrides_enabled = aOverride;
+}
+
+
+std::unique_ptr<GRID_HELPER> SCH_HOST::MakeGridHelper()
+{
+    // SCH_EDIT_FRAME::MakeGridHelper()'s helper, so that a tool snapping on this host
+    // snaps by eeschema's rules and not the base class's.
+    return std::make_unique<EE_GRID_HELPER>( m_toolManager );
 }
 
 
