@@ -315,6 +315,20 @@ bool SCH_LINE_WIRE_BUS_TOOL::Init()
     if( !SCH_TOOL_BASE::Init() )
         return false;
 
+    buildContextMenu();
+
+    return true;
+}
+
+
+void SCH_LINE_WIRE_BUS_TOOL::buildContextMenu()
+{
+    // TOOL_INTERACTIVE only builds a TOOL_MENU — and a wxMenu with it — when
+    // Pgm().IsGUI(), so a console-mode process has none. Everything below is right-click
+    // presentation; drawing works without it.
+    if( !m_menu || !m_selectionTool || !m_selectionTool->HasToolMenu() )
+        return;
+
     const auto busGetter =
             [this]()
             {
@@ -333,20 +347,22 @@ bool SCH_LINE_WIRE_BUS_TOOL::Init()
     auto wireOrBusTool =
             [this]( const SELECTION& aSel )
             {
-                return ( m_frame->IsCurrentTool( SCH_ACTIONS::drawWire )
-                      || m_frame->IsCurrentTool( SCH_ACTIONS::drawBus ) );
+                return ( m_toolMgr->GetToolHolder()->IsCurrentTool( SCH_ACTIONS::drawWire )
+                      || m_toolMgr->GetToolHolder()->IsCurrentTool( SCH_ACTIONS::drawBus ) );
             };
 
     auto lineTool =
             [this]( const SELECTION& aSel )
             {
-                return m_frame->IsCurrentTool( SCH_ACTIONS::drawLines );
+                return m_toolMgr->GetToolHolder()->IsCurrentTool( SCH_ACTIONS::drawLines );
             };
 
     auto belowRootSheetCondition =
             [this]( const SELECTION& aSel )
             {
-                return m_frame->GetCurrentSheet().Last() != &m_frame->Schematic().Root();
+                SCHEMATIC* schematic = m_editor->GetSchematic();
+
+                return schematic && schematic->CurrentSheet().Last() != &schematic->Root();
             };
 
     auto busSelection = SCH_CONDITIONS::MoreThan( 0 )
@@ -398,8 +414,6 @@ bool SCH_LINE_WIRE_BUS_TOOL::Init()
     CONDITIONAL_MENU& selToolMenu = m_selectionTool->GetToolMenu().GetMenu();
 
     selToolMenu.AddMenu( selBusUnfoldMenu.get(),        busSelection && SCH_CONDITIONS::Idle, 100 );
-
-    return true;
 }
 
 
@@ -423,7 +437,7 @@ int SCH_LINE_WIRE_BUS_TOOL::DrawSegments( const TOOL_EVENT& aEvent )
     SCH_COMMIT                       commit( m_toolMgr );
 
     TOOL_EVENT         originalEvent = aEvent;      // This can change out from under us when the event loop runs
-    SCOPED_TOOL_PUSHER raii( m_frame, aEvent );
+    SCOPED_TOOL_PUSHER raii( m_toolMgr->GetToolHolder(), aEvent );
 
     m_toolMgr->RunAction( ACTIONS::selectionClear );
 
@@ -456,7 +470,7 @@ int SCH_LINE_WIRE_BUS_TOOL::UnfoldBus( const TOOL_EVENT& aEvent )
     SCH_LINE*  segment = nullptr;
 
     TOOL_EVENT         originalEvent = aEvent;          // This can change out from under us when the event loop runs
-    SCOPED_TOOL_PUSHER raii( m_frame, originalEvent );
+    SCOPED_TOOL_PUSHER raii( m_toolMgr->GetToolHolder(), originalEvent );
     Activate();
 
     if( netPtr )
@@ -523,7 +537,7 @@ SCH_LINE* SCH_LINE_WIRE_BUS_TOOL::doUnfoldBus( SCH_COMMIT& aCommit, const wxStri
                                                const std::optional<VECTOR2I>& aPos )
 {
     SCHEMATIC_SETTINGS& cfg = getModel<SCHEMATIC>()->Settings();
-    SCH_SCREEN*         screen = m_frame->GetScreen();
+    SCH_SCREEN*         screen = m_editor->GetScreen();
     // use the same function as the menu selector, so we choose the same bus segment
     SCH_LINE* const     bus = getBusForUnfolding();
 
@@ -546,12 +560,12 @@ SCH_LINE* SCH_LINE_WIRE_BUS_TOOL::doUnfoldBus( SCH_COMMIT& aCommit, const wxStri
 
     m_busUnfold.entry = new SCH_BUS_WIRE_ENTRY( pos );
     m_busUnfold.entry->SetParent( screen );
-    m_frame->AddToScreen( m_busUnfold.entry, m_frame->GetScreen() );
+    m_editor->AddToScreen( m_busUnfold.entry, m_editor->GetScreen() );
 
     m_busUnfold.label = new SCH_LABEL( m_busUnfold.entry->GetEnd(), aNet );
     m_busUnfold.label->SetTextSize( VECTOR2I( cfg.m_DefaultTextSize, cfg.m_DefaultTextSize ) );
     m_busUnfold.label->SetSpinStyle( busUnfoldPersistentSettings.label_spin_style );
-    m_busUnfold.label->SetParent( m_frame->GetScreen() );
+    m_busUnfold.label->SetParent( m_editor->GetScreen() );
     m_busUnfold.label->SetFlags( IS_NEW | IS_MOVING );
 
     m_busUnfold.in_progress = true;
@@ -577,7 +591,7 @@ SCH_LINE* SCH_LINE_WIRE_BUS_TOOL::doUnfoldBus( SCH_COMMIT& aCommit, const wxStri
 
 const SCH_SHEET_PIN* SCH_LINE_WIRE_BUS_TOOL::getSheetPin( const VECTOR2I& aPosition )
 {
-    SCH_SCREEN* screen = m_frame->GetScreen();
+    SCH_SCREEN* screen = m_editor->GetScreen();
 
     for( SCH_ITEM* item : screen->Items().Overlapping( SCH_SHEET_T, aPosition ) )
     {
@@ -734,25 +748,25 @@ void SCH_LINE_WIRE_BUS_TOOL::computeBreakPoint( const std::pair<SCH_LINE*, SCH_L
 int SCH_LINE_WIRE_BUS_TOOL::doDrawSegments( const TOOL_EVENT& aTool, SCH_COMMIT& aCommit,
                                             int aType, bool aQuitOnDraw )
 {
-    SCH_SCREEN*           screen = m_frame->GetScreen();
+    SCH_SCREEN*           screen = m_editor->GetScreen();
     SCH_LINE*             segment = nullptr;
     EE_GRID_HELPER        grid( m_toolMgr );
     GRID_HELPER_GRIDS     gridType = ( aType == LAYER_NOTES ) ? GRID_GRAPHICS : GRID_WIRES;
     KIGFX::VIEW_CONTROLS* controls = getViewControls();
-    int                   lastMode = m_frame->eeconfig()->m_Drawing.line_mode;
+    int                   lastMode = m_editor->eeconfig()->m_Drawing.line_mode;
     static bool           posture = false;
 
     auto setCursor =
             [&]()
             {
                 if( aType == LAYER_WIRE )
-                    m_frame->GetCanvas()->SetCurrentCursor( KICURSOR::LINE_WIRE );
+                    m_editor->SetCurrentCursor( KICURSOR::LINE_WIRE );
                 else if( aType == LAYER_BUS )
-                    m_frame->GetCanvas()->SetCurrentCursor( KICURSOR::LINE_BUS );
+                    m_editor->SetCurrentCursor( KICURSOR::LINE_BUS );
                 else if( aType == LAYER_NOTES )
-                    m_frame->GetCanvas()->SetCurrentCursor( KICURSOR::LINE_GRAPHIC );
+                    m_editor->SetCurrentCursor( KICURSOR::LINE_GRAPHIC );
                 else
-                    m_frame->GetCanvas()->SetCurrentCursor( KICURSOR::LINE_WIRE );
+                    m_editor->SetCurrentCursor( KICURSOR::LINE_WIRE );
             };
 
     auto cleanup =
@@ -767,13 +781,13 @@ int SCH_LINE_WIRE_BUS_TOOL::doDrawSegments( const TOOL_EVENT& aTool, SCH_COMMIT&
                 segment = nullptr;
 
                 if( m_busUnfold.entry )
-                    m_frame->RemoveFromScreen( m_busUnfold.entry, screen );
+                    m_editor->RemoveFromScreen( m_busUnfold.entry, screen );
 
                 if( m_busUnfold.label && !m_busUnfold.label_placed )
                     m_selectionTool->RemoveItemFromSel( m_busUnfold.label, true );
 
                 if( m_busUnfold.label && m_busUnfold.label_placed )
-                    m_frame->RemoveFromScreen( m_busUnfold.label, screen );
+                    m_editor->RemoveFromScreen( m_busUnfold.label, screen );
 
                 delete m_busUnfold.entry;
                 delete m_busUnfold.label;
@@ -802,7 +816,7 @@ int SCH_LINE_WIRE_BUS_TOOL::doDrawSegments( const TOOL_EVENT& aTool, SCH_COMMIT&
     // Main loop: keep receiving events
     while( TOOL_EVENT* evt = Wait() )
     {
-        LINE_MODE currentMode = (LINE_MODE) m_frame->eeconfig()->m_Drawing.line_mode;
+        LINE_MODE currentMode = (LINE_MODE) m_editor->eeconfig()->m_Drawing.line_mode;
         bool      twoSegments = currentMode != LINE_MODE::LINE_MODE_FREE;
 
         // The tool hotkey is interpreted as a click when drawing
@@ -864,7 +878,8 @@ int SCH_LINE_WIRE_BUS_TOOL::doDrawSegments( const TOOL_EVENT& aTool, SCH_COMMIT&
         //
         if( evt->IsCancelInteractive() )
         {
-            m_frame->GetInfoBar()->Dismiss();
+            if( m_frame )
+                m_frame->GetInfoBar()->Dismiss();
 
             if( segment || m_busUnfold.in_progress )
             {
@@ -882,7 +897,10 @@ int SCH_LINE_WIRE_BUS_TOOL::doDrawSegments( const TOOL_EVENT& aTool, SCH_COMMIT&
         {
             if( segment || m_busUnfold.in_progress )
             {
-                m_frame->ShowInfoBarMsg( _( "Press <ESC> to cancel drawing." ) );
+                // An info bar is a window; an editor without one loses the hint, not the
+                // gesture.
+                if( m_frame )
+                    m_frame->ShowInfoBarMsg( _( "Press <ESC> to cancel drawing." ) );
                 evt->SetPassEvent( false );
                 continue;
             }
@@ -890,7 +908,7 @@ int SCH_LINE_WIRE_BUS_TOOL::doDrawSegments( const TOOL_EVENT& aTool, SCH_COMMIT&
             if( evt->IsMoveTool() )
             {
                 // Make sure we come back after the move tool runs
-                m_frame->PushTool( aTool );
+                m_toolMgr->GetToolHolder()->PushTool( aTool );
             }
 
             break;
@@ -923,7 +941,7 @@ int SCH_LINE_WIRE_BUS_TOOL::doDrawSegments( const TOOL_EVENT& aTool, SCH_COMMIT&
             {
                 wxASSERT( aType == LAYER_WIRE );
 
-                m_frame->AddToScreen( m_busUnfold.label, screen );
+                m_editor->AddToScreen( m_busUnfold.label, screen );
                 m_selectionTool->RemoveItemFromSel( m_busUnfold.label, true );
                 m_busUnfold.label_placed = true;
             }
@@ -1017,7 +1035,7 @@ int SCH_LINE_WIRE_BUS_TOOL::doDrawSegments( const TOOL_EVENT& aTool, SCH_COMMIT&
                     m_busUnfold.flipY = flipY;
                     m_busUnfold.flipX = flipX;
 
-                    m_frame->UpdateItem( entry, false, true );
+                    m_editor->UpdateItem( entry, false, true );
                     m_wires.front()->SetStartPoint( entry->GetEnd() );
                 }
 
@@ -1056,7 +1074,7 @@ int SCH_LINE_WIRE_BUS_TOOL::doDrawSegments( const TOOL_EVENT& aTool, SCH_COMMIT&
             if( m_busUnfold.entry )
                 previewItems.push_back( m_busUnfold.entry );
 
-            for( SCH_JUNCTION* jct : JUNCTION_HELPERS::PreviewJunctions( m_frame->GetScreen(), previewItems ) )
+            for( SCH_JUNCTION* jct : JUNCTION_HELPERS::PreviewJunctions( m_editor->GetScreen(), previewItems ) )
                 m_view->AddToPreview( jct, true );
         }
         else if( evt->IsAction( &SCH_ACTIONS::undoLastSegment )
@@ -1188,7 +1206,7 @@ int SCH_LINE_WIRE_BUS_TOOL::doDrawSegments( const TOOL_EVENT& aTool, SCH_COMMIT&
 
     controls->SetAutoPan( false );
     controls->CaptureCursor( false );
-    m_frame->GetCanvas()->SetCurrentCursor( KICURSOR::ARROW );
+    m_editor->SetCurrentCursor( KICURSOR::ARROW );
     controls->ForceCursorPosition( false );
     return 0;
 }
@@ -1198,7 +1216,7 @@ SCH_LINE* SCH_LINE_WIRE_BUS_TOOL::startSegments( SCH_COMMIT& aCommit, int aType,
                                                  SCH_LINE* aSegment )
 {
     if( !aSegment )
-        aSegment = m_frame->GetScreen()->GetLine( aPos, 0, aType );
+        aSegment = m_editor->GetScreen()->GetLine( aPos, 0, aType );
 
     if( !aSegment )
     {
@@ -1210,7 +1228,7 @@ SCH_LINE* SCH_LINE_WIRE_BUS_TOOL::startSegments( SCH_COMMIT& aCommit, int aType,
         }
 
         // Give segments a parent so they find the default line/wire/bus widths
-        aSegment->SetParent( &m_frame->Schematic() );
+        aSegment->SetParent( m_editor->GetSchematic() );
     }
     else
     {
@@ -1226,7 +1244,7 @@ SCH_LINE* SCH_LINE_WIRE_BUS_TOOL::startSegments( SCH_COMMIT& aCommit, int aType,
 
     // We need 2 segments to go from a given start pin to an end point when the
     // horizontal and vertical lines only switch is on.
-    if( m_frame->eeconfig()->m_Drawing.line_mode )
+    if( m_editor->eeconfig()->m_Drawing.line_mode )
     {
         aSegment = static_cast<SCH_LINE*>( aSegment->Duplicate( true, &aCommit ) );
         aSegment->SetFlags( IS_NEW | IS_MOVING );
@@ -1273,7 +1291,7 @@ void SCH_LINE_WIRE_BUS_TOOL::simplifyWireList()
 
         SCH_LINE* next_line = *next_it;
 
-        if( SCH_LINE* merged = line->MergeOverlap( m_frame->GetScreen(), next_line, false ) )
+        if( SCH_LINE* merged = line->MergeOverlap( m_editor->GetScreen(), next_line, false ) )
         {
             delete line;
             delete next_line;
@@ -1293,7 +1311,7 @@ void SCH_LINE_WIRE_BUS_TOOL::finishSegments( SCH_COMMIT& aCommit )
     // freed selected items.
     m_toolMgr->RunAction( ACTIONS::selectionClear );
 
-    SCH_SCREEN* screen = m_frame->GetScreen();
+    SCH_SCREEN* screen = m_editor->GetScreen();
 
     // Remove segments backtracking over others
     simplifyWireList();
@@ -1326,28 +1344,28 @@ void SCH_LINE_WIRE_BUS_TOOL::finishSegments( SCH_COMMIT& aCommit )
         wxASSERT( m_busUnfold.entry && m_busUnfold.label );
 
         aCommit.Added( m_busUnfold.entry, screen );
-        m_frame->SaveCopyForRepeatItem( m_busUnfold.entry );
+        m_editor->SaveCopyForRepeatItem( m_busUnfold.entry );
 
         aCommit.Added( m_busUnfold.label, screen );
-        m_frame->AddCopyForRepeatItem( m_busUnfold.label );
+        m_editor->AddCopyForRepeatItem( m_busUnfold.label );
         m_busUnfold.label->ClearEditFlags();
 
         if( !m_wires.empty() )
-            m_frame->AddCopyForRepeatItem( m_wires[0] );
+            m_editor->AddCopyForRepeatItem( m_wires[0] );
     }
     else if( !m_wires.empty() )
     {
-        m_frame->SaveCopyForRepeatItem( m_wires[0] );
+        m_editor->SaveCopyForRepeatItem( m_wires[0] );
     }
 
     for( size_t ii = 1; ii < m_wires.size(); ++ii )
-        m_frame->AddCopyForRepeatItem( m_wires[ii] );
+        m_editor->AddCopyForRepeatItem( m_wires[ii] );
 
     // Add the new wires
     for( SCH_LINE* wire : m_wires )
     {
         wire->ClearFlags( IS_NEW | IS_MOVING );
-        m_frame->AddToScreen( wire, screen );
+        m_editor->AddToScreen( wire, screen );
     }
 
     m_wires.clear();
@@ -1358,11 +1376,11 @@ void SCH_LINE_WIRE_BUS_TOOL::finishSegments( SCH_COMMIT& aCommit )
     getViewControls()->SetAutoPan( false );
 
     // Correct and remove segments that need to be merged.
-    m_frame->Schematic().CleanUp( &aCommit );
+    m_editor->GetSchematic()->CleanUp( &aCommit );
 
     std::vector<SCH_ITEM*> symbols;
 
-    for( SCH_ITEM* symbol : m_frame->GetScreen()->Items().OfType( SCH_SYMBOL_T ) )
+    for( SCH_ITEM* symbol : m_editor->GetScreen()->Items().OfType( SCH_SYMBOL_T ) )
         symbols.push_back( symbol );
 
     for( SCH_ITEM* symbol : symbols )
@@ -1375,20 +1393,20 @@ void SCH_LINE_WIRE_BUS_TOOL::finishSegments( SCH_COMMIT& aCommit )
         for( auto pt = pts.begin(); pt != pts.end(); pt++ )
         {
             for( auto secondPt = pt + 1; secondPt != pts.end(); secondPt++ )
-                m_frame->TrimWire( &aCommit, *pt, *secondPt );
+                TrimWire( &aCommit, *pt, *secondPt );
         }
     }
 
     for( const VECTOR2I& pt : new_ends )
     {
-        if( m_frame->GetScreen()->IsExplicitJunctionNeeded( pt ) )
-            AddJunction( &aCommit, m_frame->GetScreen(), pt );
+        if( m_editor->GetScreen()->IsExplicitJunctionNeeded( pt ) )
+            AddJunction( &aCommit, m_editor->GetScreen(), pt );
     }
 
     if( m_busUnfold.in_progress )
         m_busUnfold = {};
 
-    for( SCH_ITEM* item : m_frame->GetScreen()->Items() )
+    for( SCH_ITEM* item : m_editor->GetScreen()->Items() )
         item->ClearEditFlags();
 }
 
@@ -1429,7 +1447,7 @@ int SCH_LINE_WIRE_BUS_TOOL::TrimOverLappingWires( SCH_COMMIT* aCommit, SCH_SELEC
             }
 
             if( conn_pts.size() == 2 )
-                m_frame->TrimWire( aCommit, conn_pts[0], conn_pts[1] );
+                TrimWire( aCommit, conn_pts[0], conn_pts[1] );
         }
     }
 
@@ -1437,9 +1455,75 @@ int SCH_LINE_WIRE_BUS_TOOL::TrimOverLappingWires( SCH_COMMIT* aCommit, SCH_SELEC
 }
 
 
+bool SCH_LINE_WIRE_BUS_TOOL::TrimWire( SCH_COMMIT* aCommit, const VECTOR2I& aStart,
+                                       const VECTOR2I& aEnd )
+{
+    if( aStart == aEnd )
+        return false;
+
+    SCH_SCREEN*            screen = m_editor->GetScreen();
+    std::vector<SCH_LINE*> wires;
+    BOX2I                  bb( aStart );
+
+    bb.Merge( aEnd );
+
+    // We cannot modify the RTree while iterating, so push the possible
+    // wires into a separate structure.
+    for( EDA_ITEM* item : screen->Items().Overlapping( bb ) )
+    {
+        SCH_LINE* line = static_cast<SCH_LINE*>( item );
+
+        if( item->Type() == SCH_LINE_T && line->GetLayer() == LAYER_WIRE )
+            wires.push_back( line );
+    }
+
+    for( SCH_LINE* line : wires )
+    {
+        // Don't remove wires that are already deleted or are currently being dragged
+        if( line->GetEditFlags() & ( STRUCT_DELETED | IS_MOVING | SKIP_STRUCT ) )
+            continue;
+
+        if( !IsPointOnSegment( line->GetStartPoint(), line->GetEndPoint(), aStart ) ||
+                !IsPointOnSegment( line->GetStartPoint(), line->GetEndPoint(), aEnd ) )
+        {
+            continue;
+        }
+
+        // Don't remove entire wires
+        if( ( line->GetStartPoint() == aStart && line->GetEndPoint() == aEnd )
+            || ( line->GetStartPoint() == aEnd && line->GetEndPoint() == aStart ) )
+        {
+            continue;
+        }
+
+        // Step 1: break the segment on one end.
+        // Ensure that *line points to the segment containing aEnd
+        SCH_LINE* new_line;
+        BreakSegment( aCommit, line, aStart, &new_line, screen );
+
+        if( IsPointOnSegment( new_line->GetStartPoint(), new_line->GetEndPoint(), aEnd ) )
+            line = new_line;
+
+        // Step 2: break the remaining segment.
+        // Ensure that *line _also_ contains aStart.  This is our overlapping segment
+        BreakSegment( aCommit, line, aEnd, &new_line, screen );
+
+        if( IsPointOnSegment( new_line->GetStartPoint(), new_line->GetEndPoint(), aStart ) )
+            line = new_line;
+
+        m_editor->RemoveFromScreen( line, screen );
+        aCommit->Removed( line, screen );
+
+        return true;
+    }
+
+    return false;
+}
+
+
 int SCH_LINE_WIRE_BUS_TOOL::AddJunctionsIfNeeded( SCH_COMMIT* aCommit, SCH_SELECTION* aSelection )
 {
-    SCH_SCREEN*           screen = m_frame->GetScreen();
+    SCH_SCREEN*           screen = m_editor->GetScreen();
     std::deque<EDA_ITEM*> allItems;
 
     for( EDA_ITEM* item : aSelection->Items() )
@@ -1459,7 +1543,7 @@ int SCH_LINE_WIRE_BUS_TOOL::AddJunctionsIfNeeded( SCH_COMMIT* aCommit, SCH_SELEC
     for( const VECTOR2I& point : screen->GetNeededJunctions( allItems ) )
     {
         wxLogTrace( "KICAD_SCH_MOVE", "AddJunctionsIfNeeded: adding junction at %s", point.Format().c_str() );
-        AddJunction( aCommit, m_frame->GetScreen(), point );
+        AddJunction( aCommit, m_editor->GetScreen(), point );
     }
 
     return 0;
@@ -1476,7 +1560,7 @@ void SCH_LINE_WIRE_BUS_TOOL::BreakSegment( SCH_COMMIT* aCommit, SCH_LINE* aSegme
 
     aSegment->SetFlags( IS_CHANGED | IS_BROKEN );
     newSegment->SetFlags( IS_NEW | IS_BROKEN );
-    m_frame->AddToScreen( newSegment, aScreen );
+    m_editor->AddToScreen( newSegment, aScreen );
 
     aCommit->Added( newSegment, aScreen );
 
@@ -1533,7 +1617,7 @@ SCH_JUNCTION* SCH_LINE_WIRE_BUS_TOOL::AddJunction( SCH_COMMIT* aCommit, SCH_SCRE
     if( aScreen->GetBus( aPos ) )
         junction->SetLayer( LAYER_BUS_JUNCTION );
 
-    m_frame->AddToScreen( junction, aScreen );
+    m_editor->AddToScreen( junction, aScreen );
     aCommit->Added( junction, aScreen );
 
     BreakSegments( aCommit, aPos, aScreen );

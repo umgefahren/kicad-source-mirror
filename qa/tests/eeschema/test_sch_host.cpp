@@ -541,16 +541,16 @@ BOOST_AUTO_TEST_CASE( TheHostIsItsOwnToolHolder )
 /**
  * Exactly which of the roster runs on a holder that is not a frame.
  *
- * `SCH_SELECTION_TOOL` does, because what it asks the holder for is a
- * SCHEMATIC_HOLDER — the document, the settings and the canvas notifications — and
- * not a window. Every other class here still sets `m_frame` from the holder and
- * returns false when the holder is not its frame type, so
- * `TOOL_MANAGER::InitTools()` unregisters and deletes it.
+ * Three do: `SCH_SELECTION_TOOL`, `SCH_MOVE_TOOL` and `SCH_LINE_WIRE_BUS_TOOL`, each
+ * because what it asks the holder for is a SCHEMATIC_HOLDER — the document, the
+ * settings, the canvas notifications — rather than a window. Every other class here
+ * still sets `m_frame` from the holder and returns false when the holder is not its
+ * frame type, so `TOOL_MANAGER::InitTools()` unregisters and deletes it.
  *
  * Keep this list exhaustive rather than illustrative. It is what tells the next
  * person converting a tool that it worked.
  */
-BOOST_AUTO_TEST_CASE( TheSelectionToolRunsHereAndTheRestOfTheRosterStillDeclines )
+BOOST_AUTO_TEST_CASE( ThreeToolsRunHereAndTheRestOfTheRosterStillDeclines )
 {
     SCH_HOST host;
 
@@ -559,9 +559,9 @@ BOOST_AUTO_TEST_CASE( TheSelectionToolRunsHereAndTheRestOfTheRosterStillDeclines
     BOOST_REQUIRE( tools != nullptr );
 
     BOOST_CHECK( tools->GetTool<SCH_SELECTION_TOOL>() != nullptr );
+    BOOST_CHECK( tools->GetTool<SCH_MOVE_TOOL>() != nullptr );
+    BOOST_CHECK( tools->GetTool<SCH_LINE_WIRE_BUS_TOOL>() != nullptr );
 
-    BOOST_CHECK( tools->GetTool<SCH_MOVE_TOOL>() == nullptr );
-    BOOST_CHECK( tools->GetTool<SCH_LINE_WIRE_BUS_TOOL>() == nullptr );
     BOOST_CHECK( tools->GetTool<SCH_EDIT_TOOL>() == nullptr );
     BOOST_CHECK( tools->GetTool<SCH_DRAWING_TOOLS>() == nullptr );
     BOOST_CHECK( tools->GetTool<SCH_EDITOR_CONTROL>() == nullptr );
@@ -571,6 +571,38 @@ BOOST_AUTO_TEST_CASE( TheSelectionToolRunsHereAndTheRestOfTheRosterStillDeclines
     // rather than absent.
     BOOST_CHECK_EQUAL( host.GetSelectionCount(), 0u );
     BOOST_CHECK_EQUAL( host.GetSelectionTool(), tools->GetTool<SCH_SELECTION_TOOL>() );
+}
+
+
+/**
+ * A session with no document runs nothing, rather than letting a tool reach for a
+ * screen that does not exist.
+ *
+ * `SCH_EDIT_FRAME` has a `SCHEMATIC` and an empty `SCH_SCREEN` from its constructor
+ * on, so a tool may — and does — use `GetScreen()` without checking. This host has
+ * neither until something is loaded. Found by this very suite: with the wire tool
+ * running, `drawWires` on an empty session dereferenced null.
+ */
+BOOST_AUTO_TEST_CASE( AnEmptySessionRunsNothing )
+{
+    SCH_HOST host;
+
+    BOOST_CHECK( !host.RunActionByName( "eeschema.InteractiveDrawingLineWireBus.drawWires" ) );
+    BOOST_CHECK( !host.RunActionByName( "common.InteractiveSelection" ) );
+
+    HOST_INPUT_EVENT event;
+    event.type = HOST_INPUT_TYPE::POINTER_MOTION;
+    event.position = VECTOR2D( 100, 100 );
+    BOOST_CHECK( !host.DispatchInput( event ) );
+
+    event.type = HOST_INPUT_TYPE::POINTER_DOWN;
+    event.button = BUT_LEFT;
+    BOOST_CHECK( !host.DispatchInput( event ) );
+
+    event.type = HOST_INPUT_TYPE::POINTER_UP;
+    BOOST_CHECK( !host.DispatchInput( event ) );
+
+    BOOST_CHECK_EQUAL( host.GetSelectionCount(), 0u );
 }
 
 
@@ -677,10 +709,14 @@ BOOST_AUTO_TEST_CASE( AnUnhandledActionIsReportedRatherThanAsserted )
 {
     SCH_HOST host;
 
-    BOOST_CHECK( !host.RunActionByName( "eeschema.InteractiveDrawingLineWireBus.drawWires" ) );
+    BOOST_REQUIRE( host.LoadFile( eeschemaFixture( wxT( "api_kitchen_sink.kicad_sch" ) ) ) );
+
+    // COMMON_TOOLS declines a non-frame holder, so nothing runs this one.
     BOOST_CHECK( !host.RunActionByName( "common.Control.zoomFitScreen" ) );
     BOOST_CHECK( !host.RunActionByName( "no.such.action" ) );
 
+    // And the ones that do have a tool behind them now, so that "unhandled" above means
+    // something other than "this never reports handled".
     BOOST_CHECK( host.RunActionByName( "common.InteractiveSelection" ) );
 }
 
@@ -1176,6 +1212,224 @@ BOOST_AUTO_TEST_CASE( TheOldestCommandIsDiscardedWhenTheStackIsFull )
 BOOST_AUTO_TEST_SUITE_END()
 
 
+/**
+ * Editing: moving an item and drawing a wire, on a context that is not a wxFrame.
+ *
+ * This is the first thing a user does that *changes* the document, driven the way a user
+ * drives it: select, press, drag, release. `SCH_MOVE_TOOL` and `SCH_LINE_WIRE_BUS_TOOL` are
+ * the first two tools to answer `runsWithoutAFrame()` with true — everything they need from
+ * the editor is SCHEMATIC_HOLDER's, and what they lose without a frame is an info-bar hint
+ * and the net-collision preview.
+ *
+ * They arrive together because the move tool needs the wire tool: moving a wire off a
+ * junction has to add one where it left.
+ */
+BOOST_FIXTURE_TEST_SUITE( SchHostEditing, SCH_HOST_SETTINGS_FIXTURE )
+
+
+/// Press, drag in steps, release. Steps because KiCad's drag threshold is a distance and
+/// the tool has to see motion after the press to know a drag from a click.
+void dragBy( SCH_HOST& aHost, const VECTOR2I& aFrom, const VECTOR2I& aDelta )
+{
+    const VECTOR2D from = aHost.View().ToScreen( VECTOR2D( aFrom ) );
+    const VECTOR2D to = aHost.View().ToScreen( VECTOR2D( aFrom + aDelta ) );
+
+    HOST_INPUT_EVENT event;
+    event.button = BUT_LEFT;
+
+    event.type = HOST_INPUT_TYPE::POINTER_MOTION;
+    event.position = from;
+    aHost.DispatchInput( event );
+
+    event.type = HOST_INPUT_TYPE::POINTER_DOWN;
+    aHost.DispatchInput( event );
+
+    for( int step = 1; step <= 8; ++step )
+    {
+        event.type = HOST_INPUT_TYPE::POINTER_MOTION;
+        event.position = from + ( to - from ) * ( step / 8.0 );
+        aHost.DispatchInput( event );
+    }
+
+    event.type = HOST_INPUT_TYPE::POINTER_UP;
+    event.position = to;
+    aHost.DispatchInput( event );
+}
+
+
+std::unique_ptr<SCH_HOST> hostForMoving()
+{
+    auto host = std::make_unique<SCH_HOST>();
+
+    BOOST_REQUIRE_MESSAGE( host->LoadFile( eeschemaFixture( wxT( "api_kitchen_sink.kicad_sch" ) ) ),
+                           host->GetLastError().ToStdString() );
+
+    // A generous viewport, so that a grid step is several pixels and a drag of one grid
+    // step is unambiguously past the drag threshold.
+    host->SetViewportSize( 1920, 1080 );
+    host->ZoomToFit();
+
+    return host;
+}
+
+
+/**
+ * The move tool initialises here, which no editing tool did before.
+ */
+BOOST_AUTO_TEST_CASE( TheMoveToolRunsWithoutAFrame )
+{
+    SCH_HOST host;
+
+    BOOST_CHECK( host.GetToolManager()->GetTool<SCH_MOVE_TOOL>() != nullptr );
+}
+
+
+/**
+ * Select an item, drag it, and it is somewhere else — and the move is on the undo stack,
+ * so it can be taken back.
+ */
+BOOST_AUTO_TEST_CASE( ADragMovesTheSelectedItemAndIsUndoable )
+{
+    std::unique_ptr<SCH_HOST> host = hostForMoving();
+
+    SCH_LABEL* label = nullptr;
+
+    for( SCH_ITEM* item : host->GetScreen()->Items().OfType( SCH_LABEL_T ) )
+    {
+        label = static_cast<SCH_LABEL*>( item );
+        break;
+    }
+
+    BOOST_REQUIRE( label );
+
+    const VECTOR2I origin = label->GetPosition();
+
+    // One grid step on both axes, so the snapped result is exactly predictable: eeschema's
+    // default grid is 50 mil and the fixture is on it.
+    const VECTOR2I delta( schIUScale.MilsToIU( 100 ), schIUScale.MilsToIU( 100 ) );
+
+    // Select it first, because a drag over an *unselected* item is a rubber band.
+    HOST_INPUT_EVENT click;
+    click.button = BUT_LEFT;
+    click.position = host->View().ToScreen( VECTOR2D( origin ) );
+
+    click.type = HOST_INPUT_TYPE::POINTER_MOTION;
+    host->DispatchInput( click );
+    click.type = HOST_INPUT_TYPE::POINTER_DOWN;
+    host->DispatchInput( click );
+    click.type = HOST_INPUT_TYPE::POINTER_UP;
+    host->DispatchInput( click );
+
+    BOOST_REQUIRE_EQUAL( host->GetSelectionCount(), 1u );
+
+    dragBy( *host, origin, delta );
+
+    BOOST_CHECK_EQUAL( label->GetPosition(), origin + delta );
+    BOOST_CHECK( host->IsModified() );
+
+    // And it is undoable, which is what makes it an edit rather than a mutation.
+    BOOST_REQUIRE_EQUAL( host->GetUndoCommandCount(), 1 );
+    BOOST_REQUIRE( host->Undo() );
+    BOOST_CHECK_EQUAL( label->GetPosition(), origin );
+
+    BOOST_REQUIRE( host->Redo() );
+    BOOST_CHECK_EQUAL( label->GetPosition(), origin + delta );
+}
+
+
+/**
+ * Drawing a wire, which is the other tool `SCH_MOVE_TOOL` dragged in with it.
+ *
+ * Moving a wire off a junction has to add one where it left, and that is
+ * `SCH_LINE_WIRE_BUS_TOOL::AddJunctionsIfNeeded`; so the wire tool had to run before the
+ * move tool could, and having it run means wires can be drawn.
+ */
+BOOST_AUTO_TEST_CASE( AWireCanBeDrawnWithThePointer )
+{
+    std::unique_ptr<SCH_HOST> host = hostForMoving();
+
+    const std::size_t before = host->GetScreen()->Items().size();
+
+    std::set<SCH_ITEM*> existingLines;
+
+    for( SCH_ITEM* item : host->GetScreen()->Items().OfType( SCH_LINE_T ) )
+        existingLines.insert( item );
+
+    // Two points on the grid, in a corner of the page where the fixture has nothing, so
+    // that the wire connects to nothing and the geometry is predictable.
+    const BOX2I    page = host->GetDocumentBBox( true );
+    const VECTOR2I from( page.GetLeft() + schIUScale.MilsToIU( 2000 ),
+                         page.GetBottom() - schIUScale.MilsToIU( 2000 ) );
+    const VECTOR2I to = from + VECTOR2I( schIUScale.MilsToIU( 1000 ), 0 );
+
+    const auto moveTo =
+            [&]( const VECTOR2I& aWorld )
+            {
+                HOST_INPUT_EVENT event;
+                event.type = HOST_INPUT_TYPE::POINTER_MOTION;
+                event.position = host->View().ToScreen( VECTOR2D( aWorld ) );
+                host->DispatchInput( event );
+            };
+
+    const auto clickAtWorld =
+            [&]( const VECTOR2I& aWorld )
+            {
+                moveTo( aWorld );
+
+                HOST_INPUT_EVENT event;
+                event.button = BUT_LEFT;
+                event.position = host->View().ToScreen( VECTOR2D( aWorld ) );
+
+                event.type = HOST_INPUT_TYPE::POINTER_DOWN;
+                host->DispatchInput( event );
+                event.type = HOST_INPUT_TYPE::POINTER_UP;
+                host->DispatchInput( event );
+            };
+
+    // The wire starts at the cursor, as it does when the user presses W, so the pointer
+    // has to be where the wire should begin *before* the tool is activated. Without this
+    // the first segment runs from the cursor's initial position, which is the origin.
+    moveTo( from );
+
+    BOOST_REQUIRE( host->RunActionByName( "eeschema.InteractiveDrawingLineWireBus.drawWires" ) );
+
+    clickAtWorld( to );
+
+    // Finish, rather than cancel: Escape during wire drawing discards the segment in
+    // progress, exactly as it does in the wx editor.
+    BOOST_REQUIRE( host->RunActionByName( "common.Interactive.finish" ) );
+
+    // Which wire is new rather than where it is exactly: the click positions snap to the
+    // grid, so the endpoints are the nearest grid points to what was asked for.
+    SCH_LINE* drawn = nullptr;
+
+    for( SCH_ITEM* item : host->GetScreen()->Items().OfType( SCH_LINE_T ) )
+    {
+        if( !existingLines.count( item ) )
+            drawn = static_cast<SCH_LINE*>( item );
+    }
+
+    BOOST_REQUIRE_MESSAGE( drawn, "the gesture drew no new line" );
+
+    BOOST_CHECK_EQUAL( drawn->GetLayer(), LAYER_WIRE );
+
+    // The span survives snapping, because the offset asked for is a whole number of grid
+    // steps and both ends snap the same way.
+    BOOST_CHECK_EQUAL( ( drawn->GetEndPoint() - drawn->GetStartPoint() ).EuclideanNorm(),
+                       ( to - from ).EuclideanNorm() );
+    BOOST_CHECK_GT( host->GetScreen()->Items().size(), before );
+    BOOST_CHECK( host->IsModified() );
+
+    // And it is undoable, so it is an edit rather than a mutation.
+    BOOST_REQUIRE_GE( host->GetUndoCommandCount(), 1 );
+    BOOST_REQUIRE( host->Undo() );
+    BOOST_CHECK_EQUAL( host->GetScreen()->Items().size(), before );
+}
+
+
+BOOST_AUTO_TEST_SUITE_END()
+
+
 BOOST_AUTO_TEST_SUITE( SchHostAbi )
 
 
@@ -1603,22 +1857,35 @@ BOOST_AUTO_TEST_CASE( AnActionNoToolHandlesIsReportedRatherThanAnError )
     BOOST_CHECK_EQUAL( ksch_session_run_action( session, "no.such.action", &flags ), KSCH_OK );
     BOOST_CHECK( ( flags & KSCH_INPUT_HANDLED ) == 0u );
 
+    // A document, because a session without one runs nothing at all: a tool asks the
+    // editing context for the screen and uses the answer. `SchHost/AnEmptySessionRunsNothing`
+    // is that rule; this case is about which actions have a tool behind them.
+    const wxString path = eeschemaFixture( wxT( "api_kitchen_sink.kicad_sch" ) );
+
+    BOOST_REQUIRE_EQUAL( ksch_session_load_file( session, path.utf8_str().data() ), KSCH_OK );
+
     // A *registered* action with no tool behind it, which is the case that matters:
     // every action in the process is registered, so a made-up name would prove
-    // nothing about whether "handled" means handled.
-    for( const char* name : { "eeschema.InteractiveDrawingLineWireBus.drawWires",
-                              "common.Control.zoomFitScreen" } )
+    // nothing about whether "handled" means handled. COMMON_TOOLS declines a holder that
+    // is not an EDA_DRAW_FRAME, so this is one nothing runs.
+    BOOST_CHECK_EQUAL( ksch_session_run_action( session, "common.Control.zoomFitScreen", &flags ),
+                       KSCH_OK );
+    BOOST_CHECK( ( flags & KSCH_INPUT_HANDLED ) == 0u );
+
+    // And two that do have a tool behind them, so that "unhandled" above means something
+    // other than "this never reports handled".
+    for( const char* name : { "common.InteractiveSelection",
+                              "eeschema.InteractiveDrawingLineWireBus.drawWires" } )
     {
         BOOST_CHECK_EQUAL( ksch_session_run_action( session, name, &flags ), KSCH_OK );
-        BOOST_CHECK_MESSAGE( ( flags & KSCH_INPUT_HANDLED ) == 0u,
-                             std::string( name ) + " cannot have been handled: no tool ran" );
+        BOOST_CHECK_MESSAGE( ( flags & KSCH_INPUT_HANDLED ) != 0u,
+                             std::string( name ) + " has a tool behind it now" );
     }
 
-    // And the one that does have a tool behind it, so that "unhandled" above means
-    // something other than "this never reports handled".
-    BOOST_CHECK_EQUAL( ksch_session_run_action( session, "common.InteractiveSelection", &flags ),
-                       KSCH_OK );
-    BOOST_CHECK( ( flags & KSCH_INPUT_HANDLED ) != 0u );
+    // Leave the wire tool's loop, so that the session tears down idle.
+    ksch_input_event cancel = {};
+    cancel.type = KSCH_INPUT_CANCEL;
+    BOOST_CHECK_EQUAL( ksch_session_dispatch_input( session, &cancel, nullptr ), KSCH_OK );
 
     ksch_session_destroy( session );
 }

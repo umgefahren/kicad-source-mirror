@@ -69,6 +69,19 @@ public:
     /// @copydoc TOOL_INTERACTIVE::Init()
     bool Init() override;
 
+    /**
+     * Runs on an editing context that is not a wxFrame.
+     *
+     * Everything it needs from the editor — the screen, adding and removing items, the
+     * repeat-item list, the cursor — is SCHEMATIC_HOLDER's. What it loses without a frame
+     * is the info-bar hint and the net-collision preview, both of which are windows and
+     * both of which are marked as such at the site.
+     */
+    bool runsWithoutAFrame() const override { return true; }
+
+    /// Show a transient hint, where there is an info bar to show it in.
+    void showHint( const wxString& aMessage );
+
     /// @copydoc TOOL_INTERACTIVE::Reset()
     void Reset( RESET_REASON aReason ) override;
 

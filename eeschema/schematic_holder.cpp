@@ -20,6 +20,10 @@
 #include <schematic_holder.h>
 
 #include <sch_item.h>
+#include <sch_label.h>
+#include <sch_screen.h>
+#include <sch_sheet_path.h>
+#include <schematic.h>
 
 
 const std::vector<std::unique_ptr<SCH_ITEM>>& SCHEMATIC_HOLDER::GetRepeatItems() const
@@ -29,4 +33,39 @@ const std::vector<std::unique_ptr<SCH_ITEM>>& SCHEMATIC_HOLDER::GetRepeatItems()
     static const std::vector<std::unique_ptr<SCH_ITEM>> none;
 
     return none;
+}
+
+
+void SCHEMATIC_HOLDER::AutoRotateItem( SCH_SCREEN* aScreen, SCH_ITEM* aItem )
+{
+    SCHEMATIC* schematic = GetSchematic();
+
+    if( !schematic || !aScreen )
+        return;
+
+    const SCH_SHEET_PATH& sheet = schematic->CurrentSheet();
+
+    if( aItem->Type() == SCH_GLOBAL_LABEL_T || aItem->Type() == SCH_HIER_LABEL_T )
+    {
+        SCH_LABEL_BASE* label = static_cast<SCH_LABEL_BASE*>( aItem );
+
+        if( label->AutoRotateOnPlacement() )
+        {
+            SPIN_STYLE spin = aScreen->GetLabelOrientationForPoint( label->GetPosition(), label->GetSpinStyle(),
+                                                                    &sheet );
+
+            if( spin != label->GetSpinStyle() )
+            {
+                label->SetSpinStyle( spin );
+
+                for( SCH_ITEM* item : aScreen->Items().OfType( SCH_GLOBAL_LABEL_T ) )
+                {
+                    SCH_LABEL_BASE* otherLabel = static_cast<SCH_LABEL_BASE*>( item );
+
+                    if( otherLabel != label && otherLabel->GetText() == label->GetText() )
+                        otherLabel->AutoplaceFields( aScreen, AUTOPLACE_AUTO );
+                }
+            }
+        }
+    }
 }

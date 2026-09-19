@@ -237,7 +237,6 @@ public:
     /**
      * Automatically set the rotation of an item (if the item supports it).
      */
-    void AutoRotateItem( SCH_SCREEN* aScreen, SCH_ITEM* aItem );
 
     /**
      * Update the hierarchy navigation tree and history
@@ -531,7 +530,6 @@ public:
      * @param aEnd The ending point for trimming
      * @return True if any wires were changed by this operation
      */
-    bool TrimWire( SCH_COMMIT* aCommit, const VECTOR2I& aStart, const VECTOR2I& aEnd );
 
     void OnOpenPcbnew();
     void OnOpenCvpcb();

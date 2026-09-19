@@ -287,6 +287,14 @@ void SCH_HOST::setupTools()
     registerTools();
 
     m_toolManager->InitTools();
+
+    // TOOLS_HOLDER's constructor leaves its input preferences at defaults that every frame
+    // then overwrites from the user's common settings, in CommonSettingsChanged(). Without
+    // this the host would have `m_dragAction == MOUSE_DRAG_ACTION::SELECT`, so a drag over
+    // a selected item would draw a rubber band instead of moving it — the setting says
+    // otherwise and nothing was reading it. Same shape as the grid in ::initGrid: a default
+    // that only looks harmless because the GUI never uses it.
+    CommonSettingsChanged();
 }
 
 
@@ -328,6 +336,15 @@ void SCH_HOST::registerTools()
 
 bool SCH_HOST::DispatchInput( const HOST_INPUT_EVENT& aEvent )
 {
+    // Nothing reaches a tool before there is a document. A tool asks the editing context
+    // for the screen and uses the answer, as it may in a frame — SCH_EDIT_FRAME always has
+    // a SCHEMATIC and an empty SCH_SCREEN, from its constructor on — and this host has
+    // neither until something is loaded. Giving the host an empty document at construction
+    // is the better long-term answer and is a change to what the ABI reports for an empty
+    // session; see `docs/rust-migration/06-what-is-missing.md` Stage 4b.
+    if( !m_schematic )
+        return false;
+
     return m_dispatcher->Dispatch( aEvent );
 }
 
@@ -344,6 +361,11 @@ bool SCH_HOST::RunActionByName( const std::string& aActionName )
     //
     // Looking the action up and using the TOOL_ACTION& overload, whose result *is*
     // processEvent()'s, is what makes the answer mean something.
+    //
+    // And nothing runs before there is a document, for the reason ::DispatchInput gives.
+    if( !m_schematic )
+        return false;
+
     TOOL_ACTION* action = m_toolManager->GetActionManager()->FindAction( aActionName );
 
     if( !action )

@@ -76,6 +76,24 @@ public:
     bool Init() override;
 
     /**
+     * Runs on an editing context that is not a wxFrame.
+     *
+     * `SCH_MOVE_TOOL` needs this one whether or not anyone draws a wire: moving a wire off
+     * a junction has to add one where it left, and ::AddJunctionsIfNeeded and
+     * ::TrimOverLappingWires are how that is done. Without this tool present, a move would
+     * leave the document subtly wrong — or, before this, dereference null.
+     */
+    bool runsWithoutAFrame() const override { return true; }
+
+    /**
+     * Break the wire under \a aStart..\a aEnd out of whatever it overlaps.
+     *
+     * Was `SCH_EDIT_FRAME::TrimWire`, which did its work by calling back into this tool;
+     * it is here because the two callers are here and nothing about it needs a window.
+     */
+    bool TrimWire( SCH_COMMIT* aCommit, const VECTOR2I& aStart, const VECTOR2I& aEnd );
+
+    /**
      * Break a single segment into two at the specified point.
      *
      * @param aCommit Transaction container used to record changes for undo/redo
@@ -97,6 +115,9 @@ public:
      * @return True if any wires or buses were broken.
      */
     bool BreakSegments( SCH_COMMIT* aCommit, const VECTOR2I& aPoint, SCH_SCREEN* aScreen );
+
+    /// The right-click menu, skipped where there is none to build. See ::buildContextMenu.
+    void buildContextMenu();
 
     /**
      * Test all junctions and bus entries in the schematic for intersections with wires and

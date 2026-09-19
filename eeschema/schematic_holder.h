@@ -192,6 +192,15 @@ public:
 
     virtual void ClearRepeatItemsList() {}
 
+    /**
+     * Give a just-placed global or hierarchical label the orientation its connections imply.
+     *
+     * Not virtual: every editing context does this identically, and it needs nothing but
+     * the screen and the current sheet. It was a `SCH_EDIT_FRAME` method for no reason
+     * other than where it happened to be written.
+     */
+    void AutoRotateItem( SCH_SCREEN* aScreen, SCH_ITEM* aItem );
+
     // ------------------------------------------------------------------- the settings
 
     /**
