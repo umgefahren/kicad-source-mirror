@@ -48,7 +48,12 @@ SCH_COMMIT::SCH_COMMIT( TOOL_MANAGER* aToolMgr ) :
         m_toolMgr( aToolMgr ),
         m_isLibEditor( false )
 {
-    SCH_BASE_FRAME* frame = static_cast<SCH_BASE_FRAME*>( m_toolMgr->GetToolHolder() );
+    // A TOOL_MANAGER's holder need not be a frame: EESCHEMA_HELPERS installs none at
+    // all, and a headless host installs one that is not a frame. Every downcast of the
+    // holder in this file is therefore checked, and every use of the result guarded —
+    // a commit without a frame edits the document and skips the undo stack and the
+    // canvas, which are the parts that live on the frame.
+    SCH_BASE_FRAME* frame = dynamic_cast<SCH_BASE_FRAME*>( m_toolMgr->GetToolHolder() );
     m_isLibEditor = frame && frame->IsType( FRAME_SCH_SYMBOL_EDITOR );
 }
 
@@ -160,7 +165,7 @@ void SCH_COMMIT::pushLibEdit( const wxString& aMessage, int aCommitFlags )
                     RECURSE_MODE::NO_RECURSE );
         }
 
-        if( SYMBOL_EDIT_FRAME* frame = static_cast<SYMBOL_EDIT_FRAME*>( m_toolMgr->GetToolHolder() ) )
+        if( SYMBOL_EDIT_FRAME* frame = dynamic_cast<SYMBOL_EDIT_FRAME*>( m_toolMgr->GetToolHolder() ) )
         {
             if( !( aCommitFlags & SKIP_UNDO ) )
             {
@@ -192,8 +197,18 @@ void SCH_COMMIT::pushSchEdit( const wxString& aMessage, int aCommitFlags )
     PICKED_ITEMS_LIST   undoList;
     KIGFX::VIEW*        view = m_toolMgr->GetView();
 
-    SCH_EDIT_FRAME*     frame = static_cast<SCH_EDIT_FRAME*>( m_toolMgr->GetToolHolder() );
-    SCH_SCREEN*         currentScreen = frame ? frame->GetScreen() : nullptr;
+    // The schematic editing context: a SCH_EDIT_FRAME in the GUI, SCH_HOST in a non-wx
+    // one, and null for the CLI, which installs no holder at all. Deliberately *not* a
+    // symbol frame — ::IsSchematicEditor is what rules those out, and their edits go
+    // through pushLibEdit above.
+    SCHEMATIC_HOLDER* editor = dynamic_cast<SCHEMATIC_HOLDER*>( m_toolMgr->GetToolHolder() );
+
+    if( editor && !editor->IsSchematicEditor() )
+        editor = nullptr;
+
+    // What still genuinely needs the window: the hierarchy navigator pane.
+    SCH_EDIT_FRAME*     frame = dynamic_cast<SCH_EDIT_FRAME*>( m_toolMgr->GetToolHolder() );
+    SCH_SCREEN*         currentScreen = editor ? editor->GetScreen() : nullptr;
     SCH_SELECTION_TOOL* selTool = m_toolMgr->GetTool<SCH_SELECTION_TOOL>();
     SCH_GROUP*          enteredGroup = selTool ? selTool->GetEnteredGroup() : nullptr;
     bool                itemsDeselected = false;
@@ -208,7 +223,7 @@ void SCH_COMMIT::pushSchEdit( const wxString& aMessage, int aCommitFlags )
         return;
     }
 
-    if( !frame )
+    if( !editor )
         aCommitFlags |= SKIP_UNDO;
 
     undoList.SetDescription( aMessage );
@@ -265,12 +280,12 @@ void SCH_COMMIT::pushSchEdit( const wxString& aMessage, int aCommitFlags )
 
     // We don't know that anything will be added to the entered group, but it does no harm to
     // add it to the commit anyway.
-    if( enteredGroup && frame )
-        Modify( enteredGroup, frame->GetScreen() );
+    if( enteredGroup && editor )
+        Modify( enteredGroup, editor->GetScreen() );
 
 
-    // Handle wires with Hop Over shapes (view update only; skipped headless):
-    if( frame )
+    // Handle wires with Hop Over shapes (view update only; skipped with no editor):
+    if( editor )
     {
         for( COMMIT_LINE& entry : m_entries )
         {
@@ -278,10 +293,10 @@ void SCH_COMMIT::pushSchEdit( const wxString& aMessage, int aCommitFlags )
             SCH_ITEM* schItem = dynamic_cast<SCH_ITEM*>( entry.m_item );
 
             if( schCopyItem && schCopyItem->Type() == SCH_LINE_T )
-                frame->UpdateHopOveredWires( schCopyItem );
+                editor->UpdateHopOveredWires( schCopyItem );
 
             if( schItem && schItem->Type() == SCH_LINE_T )
-                frame->UpdateHopOveredWires( schItem );
+                editor->UpdateHopOveredWires( schItem );
         }
     }
 
@@ -386,8 +401,8 @@ void SCH_COMMIT::pushSchEdit( const wxString& aMessage, int aCommitFlags )
                     view->Add( schItem );
             }
 
-            if( frame && screen == currentScreen )
-                frame->UpdateItem( schItem, true, true );
+            if( editor && screen == currentScreen )
+                editor->UpdateItem( schItem, true, true );
             else if( screen )
                 screen->Update( schItem );
 
@@ -439,8 +454,8 @@ void SCH_COMMIT::pushSchEdit( const wxString& aMessage, int aCommitFlags )
                     view->Remove( schItem );
             }
 
-            if( frame && screen == currentScreen )
-                frame->UpdateItem( schItem, true, true );
+            if( editor && screen == currentScreen )
+                editor->UpdateItem( schItem, true, true );
             else if( screen )
                 screen->Update( schItem );
 
@@ -457,8 +472,8 @@ void SCH_COMMIT::pushSchEdit( const wxString& aMessage, int aCommitFlags )
             SCH_SHEET_PATH  currentSheet;
             bool           fullSheetUpdate = true;
 
-            if( frame )
-                currentSheet = frame->GetCurrentSheet();
+            if( schematic )
+                currentSheet = schematic->CurrentSheet();
 
             if( schItem->Type() == SCH_SHEET_T )
             {
@@ -516,8 +531,8 @@ void SCH_COMMIT::pushSchEdit( const wxString& aMessage, int aCommitFlags )
                 undoList.PushItem( itemWrapper );
             }
 
-            if( frame && screen == currentScreen )
-                frame->UpdateItem( schItem, false, true );
+            if( editor && screen == currentScreen )
+                editor->UpdateItem( schItem, false, true );
             else if( screen )
                 screen->Update( schItem );
 
@@ -559,8 +574,8 @@ void SCH_COMMIT::pushSchEdit( const wxString& aMessage, int aCommitFlags )
             screen->SetContentModified();
     }
 
-    if( !( aCommitFlags & SKIP_UNDO ) && frame && undoList.GetCount() > 0 )
-        frame->SaveCopyInUndoList( undoList, UNDO_REDO::UNSPECIFIED, false );
+    if( !( aCommitFlags & SKIP_UNDO ) && editor && undoList.GetCount() > 0 )
+        editor->SaveCopyInUndoList( undoList, UNDO_REDO::UNSPECIFIED, false );
 
     cleanupRemovedItems.clear();
 
@@ -570,8 +585,8 @@ void SCH_COMMIT::pushSchEdit( const wxString& aMessage, int aCommitFlags )
                     wxS( "SCH_COMMIT::pushSchEdit() connectivity refresh, cleanup=%d." ),
                     static_cast<int>( connectivityCleanUp ) );
 
-        if( frame )
-            frame->RecalculateConnections( this, connectivityCleanUp, nullptr, true );
+        if( editor )
+            editor->RecalculateConnections( this, connectivityCleanUp, nullptr, true );
         else if( schematic )
             schematic->RecalculateConnections( this, connectivityCleanUp, m_toolMgr,
                                                nullptr, nullptr, nullptr, nullptr, true );
@@ -603,14 +618,17 @@ void SCH_COMMIT::Push( const wxString& aMessage, int aCommitFlags )
     else
         pushSchEdit( aMessage, aCommitFlags );
 
-    if( SCH_BASE_FRAME* frame = static_cast<SCH_BASE_FRAME*>( m_toolMgr->GetToolHolder() ) )
+    if( SCHEMATIC_HOLDER* editor = dynamic_cast<SCHEMATIC_HOLDER*>( m_toolMgr->GetToolHolder() ) )
     {
         if( !( aCommitFlags & SKIP_SET_DIRTY ) )
-            frame->OnModify();
-
-        if( frame && frame->GetCanvas() )
-            frame->GetCanvas()->Refresh();
+            editor->OnModify();
     }
+
+    // A repaint request rather than a repaint: TOOLS_HOLDER::RefreshCanvas() is what a
+    // frame's GetCanvas()->Refresh() was, and is also the only notice a UI on the far side
+    // of the C ABI gets that the frame it is holding is stale.
+    if( TOOLS_HOLDER* holder = m_toolMgr->GetToolHolder() )
+        holder->RefreshCanvas();
 
     clear();
 }
@@ -621,7 +639,13 @@ EDA_ITEM* SCH_COMMIT::undoLevelItem( EDA_ITEM* aItem ) const
     EDA_ITEM* parent = aItem->GetParent();
 
     if( m_isLibEditor )
-        return static_cast<SYMBOL_EDIT_FRAME*>( m_toolMgr->GetToolHolder() )->GetCurSymbol();
+    {
+        SYMBOL_EDIT_FRAME* frame = dynamic_cast<SYMBOL_EDIT_FRAME*>( m_toolMgr->GetToolHolder() );
+
+        wxCHECK( frame, aItem );
+
+        return frame->GetCurSymbol();
+    }
 
     if( parent && parent->IsType( { SCH_SYMBOL_T, SCH_TABLE_T, SCH_SHEET_T, SCH_LABEL_LOCATE_ANY_T } ) )
         return parent;
@@ -634,7 +658,10 @@ EDA_ITEM* SCH_COMMIT::makeImage( EDA_ITEM* aItem ) const
 {
     if( m_isLibEditor )
     {
-        SYMBOL_EDIT_FRAME* frame = static_cast<SYMBOL_EDIT_FRAME*>( m_toolMgr->GetToolHolder() );
+        SYMBOL_EDIT_FRAME* frame = dynamic_cast<SYMBOL_EDIT_FRAME*>( m_toolMgr->GetToolHolder() );
+
+        wxCHECK( frame, aItem->Clone() );
+
         LIB_SYMBOL*        symbol = frame->GetCurSymbol();
         std::vector<KIID>  selected;
 

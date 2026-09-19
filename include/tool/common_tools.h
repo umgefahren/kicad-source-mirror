@@ -37,6 +37,9 @@ public:
 
     ~COMMON_TOOLS() override { }
 
+    /// @copydoc TOOL_INTERACTIVE::Init()
+    bool Init() override;
+
     /// @copydoc TOOL_BASE::Reset()
     void Reset( RESET_REASON aReason ) override;
 

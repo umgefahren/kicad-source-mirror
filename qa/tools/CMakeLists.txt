@@ -27,6 +27,7 @@ add_subdirectory( common_tools )
 add_subdirectory( eeschema_tools )
 add_subdirectory( pcbnew_tools )
 add_subdirectory( drc_benchmark )
+add_subdirectory( sch_dump )
 
 if( KICAD_BUILD_PEGTL_DEBUG_TOOL )
     add_subdirectory( pegtl )

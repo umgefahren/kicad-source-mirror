@@ -546,6 +546,10 @@ public:
 private:
     friend class TOOL_EVENT_LIST;
     friend class TOOL_DISPATCHER;
+    // The non-wx sibling of TOOL_DISPATCHER. A drag event is not expressible
+    // without setMouseDragOrigin() and setMouseDelta(), which have no public
+    // equivalent, so the two translators need the same access.
+    friend class HOST_TOOL_DISPATCHER;
     friend class TOOL_MANAGER;
     friend class TOOLS_HOLDER;
 

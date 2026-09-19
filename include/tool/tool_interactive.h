@@ -73,6 +73,15 @@ public:
     TOOL_MENU& GetToolMenu();
 
     /**
+     * Whether ::GetToolMenu has anything to return.
+     *
+     * False in a console-mode process: the constructor only builds a TOOL_MENU — and
+     * therefore a wxMenu — when `Pgm().IsGUI()`. A tool that adds items to *another* tool's
+     * menu has to ask, because it cannot see the other's `m_menu`.
+     */
+    bool HasToolMenu() const { return m_menu != nullptr; }
+
+    /**
      * Assign a context menu and tells when it should be activated.
      *
      * @param aMenu is the menu to be assigned.

@@ -103,8 +103,6 @@ EDA_DRAW_FRAME::EDA_DRAW_FRAME( KIWAY* aKiway, wxWindow* aParent, FRAME_T aFrame
     m_zoomCustomEntry     = wxNOT_FOUND;
     m_overrideLocksCb     = nullptr;
     m_searchPane          = nullptr;
-    m_undoRedoCountMax    = DEFAULT_MAX_UNDO_ITEMS;
-
     m_canvasType          = EDA_DRAW_PANEL_GAL::GAL_TYPE_NONE;
     m_canvas              = nullptr;
     m_toolDispatcher      = nullptr;

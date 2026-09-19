@@ -48,6 +48,19 @@ public:
     /// @copydoc TOOL_INTERACTIVE::Init()
     bool Init() override;
 
+    /**
+     * Runs on an editing context that is not a wxFrame.
+     *
+     * What it asks the editor for is SCHEMATIC_HOLDER's: the screen the dragged item and
+     * the wires and no-connects that follow it are modified on, and the eeschema settings
+     * holding the arc edit mode.  Without a frame it loses the point-editor entries on the
+     * right-click menu, the message panel that describes the item as it is dragged, and the
+     * cursor shape shown over a handle.  The symbol-editor paths still go through the frame,
+     * because a SYMBOL_EDIT_FRAME is always a window; on a holder that is not one there is
+     * no symbol being edited and they do nothing.  Every drag itself still happens.
+     */
+    bool runsWithoutAFrame() const override { return true; }
+
     int Main( const TOOL_EVENT& aEvent );
 
     /**

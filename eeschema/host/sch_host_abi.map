@@ -1,0 +1,13 @@
+/*
+ * Exported symbols of libkicad_sch_host, as an ELF linker version script.
+ *
+ * The companion of host/sch_host_abi.exports, which says the same thing to
+ * ld64. See that file for why it is needed: KiCad's C++ is already hidden, but
+ * the vendored C libraries linked in alongside are not.
+ */
+{
+    global:
+        ksch_*;
+    local:
+        *;
+};

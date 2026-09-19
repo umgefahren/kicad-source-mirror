@@ -24,6 +24,7 @@
 #include <string>
 
 class EDA_ITEM;
+class SCHEMATIC_HOLDER;
 class SCH_BASE_FRAME;
 class SCH_EDIT_FRAME;
 class SYMBOL_EDIT_FRAME;
@@ -69,6 +70,20 @@ public:
     int InteractiveDelete( const TOOL_EVENT& aEvent );
 
 protected:
+    /**
+     * Whether this tool can run when the thing editing the schematic is not a wxFrame.
+     *
+     * False by default, because `m_frame` is most tools' route to the screen, the
+     * selection, the undo stack and every dialog, and a tool holding a null one would
+     * crash on its first use rather than decline. A tool that answers true has been
+     * converted to ask #m_editor for what it needs, and must tolerate a null `m_frame`
+     * *and* a null `m_menu` — `TOOL_INTERACTIVE` only builds a menu when `Pgm().IsGUI()`.
+     *
+     * See `docs/rust-migration/06-what-is-missing.md` Stage 4b for which tools are
+     * converted and what the next one costs.
+     */
+    virtual bool runsWithoutAFrame() const { return false; }
+
     template <class F = SCH_BASE_FRAME>
     F* frame() const
     {
@@ -92,7 +107,16 @@ protected:
     void saveCopyInUndoList( EDA_ITEM* aItem, UNDO_REDO aType, bool aAppend = false, bool aDirtyConnectivity = true );
 
 protected:
+    /// The frame, or **null** when the editing context is not one. See ::runsWithoutAFrame.
     T*                  m_frame;
+
+    /**
+     * Whatever is editing the schematic: the document, the settings and the canvas
+     * notifications. Non-null whenever the tool initialised at all, including when
+     * #m_frame is null.
+     */
+    SCHEMATIC_HOLDER*   m_editor;
+
     KIGFX::SCH_VIEW*    m_view;
     SCH_SELECTION_TOOL* m_selectionTool;
     bool                m_isSymbolEditor;

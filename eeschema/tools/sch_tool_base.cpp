@@ -34,6 +34,8 @@
 #include <sch_shape.h>
 #include <pin_layout_cache.h>
 #include <sch_commit.h>
+#include <schematic_holder.h>
+#include <schematic_undo_redo.h>
 #include <tool/picker_tool.h>
 #include <view/view_controls.h>
 
@@ -44,6 +46,7 @@ template <class T>
 SCH_TOOL_BASE<T>::SCH_TOOL_BASE( const std::string& aName ) :
         TOOL_INTERACTIVE( aName ),
         m_frame( nullptr ),
+        m_editor( nullptr ),
         m_view( nullptr ),
         m_selectionTool( nullptr ),
         m_isSymbolEditor( false ),
@@ -59,19 +62,39 @@ SCH_TOOL_BASE<T>::~SCH_TOOL_BASE()
 template <class T>
 bool SCH_TOOL_BASE<T>::Init()
 {
-    m_frame = getEditFrame<T>();
+    // A TOOLS_HOLDER is not necessarily a frame: a headless host installs one that is
+    // not, and static_cast'ing that to T yields a pointer adjusted by the offset of the
+    // TOOLS_HOLDER subobject inside a frame that does not exist. Declining to
+    // initialise is the framework's own answer to "this tool cannot run in this holder"
+    // — TOOL_MANAGER::InitTools() unregisters and deletes the tool — so every tool that
+    // needs a frame is absent rather than holding a wild pointer.
+    m_editor = dynamic_cast<SCHEMATIC_HOLDER*>( m_toolMgr->GetToolHolder() );
+
+    if( !m_editor )
+        return false;
+
+    m_frame = dynamic_cast<T*>( m_toolMgr->GetToolHolder() );
+
+    if( !m_frame && !runsWithoutAFrame() )
+        return false;
+
     m_selectionTool = m_toolMgr->GetTool<SCH_SELECTION_TOOL>();
-    m_isSymbolEditor = m_frame->IsType( FRAME_SCH_SYMBOL_EDITOR );
+    m_isSymbolEditor = dynamic_cast<SYMBOL_EDIT_FRAME*>( m_editor ) != nullptr;
 
     // A basic context menu.  Many (but not all) tools will choose to override this.
-    auto& ctxMenu = m_menu->GetMenu();
+    // TOOL_INTERACTIVE only builds a TOOL_MENU when Pgm().IsGUI(), so there may be none.
+    if( m_menu )
+    {
+        auto& ctxMenu = m_menu->GetMenu();
 
-    // cancel current tool goes in main context menu at the top if present
-    ctxMenu.AddItem( ACTIONS::cancelInteractive, SELECTION_CONDITIONS::ShowAlways, 1 );
-    ctxMenu.AddSeparator( 1 );
+        // cancel current tool goes in main context menu at the top if present
+        ctxMenu.AddItem( ACTIONS::cancelInteractive, SELECTION_CONDITIONS::ShowAlways, 1 );
+        ctxMenu.AddSeparator( 1 );
 
-    // Finally, add the standard zoom/grid items
-    m_frame->AddStandardSubMenus( *m_menu.get() );
+        // Finally, add the standard zoom/grid items
+        if( m_frame )
+            m_frame->AddStandardSubMenus( *m_menu.get() );
+    }
 
     return true;
 }
@@ -83,8 +106,9 @@ void SCH_TOOL_BASE<T>::Reset( RESET_REASON aReason )
     if( aReason == MODEL_RELOAD || aReason == SUPERMODEL_RELOAD )
     {
         // Init variables used by every drawing tool
-        m_frame = getEditFrame<T>();
-        m_isSymbolEditor = dynamic_cast<SYMBOL_EDIT_FRAME*>( m_frame ) != nullptr;
+        m_editor = dynamic_cast<SCHEMATIC_HOLDER*>( m_toolMgr->GetToolHolder() );
+        m_frame = dynamic_cast<T*>( m_toolMgr->GetToolHolder() );
+        m_isSymbolEditor = dynamic_cast<SYMBOL_EDIT_FRAME*>( m_editor ) != nullptr;
     }
 
     m_view = static_cast<KIGFX::SCH_VIEW*>( getView() );
@@ -157,7 +181,7 @@ int SCH_TOOL_BASE<T>::Increment( const TOOL_EVENT& aEvent )
                     return;
                 }
 
-                commit->Modify( &aItem, m_frame->GetScreen() );
+                commit->Modify( &aItem, m_editor->GetScreen() );
             };
 
     for( EDA_ITEM* item : selection )
@@ -324,19 +348,17 @@ int SCH_TOOL_BASE<T>::InteractiveDelete( const TOOL_EVENT& aEvent )
 template <class T>
 EDA_ITEM* SCH_TOOL_BASE<T>::getDrawParent() const
 {
-    SCH_BASE_FRAME* baseFrame = m_frame;
+    if( SYMBOL_EDIT_FRAME* symbolEditor = dynamic_cast<SYMBOL_EDIT_FRAME*>( m_editor ) )
+        return symbolEditor->GetCurSymbol();
 
-    if( m_isSymbolEditor )
-        return static_cast<SYMBOL_EDIT_FRAME*>( baseFrame )->GetCurSymbol();
-
-    return &static_cast<SCH_EDIT_FRAME*>( baseFrame )->Schematic();
+    return m_editor->GetSchematic();
 }
 
 
 template <class T>
 void SCH_TOOL_BASE<T>::updateItem( EDA_ITEM* aItem, bool aUpdateRTree ) const
 {
-    m_frame->UpdateItem( aItem, false, aUpdateRTree );
+    m_editor->UpdateItem( aItem, false, aUpdateRTree );
 }
 
 
@@ -354,22 +376,28 @@ void SCH_TOOL_BASE<T>::saveCopyInUndoList( EDA_ITEM* aItem, UNDO_REDO aType, boo
     if( selected && item->HasFlag( SELECTED_BY_DRAG ) )
         item->ClearSelected();
 
-    if( SYMBOL_EDIT_FRAME* symbolEditFrame = dynamic_cast<SYMBOL_EDIT_FRAME*>( m_frame ) )
+    if( SYMBOL_EDIT_FRAME* symbolEditFrame = dynamic_cast<SYMBOL_EDIT_FRAME*>( m_editor ) )
     {
         symbolEditFrame->SaveCopyInUndoList( wxEmptyString, dynamic_cast<LIB_SYMBOL*>( item ) );
     }
-    else if( SCH_EDIT_FRAME* schematicFrame = dynamic_cast<SCH_EDIT_FRAME*>( m_frame ) )
+    else if( m_editor->IsSchematicEditor() )
     {
-        schematicFrame->SaveCopyInUndoList( schematicFrame->GetScreen(), item, UNDO_REDO::CHANGED, aAppend );
+        SCH_UNDO_REDO::SaveCopyInUndoList( *m_editor, m_editor->GetScreen(), item,
+                                           UNDO_REDO::CHANGED, aAppend );
 
         if( aDirtyConnectivity )
         {
-            if( !item->IsConnectivityDirty()
-                && item->Connection()
-                && ( item->Connection()->Name() == schematicFrame->GetHighlightedConnection()
-                         || item->Connection()->HasDriverChanged() ) )
+            // Which net is highlighted, and therefore whether it has to be recomputed, is
+            // the frame's pane; an editor without one has nothing to update.
+            if( SCH_EDIT_FRAME* schematicFrame = dynamic_cast<SCH_EDIT_FRAME*>( m_editor ) )
             {
-                schematicFrame->DirtyHighlightedConnection();
+                if( !item->IsConnectivityDirty()
+                    && item->Connection()
+                    && ( item->Connection()->Name() == schematicFrame->GetHighlightedConnection()
+                             || item->Connection()->HasDriverChanged() ) )
+                {
+                    schematicFrame->DirtyHighlightedConnection();
+                }
             }
 
             item->SetConnectivityDirty();

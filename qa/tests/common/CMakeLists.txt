@@ -98,9 +98,11 @@ set( QA_COMMON_SRCS
     test_reset_print_to_file.cpp
     test_wx_data_view_hyperlink_renderer.cpp
     test_grid_helper.cpp
+    test_host_input.cpp
     test_priority_thread_pool_task.cpp
     test_snapping_options.cpp
     test_string_utils.cpp
+    test_undo_redo_holder.cpp
     test_richio.cpp
     test_template_fieldnames.cpp
     test_text_attributes.cpp
@@ -163,6 +165,10 @@ set( QA_COMMON_SRCS
     # GAL tests
     test_gal_xor_mode.cpp
     test_gal_resize_strategy.cpp
+
+    # Recording GAL backend and the draw stream it produces.
+    gal/test_draw_stream.cpp
+    gal/test_recording_gal.cpp
 
     # Preview item / drawing utility tests
     test_construction_geom.cpp

@@ -1,0 +1,18 @@
+/home/user/kicad-source-mirror/demos/simulation/sallen_key/sallen_key.kicad_sch
+  load             115.49 ms
+  sheets           1
+  modified         no
+  sheet 0  "sallen_key"  page 1
+    path             /
+    items            55
+    page bbox        0 0  2970022 x 2100072 IU
+    item bbox        1092200 352242  1423414 x 1043654 IU
+    viewport         1920x1080 px  scale 0.01  centre 1485011 1050036
+    groups           239
+    group commands   1353  (first pass 1353)
+    frame commands   664
+    coords           7870 group + 2370 frame doubles
+    images           0  (0 bytes)
+    render           4.82 ms first, 4.82 ms last (1 pass)
+    wrote            /home/user/kicad-source-mirror/qa/data/draw_streams/sallen_key.kgds (134232 bytes)
+SUMMARY /home/user/kicad-source-mirror/demos/simulation/sallen_key/sallen_key.kicad_sch sheet=0 items=55 groups=239 gcmds=1353 fcmds=664 coords=10240 bytes=134232 render_ms=4.82

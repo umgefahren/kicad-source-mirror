@@ -55,6 +55,36 @@ public:
     /// @copydoc TOOL_INTERACTIVE::Init()
     bool Init() override;
 
+    /**
+     * Runs on an editing context that is not a wxFrame.
+     *
+     * Most of what this tool places needs nothing but the screen, the schematic settings
+     * and the repeat list, all of which are SCHEMATIC_HOLDER's: junctions, no-connects,
+     * wire-to-bus entries, sheet pins, tables, rule areas, auto-placed sheet pins, a label
+     * whose name the wire it lands on already supplies, and an image handed in as a
+     * parameter.
+     *
+     * What needs a window, and declines without one saying so at the site:
+     *
+     * * ::PlaceSymbol and ::PlaceNextSymbolUnit — the library chooser is the action's
+     *   first step, and PickSymbolFromLibrary(), GetLibSymbol() and Prj() are the frame's.
+     * * ::ImportSheet (place design block, import sheet) and ::DrawSheet — a chooser pane
+     *   or file dialog picks the source, EditSheetProperties() names the sheet, and
+     *   AnnotateSymbols() renumbers what comes in.
+     * * ::SyncSheetsPins and ::SyncAllSheetsPins — the action *is* DIALOG_SYNC_SHEET_PINS.
+     * * a text item, and a label the attached wire does not name: both take their content
+     *   from a properties dialog, so ::createNewText and ::createNewLabel give up.
+     * * choosing an image file in ::PlaceImage, which ends the tool rather than looping on
+     *   a click it cannot answer.
+     *
+     * Everything else that is a window only decorates: the info bar, the message panel,
+     * the "click over a sheet" popups and the right-click menu are each skipped, and the
+     * edit still happens. ::DrawTable is the one place where skipping the dialog changes
+     * the outcome rather than losing it — the table as dragged out is committed, instead
+     * of the user being offered a chance to amend it first.
+     */
+    bool runsWithoutAFrame() const override { return true; }
+
     int PlaceSymbol( const TOOL_EVENT& aEvent );
     int PlaceNextSymbolUnit( const TOOL_EVENT& aEvent );
     int SingleClickPlace( const TOOL_EVENT& aEvent );

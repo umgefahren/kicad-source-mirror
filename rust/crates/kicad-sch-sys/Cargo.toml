@@ -1,0 +1,35 @@
+# Bindings to KiCad's headless schematic host: the Rust end of
+# include/sch_host/sch_host_abi.h.
+#
+# Unlike every other crate in this workspace, this one talks to C++. It stays
+# buildable without it: when no host library is found the crate compiles to an
+# API that reports itself unavailable, so `cargo test` in a checkout with no
+# CMake build behind it still works. See build.rs.
+
+[package]
+name = "kicad-sch-sys"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Bindings to KiCad's headless schematic editor session (the ksch_* C ABI)"
+links = "kicad_sch_host"
+
+[dependencies]
+# The draw stream the host hands back is decoded by the same crate that decodes
+# a recorded one, and `kgds_stream_view` is defined there once rather than
+# regenerated here. bindgen is told to leave those types alone.
+kicad-gal.workspace = true
+
+[[test]]
+name = "live_session"
+# No libtest harness: it runs each test on a worker thread, and this API belongs
+# to the thread that initialised it. See the file's own comment.
+harness = false
+
+[build-dependencies]
+# 0.72 rather than the latest: it is the version gpui-pre-media already pulls in,
+# so this adds nothing to the dependency graph. (0.73.2 also does not build
+# against the current registry — it mixes syn 2 and syn 3 through prettyplease.)
+bindgen = "0.72"

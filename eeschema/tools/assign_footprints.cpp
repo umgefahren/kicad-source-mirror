@@ -199,6 +199,13 @@ bool SCH_EDITOR_CONTROL::processCmpToFootprintLinkFile( const wxString& aFullFil
 
 int SCH_EDITOR_CONTROL::ImportFPAssignments( const TOOL_EVENT& aEvent )
 {
+    // This action is two modal dialogs, and the project it browses from is KIWAY_HOLDER's.
+    // SCH_EDITOR_CONTROL runs on a holder that is not a frame, and this is one of its
+    // registered actions, so a headless host dispatching it would arrive here with a null
+    // m_frame. See SCH_EDITOR_CONTROL::runsWithoutAFrame.
+    if( !m_frame )
+        return 0;
+
     wxString path = wxPathOnly( m_frame->Prj().GetProjectFullName() );
 
     wxFileDialog dlg( m_frame, _( "Load Symbol Footprint Link File" ),

@@ -29,7 +29,9 @@
 #include <drawing_sheet/ds_proxy_view_item.h>
 #include <tool/tool_manager.h>
 #include <layer_ids.h>
+#include <sch_group.h>
 #include <sch_screen.h>
+#include <sch_shape.h>
 #include <schematic.h>
 #include <schematic_text_var_adapter.h>
 #include <text_var_dependency.h>
@@ -101,6 +103,60 @@ void SCH_VIEW::Update( const KIGFX::VIEW_ITEM* aItem, int aUpdateFlags ) const
 void SCH_VIEW::Update( const KIGFX::VIEW_ITEM* aItem ) const
 {
     SCH_VIEW::Update( aItem, KIGFX::ALL );
+}
+
+
+void SCH_VIEW::UpdateSchItem( EDA_ITEM* aItem, SCH_SCREEN* aScreen, bool aIsAddOrDelete,
+                              bool aUpdateRtree )
+{
+    EDA_ITEM* parent = aItem->GetParent();
+
+    if( aItem->Type() == SCH_SHEET_PIN_T )
+    {
+        // Sheet pins aren't in the view.  Refresh their parent.
+        if( parent )
+            Update( parent );
+    }
+    else
+    {
+        if( aItem->Type() == SCH_SHAPE_T )
+            static_cast<SCH_SHAPE*>( aItem )->UpdateHatching();
+
+        if( !aIsAddOrDelete )
+            Update( aItem );
+
+        // Some children are drawn from their parents.  Mark them for re-paint.
+        if( parent && ( parent->Type() == SCH_SYMBOL_T
+                        || parent->Type() == SCH_SHEET_T
+                        || parent->Type() == SCH_LABEL_LOCATE_ANY_T
+                        || parent->Type() == SCH_TABLE_T ) )
+        {
+            Update( parent, KIGFX::REPAINT );
+        }
+    }
+
+    /*
+     * Be careful when calling this.  Update will invalidate RTree iterators, so you cannot
+     * call this while doing things like `for( SCH_ITEM* item : screen->Items() )`
+     */
+    if( aUpdateRtree && aScreen && dynamic_cast<SCH_ITEM*>( aItem ) )
+    {
+        aScreen->Update( static_cast<SCH_ITEM*>( aItem ) );
+
+        /*
+         * If we are updating the group, we also need to update all the children otherwise
+         * their positions will remain stale in the RTree
+        */
+        if( SCH_GROUP* group = dynamic_cast<SCH_GROUP*>( aItem ) )
+        {
+            group->RunOnChildren(
+                    [&]( SCH_ITEM* item )
+                    {
+                        aScreen->Update( item );
+                    },
+                    RECURSE_MODE::RECURSE );
+        }
+    }
 }
 
 

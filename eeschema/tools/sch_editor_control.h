@@ -46,6 +46,46 @@ public:
 
     ~SCH_EDITOR_CONTROL() { }
 
+    /**
+     * Runs on an editing context that is not a wxFrame.
+     *
+     * Only a minority of this tool does, and the split is worth stating plainly. What runs
+     * without a frame is what only needs the document, the settings and the view: clipboard
+     * cut, copy, paste, paste-special and duplicate (see below for what the clipboard loses);
+     * undo and redo, which go through the SCH_UNDO_REDO functions the frame's own undo
+     * methods forward to; and the appearance and drawing toggles, which are `eeconfig()`
+     * plus a view update — hidden pins, hidden fields, directive labels, ERC warnings,
+     * errors and exclusions, simulation-exclusion marking, operating point voltages and
+     * currents, pin alternate icons, the three line modes and Next Line Mode, and
+     * auto-annotate on paste. Cross probing's document half — telling the schematic the
+     * selection changed — also still happens.
+     *
+     * The large remainder is windows and declines when there is none, because most of the
+     * sixty-odd frame methods this tool called opened one. That is: the whole File menu
+     * (new, open, save, save as, save sheet copy as, revert, page setup, print, plot) and
+     * schematic setup; everything reached over `Kiway()`, which is a window's — cvpcb,
+     * pcbnew, the symbol editor, the simulator's probe and tune pickers, update PCB and
+     * update from PCB, symbol rescue and remap; cross probing to pcbnew and the net
+     * highlighting that drives it, since which net is highlighted is frame state shown in
+     * the frame's status bar and net navigator; net chain naming and creation, netclass
+     * assignment, annotation and annotation increment, the symbol fields table and the BOM
+     * and netlist exports built on it, symbol export to a library, footprint-assignment
+     * import, non-KiCad import, the design block and variant commands; and the panes and
+     * popups — search, hierarchy, net navigator, properties, library tree, remote symbols,
+     * the grid hotkey popup and the left toolbar's line-mode icon. Copying a sheet or a
+     * selection *as a picture* goes too: the bitmap, HTML and SVG clipboard flavours are
+     * rendered through the frame's colour settings and page setup, so a frameless copy puts
+     * the KiCad s-expression and the plain text on the clipboard and nothing else.
+     *
+     * One caveat for whoever picks this up next: ::AssignFootprints, ::FindSymbolAndItem,
+     * ::ImportFPAssignments and ::processCmpToFootprintLinkFile are members of this class
+     * defined in `eeschema/tools/assign_footprints.cpp` and `eeschema/cross-probing.cpp`,
+     * and still dereference `m_frame` unguarded. The first three are only ever reached from
+     * a frame, but ::ImportFPAssignments is a registered action and needs the same treatment
+     * before a headless host may run it.
+     */
+    bool runsWithoutAFrame() const override { return true; }
+
     int New( const TOOL_EVENT& aEvent );
     int Open( const TOOL_EVENT& aEvent );
     int Save( const TOOL_EVENT& aEvent );

@@ -369,54 +369,7 @@ void SCH_BASE_FRAME::ActivateGalCanvas()
 
 void SCH_BASE_FRAME::UpdateItem( EDA_ITEM* aItem, bool isAddOrDelete, bool aUpdateRtree )
 {
-    EDA_ITEM* parent = aItem->GetParent();
-
-    if( aItem->Type() == SCH_SHEET_PIN_T )
-    {
-        // Sheet pins aren't in the view.  Refresh their parent.
-        if( parent )
-            GetCanvas()->GetView()->Update( parent );
-    }
-    else
-    {
-        if( aItem->Type() == SCH_SHAPE_T )
-            static_cast<SCH_SHAPE*>( aItem )->UpdateHatching();
-
-        if( !isAddOrDelete )
-            GetCanvas()->GetView()->Update( aItem );
-
-        // Some children are drawn from their parents.  Mark them for re-paint.
-        if( parent && ( parent->Type() == SCH_SYMBOL_T
-                        || parent->Type() == SCH_SHEET_T
-                        || parent->Type() == SCH_LABEL_LOCATE_ANY_T
-                        || parent->Type() == SCH_TABLE_T ) )
-        {
-            GetCanvas()->GetView()->Update( parent, KIGFX::REPAINT );
-        }
-    }
-
-    /*
-     * Be careful when calling this.  Update will invalidate RTree iterators, so you cannot
-     * call this while doing things like `for( SCH_ITEM* item : screen->Items() )`
-     */
-    if( aUpdateRtree && dynamic_cast<SCH_ITEM*>( aItem ) )
-    {
-        GetScreen()->Update( static_cast<SCH_ITEM*>( aItem ) );
-
-        /*
-         * If we are updating the group, we also need to update all the children otherwise
-         * their positions will remain stale in the RTree
-        */
-        if( SCH_GROUP* group = dynamic_cast<SCH_GROUP*>( aItem ) )
-        {
-            group->RunOnChildren(
-                    [&]( SCH_ITEM* item )
-                    {
-                        GetScreen()->Update( item );
-                    },
-                    RECURSE_MODE::RECURSE );
-        }
-    }
+    GetCanvas()->GetView()->UpdateSchItem( aItem, GetScreen(), isAddOrDelete, aUpdateRtree );
 
     // Calling Refresh() here introduces a bi-stable state: when doing operations on a
     // large number of items if at some point the refresh timer times out and does a
@@ -1003,4 +956,16 @@ void SCH_BASE_FRAME::HighlightSelectionFilter( const SCH_SELECTION_FILTER_OPTION
 {
     SCH_SELECTION_FILTER_EVENT evt( aOptions );
     wxPostEvent( this, evt );
+}
+
+
+void SCH_BASE_FRAME::ForceRefreshCanvas()
+{
+    GetCanvas()->ForceRefresh();
+}
+
+
+void SCH_BASE_FRAME::SetCurrentCursor( KICURSOR aCursor )
+{
+    GetCanvas()->SetCurrentCursor( aCursor );
 }

@@ -117,7 +117,15 @@ void GROUP_TOOL::Reset( RESET_REASON aReason )
 
 bool GROUP_TOOL::Init()
 {
-    m_frame = getEditFrame<EDA_DRAW_FRAME>();
+    // Checked, because the tool holder is not necessarily a frame: a non-wx host
+    // installs one that is not. Declining here rather than letting the wxCHECK below
+    // catch the missing selection tool also keeps that assertion for the case it is
+    // about — a holder that is a frame but forgot to register a selection tool.
+    m_frame = dynamic_cast<EDA_DRAW_FRAME*>( m_toolMgr->GetToolHolder() );
+
+    if( !m_frame )
+        return false;
+
     m_commit = createCommit();
 
     // Find the selection tool, so they can cooperate

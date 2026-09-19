@@ -88,7 +88,9 @@ public:
     virtual void OnSchSelectionChanged( SCHEMATIC& aSch ) {}
 };
 
-enum SCH_CLEANUP_FLAGS
+// The underlying type is fixed so that this can be forward-declared; schematic_holder.h
+// needs it in a signature and cannot include this header, which includes that one.
+enum SCH_CLEANUP_FLAGS : int
 {
     NO_CLEANUP,
     LOCAL_CLEANUP,

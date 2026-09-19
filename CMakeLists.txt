@@ -122,6 +122,14 @@ option( KICAD_UPDATE_CHECK
     "Build in update check"
     ON )
 
+# The Rust schematic editor UI (gpui + wgpu). Off by default: it is an
+# in-progress replacement for the wxWidgets schematic canvas, it needs a
+# nightly Rust toolchain, and nothing else in the tree depends on it.
+# See docs/rust-migration/ for the design and current state.
+option( KICAD_BUILD_RUST_SCH_UI
+    "Build the experimental Rust (gpui + wgpu) schematic editor UI (default OFF)"
+    OFF )
+
 cmake_dependent_option( KICAD_WAYLAND
     "Support Wayland features"
     ON "UNIX_NOT_APPLE"
@@ -285,9 +293,28 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Nothing in the tree uses C++20 modules, so do not pay for the dependency
+# scan. Besides the build time, clang-scan-deps is invoked as a bare binary and
+# does not pick up flags that a compiler wrapper (a nix toolchain, for instance)
+# adds through the environment, which makes it fail to find libc++ headers on
+# sources the compiler itself handles fine.
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
+
+# ...and the same thing again for fmt, which the line above does not cover.
+# `FMT_MODULE` defaults to on whenever the standard is C++20, the generator is
+# Ninja >= 1.11 and the compiler is new enough — all true here — and
+# `add_module_library( ... USE_CMAKE_MODULES )` then turns scanning back on for
+# that one target, where it fails exactly as described above. Nothing in KiCad
+# consumes fmt as a module; only the header-only and static forms are used.
+set(FMT_MODULE OFF CACHE BOOL "Build fmt as a C++20 module library" FORCE)
+
 # Xcode older than 26 gates std::jthread / std::stop_token behind the
 # experimental library. Enable it for C++20.
-if( APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "Clang" )
+#
+# This is specific to Apple's own clang. An upstream LLVM toolchain on macOS
+# has both in the main library and ships no libc++experimental to link against,
+# so asking for it there only produces "library not found for -lc++experimental".
+if( APPLE AND CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang" )
     add_compile_options( -fexperimental-library )
     add_link_options( -fexperimental-library )
 endif()
@@ -1110,6 +1137,10 @@ add_subdirectory( cvpcb )               # must be after pcbnew
 add_subdirectory( kicad )               # should follow pcbnew, eeschema, api
 add_subdirectory( tools )
 add_subdirectory( utils )
+
+if( KICAD_BUILD_RUST_SCH_UI )
+    add_subdirectory( rust )
+endif()
 
 if( KICAD_BUILD_QA_TESTS )
     add_subdirectory( qa )

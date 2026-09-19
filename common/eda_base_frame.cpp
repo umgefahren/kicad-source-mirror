@@ -142,7 +142,6 @@ void EDA_BASE_FRAME::commonInit( FRAME_T aFrameType )
     m_fileHistory       = nullptr;
     m_supportsAutoSave  = false;
     m_autoSavePending   = false;
-    m_undoRedoCountMax  = DEFAULT_MAX_UNDO_ITEMS;
     m_isClosing         = false;
     m_closeInProgress   = false;
     m_isNonUserClose    = false;
@@ -1839,73 +1838,6 @@ void EDA_BASE_FRAME::initExitKey()
     entries[0].Set( wxACCEL_CTRL, int( 'Q' ), wxID_EXIT );
     wxAcceleratorTable accel( 1, entries );
     SetAcceleratorTable( accel );
-}
-
-
-void EDA_BASE_FRAME::ClearUndoRedoList()
-{
-    ClearUndoORRedoList( UNDO_LIST );
-    ClearUndoORRedoList( REDO_LIST );
-}
-
-
-void EDA_BASE_FRAME::PushCommandToUndoList( PICKED_ITEMS_LIST* aNewitem )
-{
-    m_undoList.PushCommand( aNewitem );
-
-    // Delete the extra items, if count max reached
-    if( m_undoRedoCountMax > 0 )
-    {
-        int extraitems = GetUndoCommandCount() - m_undoRedoCountMax;
-
-        if( extraitems > 0 )
-            ClearUndoORRedoList( UNDO_LIST, extraitems );
-    }
-}
-
-
-void EDA_BASE_FRAME::PushCommandToRedoList( PICKED_ITEMS_LIST* aNewitem )
-{
-    m_redoList.PushCommand( aNewitem );
-
-    // Delete the extra items, if count max reached
-    if( m_undoRedoCountMax > 0 )
-    {
-        int extraitems = GetRedoCommandCount() - m_undoRedoCountMax;
-
-        if( extraitems > 0 )
-            ClearUndoORRedoList( REDO_LIST, extraitems );
-    }
-}
-
-
-PICKED_ITEMS_LIST* EDA_BASE_FRAME::PopCommandFromUndoList( )
-{
-    return m_undoList.PopCommand();
-}
-
-
-PICKED_ITEMS_LIST* EDA_BASE_FRAME::PopCommandFromRedoList( )
-{
-    return m_redoList.PopCommand();
-}
-
-
-wxString EDA_BASE_FRAME::GetUndoActionDescription() const
-{
-    if( GetUndoCommandCount() > 0 )
-        return m_undoList.m_CommandsList.back()->GetDescription();
-
-    return wxEmptyString;
-}
-
-
-wxString EDA_BASE_FRAME::GetRedoActionDescription() const
-{
-    if( GetRedoCommandCount() > 0 )
-        return m_redoList.m_CommandsList.back()->GetDescription();
-
-    return wxEmptyString;
 }
 
 

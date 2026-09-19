@@ -1,0 +1,18 @@
+/home/user/kicad-source-mirror/qa/data/eeschema/api_kitchen_sink.kicad_sch
+  load             119.26 ms
+  sheets           2
+  modified         no
+  sheet 0  "Root"  page 1
+    path             /
+    items            77
+    page bbox        0 0  2970022 x 2100072 IU
+    item bbox        252412 150876  1909450 x 1041654 IU
+    viewport         1920x1080 px  scale 0.01  centre 1485011 1050036
+    groups           222
+    group commands   2587  (first pass 2587)
+    frame commands   707
+    coords           13806 group + 2532 frame doubles
+    images           2  (18432 bytes)
+    render           5.05 ms first, 5.05 ms last (1 pass)
+    wrote            /home/user/kicad-source-mirror/qa/data/draw_streams/api_kitchen_sink.kgds (231888 bytes)
+SUMMARY /home/user/kicad-source-mirror/qa/data/eeschema/api_kitchen_sink.kicad_sch sheet=0 items=77 groups=222 gcmds=2587 fcmds=707 coords=16338 bytes=231888 render_ms=5.05

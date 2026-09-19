@@ -1,0 +1,18 @@
+/home/user/kicad-source-mirror/demos/complex_hierarchy/complex_hierarchy.kicad_sch
+  load             138.70 ms
+  sheets           3
+  modified         no
+  sheet 0  "complex_hierarchy"  page 1
+    path             /
+    items            83
+    page bbox        0 0  2970022 x 2100072 IU
+    item bbox        358524 252949  2129387 x 1260008 IU
+    viewport         1920x1080 px  scale 0.01  centre 1485011 1050036
+    groups           375
+    group commands   2832  (first pass 2832)
+    frame commands   883
+    coords           21570 group + 3242 frame doubles
+    images           0  (0 bytes)
+    render           6.53 ms first, 6.53 ms last (1 pass)
+    wrote            /home/user/kicad-source-mirror/qa/data/draw_streams/complex_hierarchy.kgds (293736 bytes)
+SUMMARY /home/user/kicad-source-mirror/demos/complex_hierarchy/complex_hierarchy.kicad_sch sheet=0 items=83 groups=375 gcmds=2832 fcmds=883 coords=24812 bytes=293736 render_ms=6.53

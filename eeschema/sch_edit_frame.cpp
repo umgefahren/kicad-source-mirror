@@ -1821,34 +1821,6 @@ void SCH_EDIT_FRAME::RefreshOperatingPointDisplay()
 }
 
 
-void SCH_EDIT_FRAME::AutoRotateItem( SCH_SCREEN* aScreen, SCH_ITEM* aItem )
-{
-    if( aItem->Type() == SCH_GLOBAL_LABEL_T || aItem->Type() == SCH_HIER_LABEL_T )
-    {
-        SCH_LABEL_BASE* label = static_cast<SCH_LABEL_BASE*>( aItem );
-
-        if( label->AutoRotateOnPlacement() )
-        {
-            SPIN_STYLE spin = aScreen->GetLabelOrientationForPoint( label->GetPosition(), label->GetSpinStyle(),
-                                                                    &GetCurrentSheet() );
-
-            if( spin != label->GetSpinStyle() )
-            {
-                label->SetSpinStyle( spin );
-
-                for( SCH_ITEM* item : aScreen->Items().OfType( SCH_GLOBAL_LABEL_T ) )
-                {
-                    SCH_LABEL_BASE* otherLabel = static_cast<SCH_LABEL_BASE*>( item );
-
-                    if( otherLabel != label && otherLabel->GetText() == label->GetText() )
-                        otherLabel->AutoplaceFields( aScreen, AUTOPLACE_AUTO );
-                }
-            }
-        }
-    }
-}
-
-
 void SCH_EDIT_FRAME::updateTitle()
 {
     SCH_SCREEN* screen = GetScreen();
@@ -2469,6 +2441,15 @@ void SCH_EDIT_FRAME::UpdateItem( EDA_ITEM* aItem, bool isAddOrDelete, bool aUpda
 
     if( SCH_ITEM* sch_item = dynamic_cast<SCH_ITEM*>( aItem ) )
         sch_item->ClearCaches();
+}
+
+
+bool SCH_EDIT_FRAME::DisplaySheet( const SCH_SHEET_PATH& aPath )
+{
+    SetCurrentSheet( aPath );
+    DisplayCurrentSheet();
+
+    return true;
 }
 
 
