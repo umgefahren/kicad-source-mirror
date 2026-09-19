@@ -1,9 +1,13 @@
 # 04 — The host seam: `SCH_HOST`, the C ABI, and what is not done yet
 
 This document covers the C++ side of the boundary between eeschema's document
-model and the Rust UI: what was built, what it is verified to do, and — in
-§6, which is the part to read if you are picking this up — exactly what stands
-between here and driving `TOOL_MANAGER` from Rust.
+model and the Rust UI: what was built and what it is verified to do.
+
+**If you are picking this up, read §9.** It is the editing seam — what a schematic
+tool needs from whatever is editing the schematic, which of that is a window and
+which is not — and it is what converting tool number five is against. §6 is the
+older analysis of getting input *to* `TOOL_MANAGER`, kept as written because what it
+got wrong is instructive.
 
 Companion documents: `00-architecture-survey.md` (the reconnaissance this is
 built on, especially §5–§8), `01-plan.md` (the architecture), `03-build-notes.md`
@@ -15,7 +19,11 @@ built on, especially §5–§8), `01-plan.md` (the architecture), `03-build-note
 
 | Path | What it is |
 |---|---|
-| `eeschema/host/sch_host.h` / `.cpp` | `SCH_HOST` — a schematic editor session with no `wxFrame`, and a `TOOLS_HOLDER` |
+| `eeschema/host/sch_host.h` / `.cpp` | `SCH_HOST` — a schematic editor session with no `wxFrame`; a `TOOLS_HOLDER`, a `SCHEMATIC_HOLDER` and an `UNDO_REDO_HOLDER` |
+| `eeschema/host/sch_host_control.{h,cpp}` | `SCH_HOST_CONTROL` — undo, redo and save as *actions*, so a hotkey works |
+| `eeschema/schematic_holder.h` / `.cpp` | Grown from upstream's four-virtual bridge into what a schematic tool needs from whatever is editing the schematic |
+| `include/undo_redo_holder.h`, `common/undo_redo_holder.cpp` | `UNDO_REDO_HOLDER` — the undo and redo stacks, off `EDA_BASE_FRAME` |
+| `eeschema/schematic_undo_redo.h` | `SCH_UNDO_REDO` — eeschema's undo, off `SCH_EDIT_FRAME` and shared with it |
 | `include/view/host_view_controls.h`, `common/view/host_view_controls.cpp` | `HOST_VIEW_CONTROLS` — a `VIEW_CONTROLS` that is told where the pointer is |
 | `include/tool/host_tool_dispatcher.h`, `common/tool/host_tool_dispatcher.cpp` | `HOST_TOOL_DISPATCHER` — host input to `TOOL_EVENT`, wx-free |
 | `qa/tests/common/test_host_input.cpp` | QA coverage for both of those, with no eeschema and no GUI |
@@ -35,7 +43,7 @@ built on, especially §5–§8), `01-plan.md` (the architecture), `03-build-note
 process singletons, and a program that has its own must keep them. It is compiled
 only into `libkicad_sch_host`, the shared library a non-C++ UI links
 (`-DKICAD_BUILD_RUST_SCH_UI=ON`, off by default because it is a second full
-eeschema link). The export list beside it keeps that library's surface to the 30
+eeschema link). The export list beside it keeps that library's surface to the 33
 `ksch_*` symbols and nothing else — worth doing because the kiface objects bring
 vendored C libraries whose symbols are not hidden by the tree's
 `-fvisibility=hidden`, that flag being C++-only.
@@ -225,12 +233,12 @@ that, and they are the useful part — the two sides agreeing about every struct
 | `ksch_sheet_info` | 32 |
 | `ksch_action` | 88 |
 | `ksch_input_event` | 56 |
-| `ksch_editor_state` | 40 |
+| `ksch_editor_state` | 48 |
 
 ### 3.0 The runtime, and why the ABI grew one
 
-`KSCH_ABI_VERSION` is 3; this section describes what version 2 added, and §3.4
-what version 3 did. Version 2's addition is three calls — `ksch_runtime_init`,
+`KSCH_ABI_VERSION` is 4; this section describes what version 2 added, §3.4 what
+version 3 did, and §3.5 version 4. Version 2's addition is three calls — `ksch_runtime_init`,
 `ksch_runtime_shutdown`, `ksch_runtime_is_ready` — and they exist because
 everything else in this header is uncallable without them.
 
@@ -343,11 +351,40 @@ The two result flags a caller gets back matter more than they look:
   overload, whose result is `processEvent`'s.
 * `KSCH_INPUT_REDRAW` — something called `TOOLS_HOLDER::RefreshCanvas()`, so the
   frame the caller is holding is stale. **This is the only notice a UI gets that
-  the document or the view changed behind its back.** It is also, today, never
-  set: eeschema's tools say "the view changed" by calling
-  `m_frame->GetCanvas()->ForceRefresh()` rather than `RefreshCanvas()`. Rerouting
-  those call sites is part of the frame hoist, and it is the part that makes an
-  edit visible — see `06-what-is-missing.md` Stage 4b.
+  the document or the view changed behind its back.** When this was written it was
+  never set, because eeschema's tools said "the view changed" by calling
+  `m_frame->GetCanvas()->ForceRefresh()`. Stage 4b routed those through
+  `SCHEMATIC_HOLDER::ForceRefreshCanvas()`, which a frame implements as the
+  synchronous repaint it always was and the host implements as this flag — so a
+  selection, a move and an undo are now visible in a UI that has no idea a tool ran.
+
+### 3.5 What version 4 added: undo, redo and save
+
+Three entry points and two fields, bringing the total to 33:
+
+| | |
+|---|---|
+| `ksch_session_undo` | undo the newest command; reports whether there was one |
+| `ksch_session_redo` | the same, the other way |
+| `ksch_session_save` | write every sheet back to the file it was loaded from |
+| `ksch_editor_state::undo_count` / `::redo_count` | so a UI can grey out its menu items |
+
+Two decisions worth arguing with.
+
+**Save is deliberately narrower than the editor's.** It writes the `.kicad_sch`
+files through `SCH_IO_KICAD_SEXPR` — the same writer — and stops. It does not write
+the project file, the symbol library table, a backup archive or the embedded-file
+cache, each of which is a decision about the *project* rather than about the
+document, and each of which a UI that wants it should ask for separately. What comes
+out reopens in KiCad; that is the property under test.
+
+**Undo, redo and save are *also* tool actions, and that is not redundancy.** A
+hotkey is resolved inside `TOOL_MANAGER`, so ⌘Z crosses this ABI as a key press and
+a UI cannot intervene in what it means. If the only route were these three calls,
+a menu item would work and the key would not. `SCH_HOST` therefore registers
+`SCH_HOST_CONTROL`, whose three handlers delegate to the same shared code these
+entry points do. The entry points remain for a caller that wants a status code
+rather than a fire-and-forget action.
 
 ---
 
@@ -457,13 +494,19 @@ reports and checking that the SVG exists at that path.
 >   exist, `SCH_HOST` is a `TOOLS_HOLDER` that owns a `TOOL_MANAGER` and registers
 >   eeschema's whole tool roster, and the ABI carries input, action dispatch and
 >   editor state (§3.4). See `06-what-is-missing.md` Stage 4a.
-> * **Not done.** No tool receives any of it: every one declines a holder that is
->   not its frame type. That is §6.5 step 6, and it is the frame hoist — Stage 4b.
-> * **Wrong twice over below.** §6.1 calls `GetToolCanvas()` the lesser problem and
->   it is not a problem at all: it is still pure virtual and `SCH_HOST` implements
->   it in one line. §6.2's count and mechanism were wrong (Stage 3) *and* its scope
->   was: `common/`'s tools had the same hazard, crashed rather than declined, and
->   nothing in eeschema's cast list mentioned them.
+> * **Also done, and this section did not see it coming.** Four tools now *receive*
+>   the input: selection, move, wire and a small undo/redo/save control. What made
+>   that possible is the subject of §7 below, and it is not on this section's list —
+>   because the interface the tools needed already existed in the tree.
+> * **Not done.** Seventeen tool classes still decline a holder that is not their
+>   frame type, and every dialog is untouched. `06-what-is-missing.md` Stage 4b costs
+>   each remaining tool.
+> * **Wrong three times over below.** §6.1 calls `GetToolCanvas()` the lesser problem
+>   and it is not a problem at all: it is still pure virtual and `SCH_HOST`
+>   implements it in one line. §6.2's count and mechanism were wrong (Stage 3) *and*
+>   its scope was: `common/`'s tools had the same hazard, crashed rather than
+>   declined, and nothing in eeschema's cast list mentioned them. And §6.4's table
+>   below is missing the row that turned out to matter — see §9.
 >
 > Stages 1 and 2 also removed the premise of the original opening: "the Rust UI
 > cannot reach the document model" stopped being true before this was about input
@@ -603,8 +646,11 @@ Status of that table, and where it was wrong:
   silently broken shortcut, and no part of the build would notice. What was built
   sends the key's *name* over the ABI and resolves it in C++. §3.4 has the
   argument, and `grep -rn "WXK_" rust/crates/` is the check.
-* **The zoom-dependent repaint row is unchanged and still pending.** It needs a
-  selection to matter, and there is none.
+* **The zoom-dependent repaint row is now live and still pending.** It needed a
+  selection to matter, and there is one: `SCH_VIEW::SetScale()` routes through
+  `SCH_BASE_FRAME::RefreshZoomDependentItems()`, which is a no-op with a null frame,
+  so cached text on the host does not switch to its bitmap LOD and a selected item's
+  shadow is not rescaled on zoom. Small, visible, and not yet done.
 * `ACTION_MENU` and the dialogs are untouched. Worth adding to the first row:
   `TOOL_INTERACTIVE`'s constructor only builds a `TOOL_MENU` when `Pgm().IsGUI()`,
   and the host runs wx in console mode — so in the host `m_menu` is **null**, and a
@@ -630,10 +676,11 @@ done; the order held up, and two of the seven descriptions did not.
    class every KiCad program inherits so that one new class can omit one line buys
    nothing. This step existed because the survey called it the blocker; it was not
    one.
-3. **Hoist undo/redo** off `EDA_BASE_FRAME` into a container both it and
-   `SCH_HOST` own (§6.3). **Still to do**, and deliberately deferred: nothing that
-   exists yet can edit a document, so there is nothing to undo. It belongs with the
-   first tool that mutates.
+3. ~~**Hoist undo/redo** off `EDA_BASE_FRAME` into a container both it and
+   `SCH_HOST` own (§6.3).~~ **Done**, and it did belong with the first tool that
+   mutates — it landed the day before the move tool. `UNDO_REDO_HOLDER` is the
+   container; the schematic half is `SCH_UNDO_REDO`. See §9.3, and note that moving
+   it is what gave eeschema's undo its first tests.
 4. ~~**`HOST_VIEW_CONTROLS`.**~~ **Done** — the eight pure virtuals against
    host-supplied pointer state, in `common/view/host_view_controls.cpp`, testable
    headlessly with no Rust as predicted. `WarpMouseCursor` is the only one that
@@ -653,7 +700,9 @@ done; the order held up, and two of the seven descriptions did not.
    `TOOL_EVENT` existed. Seven more entry points needed step 1's treatment. And the
    prediction that "selection and move can be driven from a C++ test at this point"
    is false: every tool declines, so what a C++ test can assert is that none of
-   them survives. The frame hoist is `06-what-is-missing.md` Stage 4b.
+   them survives. The frame hoist is `06-what-is-missing.md` Stage 4b — after which
+   the prediction became true, and selection, move and wire *are* driven from a C++
+   test.
 7. ~~**Extend the C ABI** with input events and action dispatch.~~ **Done** —
    ABI version 3, four entry points, §3.4. The second half was as cheap as this
    said: the bindings come from the header on every build, so Rust got them by
@@ -664,6 +713,12 @@ Steps 1, 2 and 3 were described as ordinary C++ refactors that improve the tree
 whether or not the Rust work continues, which was a good property for them to
 have — and step 1's extension into `common/` has it too: `PROPERTIES_TOOL`'s
 `if( editFrame )` guard could not fire before and can now, in every KiCad program.
+
+Step 3 turned out to have the same property twice over. Hoisting the undo stacks
+uncovered `EDA_DRAW_FRAME`'s shadowed `m_undoRedoCountMax`, so the "maximum undo
+items" preference now works in eeschema, pcbnew, gerbview and the page-layout editor;
+and moving eeschema's undo into shared functions gave it the first tests it has ever
+had, which protect the wx editor and not only the host. §9.4 has both.
 
 ---
 
@@ -785,8 +840,131 @@ Covered by `test_draw_stream.cpp::MalformedImageTablesAreRejected`.
   has to compare the picture, not the bytes —
   `rust/crates/kicad-sch-sys/tests/live_session.rs` does, and explains how.
 
+  One further wrinkle, added by §9: a host whose tools are running has overlay
+  *targets* in use, because the tools put view items on them — the selection group,
+  the entered-group overlay, the grid helper's axis cross and snap point — and
+  `KIGFX::VIEW` brackets a layer it has items on with a `SetTarget` and a
+  `SetLayerDepth` whether or not any of them is visible. So a live frame carries four
+  state commands the pre-4b fixtures do not, and draws nothing extra. The live-host
+  test states exactly that rather than tolerating a count: nothing that draws may
+  appear or disappear, and the only new state may be an overlay bracket.
+
   Worth knowing beyond this project: it means a draw stream is not a canonical
   form of a schematic's geometry, so it cannot be used as a cross-platform
   rendering hash. Sorting items by a total order before recording would fix that
   if it were ever wanted.
 
+
+---
+
+## 9. The editing seam: what a tool needs that is not a window
+
+§6 asked what it would take to *feed* `TOOL_MANAGER`, and answered it. What it did
+not ask, because at the time no tool could run at all, is what a tool needs once the
+events arrive. This section is that, and it is the part to read before converting
+tool number five.
+
+### 9.1 `SCHEMATIC_HOLDER`, which already existed
+
+The decision §6 framed as two routes — give the host a `SCH_BASE_FRAME`, or reroute
+`m_frame` onto an interface — was settled by finding that the interface was already
+in the tree. `eeschema/schematic_holder.h` held four virtuals, introduced with this
+comment:
+
+> This is a bridge class to help the schematic be able to affect SCH_EDIT_FRAME
+> without doing anything too wild in terms of passing callbacks constantly in
+> numerous files
+>
+> The long term goal would be to fix the internal structure and make the
+> relationship between frame and schematic less intertwined
+
+`SCH_BASE_FRAME` already implemented it. What it grew is the rest of what a tool
+asks its editor for, and the two rules that kept it from becoming `SCH_EDIT_FRAME`
+again are the useful part:
+
+**Anything inherently a window stays off it.** A dialog, an info bar, keyboard
+focus, hypertext navigation, the hierarchy navigator pane, the variant selector, the
+net-collision colour settings. A tool that wants one downcasts to the frame and does
+nothing when the answer is null — with a comment at the site saying what is lost, so
+that "this editor cannot do X" is discoverable from the code rather than from
+running it.
+
+**Anything the tool framework already answers stays off it too.** This is the one
+that shrinks the work most:
+
+| looks like it needs a frame | actually |
+|---|---|
+| `m_frame->GetCanvas()->GetView()` | `TOOL_BASE::getView()` |
+| `m_frame->GetCanvas()->GetViewControls()` | `TOOL_BASE::getViewControls()` |
+| `m_frame->ToolStackIsEmpty()`, `IsCurrentTool()`, `PushTool()`, `GetDragAction()`, `GetMoveWarpsCursor()` | `m_toolMgr->GetToolHolder()`, i.e. `TOOLS_HOLDER` |
+| `m_frame->Schematic()`, `GetCurrentSheet()`, `SetSheetNumberAndCount()` | `GetScreen()->Schematic()`, which is the document asking itself |
+
+Two things did move onto the interface that a reader might expect to be the frame's,
+because nothing about them is: `AutoRotateItem` needs only the screen and the current
+sheet, and is not even virtual; and `SCH_EDIT_FRAME::TrimWire` did its work by
+calling back into `SCH_LINE_WIRE_BUS_TOOL`, so it is now that tool's method, where
+both its callers already were.
+
+### 9.2 The opt-in, and why it is off by default
+
+`SCH_TOOL_BASE<T>` gained `m_editor` — a `SCHEMATIC_HOLDER*`, non-null whenever the
+tool initialised at all — and a `runsWithoutAFrame()` that returns **false** unless
+a tool overrides it. That default is load-bearing. A tool that has not been converted
+still does `m_frame->GetScreen()` in fifty places, so letting it initialise with a
+null `m_frame` would replace "this tool is absent" with "this tool crashes on the
+first click". Declining is what `TOOL_MANAGER::InitTools()` already knows how to
+handle.
+
+A tool that answers true must tolerate two nulls: `m_frame`, and **`m_menu`** —
+`TOOL_INTERACTIVE` only builds a `TOOL_MENU`, and therefore a `wxMenu`, when
+`Pgm().IsGUI()`. Both converted tools moved their context-menu construction into a
+`buildContextMenu()` that returns early, which is also a tidier shape than a
+hundred-line `Init()`. `TOOL_INTERACTIVE::HasToolMenu()` is new and exists because a
+tool that adds items to *another* tool's menu cannot see the other's `m_menu`.
+
+### 9.3 Undo, in two pieces
+
+`UNDO_REDO_CONTAINER m_undoList` / `m_redoList` were members of `EDA_BASE_FRAME`
+(§6.3). They are now `UNDO_REDO_HOLDER`, a mixin `EDA_BASE_FRAME` inherits — so
+every frame in KiCad keeps these methods and every derived override of
+`ClearUndoORRedoList` keeps working — and which `SCH_HOST` inherits too.
+
+The schematic-specific half went with them. `SaveCopyInUndoList`,
+`PutDataInPreviousState` and `RollbackSchematicFromUndo` were `SCH_EDIT_FRAME`
+members; they are now `SCH_UNDO_REDO` free functions over `SCHEMATIC_HOLDER`, with
+the frame's methods of the same names forwarding, so the GUI runs this code rather
+than a copy of it. `Undo()` and `Redo()` joined them, because `SCH_EDITOR_CONTROL`'s
+versions were twenty lines of stack shuffling around one call each.
+
+**Sharing rather than duplicating is what made it testable, and it needed to be.**
+Nothing in the QA suite called either entry point — they needed a window — so
+eeschema's undo had no coverage at all, which is both why the refactor was risky and
+why it was the right call. The six cases that drive it through the host are the
+first tests it has ever had, and they cover the frame by proxy.
+
+Only one case still needs a window: page-settings undo goes through
+`DS_PROXY_UNDO_ITEM`, which takes an `EDA_DRAW_FRAME`. An editor with no
+page-settings dialog cannot have recorded one, and the code says so at the site.
+
+### 9.4 The four defaults nobody had checked
+
+Worth its own heading because it is the shape of bug this seam finds, and because
+three of the four are in code every KiCad program runs.
+
+| Where | What |
+|---|---|
+| `KIGFX::GAL` | Its constructor never sets `m_gridSize`. In a GUI `COMMON_TOOLS::Reset()` always fills it in from the window settings, and that tool declines a non-frame holder. A zero grid is not "no grid": `GRID_HELPER` divides the cursor position by it, so the first tool that snaps gets an infinity and `KiROUND` asserts several frames from the cause. `SCH_HOST::initGrid()` reads the user's own grid list the same way `COMMON_TOOLS` does. |
+| `TOOLS_HOLDER` | Its constructor sets `m_dragAction = MOUSE_DRAG_ACTION::SELECT`, and every frame replaces it from the common settings in `CommonSettingsChanged()`. Until the host called that, a drag over a *selected* item drew a rubber band instead of moving it. The rubber-band test written the day before **passed because of the bug**. |
+| `EDA_DRAW_FRAME` | It declared a second `m_undoRedoCountMax` that shadowed `EDA_BASE_FRAME`'s. `LoadSettings` wrote the user's `max_undo_items` into the derived one, which nothing read; the push methods read the base one, which was only ever the constructor's default. So the preference was ignored in four programs and, because `SaveSettings` writes it back, overwritten on every save. Fixed. |
+| `SCH_HOST` | `SCH_EDIT_FRAME` has a `SCHEMATIC` and an empty `SCH_SCREEN` from its constructor on, so a tool may use `GetScreen()` without checking — and does. This host had neither until something was loaded, and `drawWires` on an empty session dereferenced null. It now refuses input and actions with no document; giving it an empty document at construction, as the frame has, is the better long-term answer. |
+
+### 9.5 One duplication, deliberately
+
+`SCH_HOST_CONTROL` handles `ACTIONS::undo`, `redo` and `save`, which
+`SCH_EDITOR_CONTROL` also registers. It exists as a *tool* rather than as three C ABI
+calls because a hotkey is resolved inside `TOOL_MANAGER`: a UI on the far side of the
+boundary can forward ⌘Z but cannot intervene in what it means, so recognising the
+three action *names* on the Rust side would have made the menu work and the key not.
+The handlers are three lines each and delegate to the shared `SCH_UNDO_REDO`, so what
+is duplicated is the dispatch and not the work — and `Init()` declines any holder that
+is not a `SCH_HOST`, so it is inert in the wx editor.

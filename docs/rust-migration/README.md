@@ -6,14 +6,15 @@ wgpu — while leaving the C++ document model, file I/O, connectivity engine, ER
 and tools exactly where they are.
 
 **If you are evaluating what this actually delivers, read
-[`06-what-is-missing.md`](06-what-is-missing.md) first.** What exists is a
-schematic *viewer with a live input path*: it opens real `.kicad_sch` files through
-the C++ host, keeps the session open and redraws from it whenever the view moves,
-and hands every pointer move, click, drag, scroll and key press to KiCad's
-`TOOL_MANAGER` as a `TOOL_EVENT` — where **no tool receives it**, because every
-eeschema tool declines a holder that is not a `wxFrame`. It is not a schematic
-editor, and wxWidgets has not been removed from anything. That document says
-exactly where it stops and what the remaining stages are.
+[`06-what-is-missing.md`](06-what-is-missing.md) first.** What exists is a schematic
+editor for **four tools' worth of editing**: it opens real `.kicad_sch` files
+through the C++ host, redraws from the live document, and a user can select items by
+clicking or dragging a box, move them, draw a wire, undo and redo any of it, and
+save a file that KiCad reopens — all with no `wxFrame` anywhere on the path.
+Seventeen of eeschema's twenty-one tool classes still decline such a context, and
+all 124 dialogs are untouched, so **wxWidgets has not been removed from anything**
+and the wx editor is still the only complete way to edit a schematic. That document
+says exactly which tools run, what each remaining one costs, and why.
 
 For the design, start with **`01-plan.md`**.
 
@@ -25,7 +26,7 @@ For the design, start with **`01-plan.md`**.
 | `03-build-notes.md` | Configuring and building the C++ tree, with the exact dependency list and timings | Anyone building |
 | `04-host-seam.md` | The C++ host that owns a schematic session without a `wxFrame`, the C ABI and the shared library Rust links, and what feeding `TOOL_MANAGER` from Rust would still take | Anyone continuing the migration |
 | `05-porting-guide.md` | **How to do this again for pcbnew.** What is reusable unchanged, what is genuinely different about a board editor, and the traps — including the two designs we got wrong and had to redo | Read before starting the next editor |
-| `06-what-is-missing.md` | **What this is not, and what an editor still needs.** What the C++ bridge does and does not yet carry, stage by stage, with Stages 1, 2, 3 and the input half of 4 done | Read first if you are judging scope |
+| `06-what-is-missing.md` | **What this is not, and what an editor still needs.** What the C++ bridge does and does not yet carry, stage by stage, with Stages 1–4b done and the remaining cost measured per tool | Read first if you are judging scope |
 
 Two more places hold the parts that are code rather than prose:
 
@@ -56,6 +57,10 @@ properties need the C++ document model it is not yet connected to. They are
 labelled that way on purpose: a panel showing plausible placeholder data beside
 real data is worse than one admitting what it does not have.
 
+Clicking an item selects it, dragging one moves it, `W` draws a wire, ⌘Z undoes and
+⌘S saves. Almost nothing else in the menus does anything yet, and
+`06-what-is-missing.md` says which tool each missing thing is waiting on.
+
 ## The shape of it, in one paragraph
 
 `SCH_PAINTER` already holds every rule about how a schematic looks, and
@@ -69,27 +74,35 @@ and it is the C++ one.
 
 ## Honest status
 
-This step delivers the rendering and presentation seam and the input path over it,
-not a finished editor. Concretely: the Rust application opens a `.kicad_sch`, draws
-it, re-records it from the live document on every pan and zoom, and delivers every
-pointer event, key press and tool activation into `TOOL_MANAGER::ProcessEvent`.
+This step delivers the rendering and presentation seam, the input path over it, and
+the editing loop for four tools. Concretely: the Rust application opens a
+`.kicad_sch`, draws it, re-records it from the live document whenever the view moves
+*or a tool changes something*, and a user can select, move, draw a wire, undo, redo
+and save.
 
-**What is missing is on the far end of that: `TOOL_MANAGER` has no tools.**
-`SCH_HOST` registers the same twenty-one tool classes `SCH_EDIT_FRAME` does and
-`InitTools()` drops every one, because each learns its `m_frame` from the tool
-holder and declines when the holder is not a frame. So the events arrive and
-nothing is listening. Closing that is the `m_frame` decision — give the host a
-`wxFrame`, which defers the project's goal, or hoist what the tools need from the
-frame onto an interface, which is the honest version and the largest single piece
-of work left. `06-what-is-missing.md` Stage 4b has both, now costed per tool rather
-than in aggregate.
+**What is missing is the rest of eeschema.** Seventeen of the twenty-one tool
+classes still learn their `m_frame` from the tool holder and decline when the holder
+is not a frame, so `InitTools()` drops them: no rotate, no delete, no properties, no
+symbol placement, no ERC, no netlist, no find and replace. All 124 dialogs are
+untouched. `06-what-is-missing.md` Stage 4b measures what each remaining tool costs
+— four of them need between one and six methods, and `SCH_EDITOR_CONTROL` needs
+sixty-one, most of which open a dialog.
 
-Two predictions that this branch falsified rather than confirmed, because they are
-the useful part: `GetToolCanvas()` was never the blocker — it is still pure virtual
-and `SCH_HOST` implements it in one line — and "transcribe `WXK_*` into a Rust
-table" is the wrong way to reconcile the key vocabularies. The key crosses the ABI
-as a *name* and C++ resolves it, so the numbers come from `wx/defs.h` through a
-compiler. `grep -rn "WXK_" rust/crates/` finds nothing but comments saying so.
+Four predictions this branch falsified rather than confirmed, because they are the
+useful part:
+
+* `GetToolCanvas()` was never the blocker — it is still pure virtual and `SCH_HOST`
+  implements it in one line.
+* "Transcribe `WXK_*` into a Rust table" is the wrong way to reconcile the key
+  vocabularies. The key crosses the ABI as a *name* and C++ resolves it, so the
+  numbers come from `wx/defs.h` through a compiler. `grep -rn "WXK_" rust/crates/`
+  finds nothing but comments saying so.
+* The interface the tools need did not have to be designed. `SCHEMATIC_HOLDER`
+  already existed, four virtuals of upstream's own, introduced with the stated goal
+  of making "the relationship between frame and schematic less intertwined".
+* "~600 `m_frame->` call sites" is the wrong unit for the work. Most of them are
+  `GetScreen()`, `AddToScreen()` and `UpdateItem()` repeated; the interface is about
+  twenty methods, and the conversions are mechanical.
 
 What *is* verified, on this branch:
 
@@ -103,12 +116,12 @@ What *is* verified, on this branch:
   frames rather than regrown.
 * The recording backend's 30 tests pass inside KiCad's own `qa_common`.
 * `kicad-gal` is 58 tests green, `kicad-sch-render` 89, `kicad-sch-ui` 82,
-  `kicad-eeschema-gpui` 15, and the Rust shell renders those streams in a real gpui
+  `kicad-eeschema-gpui` 16, and the Rust shell renders those streams in a real gpui
   window.
 * **The C ABI is linked and driven from Rust.** `kicad-sch-sys` opens a real
-  schematic, and the frame it gets back is byte-identical to what
-  `kicad-sch-dump` writes for the same file on the same machine. Fourteen checks,
-  registered with CTest as `qa_rust_sch_sys`.
+  schematic, and the frame it gets back paints the same picture as what
+  `kicad-sch-dump` writes for the same file. Sixteen checks, registered with CTest
+  as `qa_rust_sch_sys`.
 * **The session is held open and re-recorded live.** A pan or a zoom asks the C++
   session for the frame the canvas is about to paint, and the retained geometry
   comes back unchanged, so nothing is re-tessellated. 4.6 ms on the densest sheet
@@ -131,8 +144,20 @@ What *is* verified, on this branch:
   `HostInputSink` replaces the null sink. 32 tests in `qa_common`, 13 more in
   `qa_eeschema`, 10 in the binary, 3 more in the shell, 3 live checks against the
   linked host.
-* The eeschema and common QA suites both pass in full — 1,716 and 1,509 cases. The
-  single pre-existing
-  `ConnectivityExport/AllegroUsesPublishedNetsAndPreservesDeviceFiles` failure
-  recorded earlier on this branch no longer reproduces; a flaky hang in
-  `HttpLibPlugin` did, and is fixed (`03-build-notes.md` §6).
+* **Four tools run on a holder that is not a frame, and a user can edit with them.**
+  `SCH_SELECTION_TOOL`, `SCH_MOVE_TOOL`, `SCH_LINE_WIRE_BUS_TOOL` and
+  `SCH_HOST_CONTROL` initialise and work, because what they ask the holder for is a
+  `SCHEMATIC_HOLDER` — the document, the settings, the canvas notifications — rather
+  than a window. 13 tests in `qa_eeschema` drive a click, a drag box, a move, a wire
+  and the undo hotkey through the real input path.
+* **Undo works, and it is the first thing that ever tested eeschema's undo.**
+  `SaveCopyInUndoList` and `PutDataInPreviousState` were `SCH_EDIT_FRAME` members
+  and nothing in the QA suite called them; they are now `SCH_UNDO_REDO` free
+  functions that the frame runs too. The sharpest check is over the ABI: save an
+  untouched copy, drag a wire, save and confirm the bytes differ, undo and save and
+  confirm the bytes are **identical to the baseline**.
+* **A saved file reopens.** `ksch_session_save` writes the `.kicad_sch` files through
+  the same writer the editor uses, and a second session loads and renders the result.
+* The eeschema and common QA suites both pass in full — 1,735 and 1,513 cases — as
+  do `qa_pcbnew` and the other programs' kifaces, which the base-class changes
+  (`UNDO_REDO_HOLDER`, `TOOL_INTERACTIVE::HasToolMenu`) also touch.

@@ -1670,7 +1670,7 @@ Enumerated, with separability:
 | Own the `SCHEMATIC` | `SCH_EDIT_FRAME::m_schematic` (`:1130`) | **yes, trivially** — it is already a heap pointer with `Schematic()` accessor (`:148`) |
 | Current sheet path | `m_sheetPath` (`:130`), `GetCurrentSheet()`/`SetCurrentSheet()` (`:451,:453`) | **yes** |
 | Current `SCH_SCREEN` | `GetScreen()` override (`:144`), backed by `EDA_DRAW_FRAME::m_currentScreen` | **yes** |
-| **Undo / redo stacks** | `UNDO_REDO_CONTAINER m_undoList`, `m_redoList` — **members of `EDA_BASE_FRAME`** (`eda_base_frame.h:856-857`), with `PushCommandToUndoList` (`:588`), `GetUndoCommandCount`/`GetRedoCommandCount` (`:607-608`), and eeschema's `SaveCopyInUndoList` (`sch_edit_frame.h:721,:731`) + `eeschema/schematic_undo_redo.cpp` | **yes, but it is a real lift** — the containers are `PICKED_ITEMS_LIST` based and wx-free, but they live on a `wxFrame` subclass. Hoist into `SCH_HOST`. |
+| **Undo / redo stacks** | `UNDO_REDO_CONTAINER m_undoList`, `m_redoList` — were **members of `EDA_BASE_FRAME`**, with `PushCommandToUndoList`, `GetUndoCommandCount`/`GetRedoCommandCount`, and eeschema's `SaveCopyInUndoList` + `eeschema/schematic_undo_redo.cpp` | **done** — the containers are now `UNDO_REDO_HOLDER` (`include/undo_redo_holder.h`), which `EDA_BASE_FRAME` and `SCH_HOST` both inherit, and eeschema's half is `SCH_UNDO_REDO` free functions the frame also runs. Less of a lift than this predicted; see `04-host-seam.md` §9.3. |
 | `SCH_COMMIT` transactions | `eeschema/sch_commit.{h,cpp}`; `SCH_COMMIT::pushSchEdit` drives connectivity recalculation | **already separable** — `SCH_COMMIT` takes a `TOOLS_HOLDER*`/`SCH_EDIT_FRAME*`, not a window |
 | Settings | `eeconfig()` → `EESCHEMA_SETTINGS*` from `Kiface().KifaceSettings()`; `SCHEMATIC_SETTINGS m_base_frame_defaults` (`sch_base_frame.h:321`) | **yes** — `EESCHEMA_SETTINGS` is a JSON-backed `APP_SETTINGS_BASE`, wx-free apart from `wxString` |
 | The `VIEW` + `GAL` + `PAINTER` + `VIEW_CONTROLS` quartet | `EDA_DRAW_PANEL_GAL` (`class_draw_panel_gal.h:343,346,349,352`) | **replaced wholesale** (§5, §6) |
@@ -1703,6 +1703,16 @@ Enumerated, with separability:
 > `06-what-is-missing.md` Stage 3. The second bullet below — the ~600 `m_frame->`
 > sites — is what the real blocker turns out to be, so the survey named it; it
 > just ranked it second.
+>
+> **And its unit is wrong, which flattered the estimate in the other direction.**
+> Most of those sites are `GetScreen()`, `AddToScreen()` and `UpdateItem()` repeated,
+> so the interface a tool needs is about twenty methods, and several sites that look
+> like frame access want `TOOL_BASE::getView()` or `TOOL_MANAGER::GetToolHolder()`
+> instead. `SCH_MOVE_TOOL` had 57 sites and 13 distinct methods, of which 4 were new.
+> Count distinct methods per tool. The third bullet — undo/redo — is right, and
+> hoisting it was straightforward; it also uncovered a live bug in `EDA_DRAW_FRAME`
+> that had been ignoring the user's "maximum undo items" setting in four programs.
+> `04-host-seam.md` §9 is the account.
 
 - The blocker is `TOOLS_HOLDER::GetToolCanvas() const = 0` returning `wxWindow*`. Fix it
   upstream-style (introduce an opaque `TOOL_CANVAS*` or drop the method) before anything else.

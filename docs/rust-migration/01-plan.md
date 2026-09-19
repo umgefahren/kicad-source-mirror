@@ -149,6 +149,7 @@ group data byte-identical, with a frame body of four commands.
 | M3 | Live linkage: Rust loads the host library, renders live, forwards input into `TOOL_MANAGER` | M1, M2 |
 | — | *M3's third clause is satisfied and misleading. Input reaches the manager; the manager has no tools. See "Where this actually got to".* | |
 | M4 | Menus and toolbars generated from the action registry; select / move / wire tools driving the C++ tools | M3 |
+| — | *Done. The three named tools run on a holder that is not a `wxFrame`, plus undo, redo and save. Seventeen other tool classes still decline one — see "Where this actually got to".* | |
 | M5 | Tests: C++ unit tests for `RECORDING_GAL`; Rust decoder and golden-image tests; headless UI interaction tests | M1–M4 |
 | M6 | CMake/Corrosion integration, CI, documentation | M5 |
 
@@ -176,28 +177,43 @@ headless compositor are set up.
 
 ## Where this actually got to
 
-The milestones above describe the intended shape. What landed is **M1, M2 and M3**:
+The milestones above describe the intended shape. What landed is **M1 through M4**:
 rendering works end to end on all 466 schematics in the tree; the Rust binary loads
 the host library, opens a real `.kicad_sch` through it —
 `--schematic FILE.kicad_sch` — and re-records the frame from that live session
-whenever the view moves; and every pointer move, click, drag, scroll and key press
-is forwarded into `TOOL_MANAGER::ProcessEvent` as a `TOOL_EVENT`.
+whenever the view moves or a tool changes the document; every pointer move, click,
+drag, scroll and key press is forwarded into `TOOL_MANAGER::ProcessEvent` as a
+`TOOL_EVENT`; and **M4's three named tools receive it**. A user can select by
+clicking or dragging a box, move what is selected, draw a wire, undo and redo, and
+save a file KiCad reopens.
 
-What has **not** landed is M4, and the reason is worth stating precisely because
-M3's wording hides it. "Forwards input into `TOOL_MANAGER`" is true and is not
-enough: the manager has no tools in it. Every eeschema tool learns its `m_frame`
-from the tool holder and declines when the holder is not a frame, so
-`InitTools()` drops all twenty-one of them. M4's "select / move / wire tools
-driving the C++ tools" therefore begins with a question M3 did not have to answer —
-what `m_frame` is for a host that is not a frame. **See `06-what-is-missing.md`**
-for precisely where it stops and what the remaining stages are.
+What has **not** landed is the rest of eeschema. Seventeen of the twenty-one tool
+classes still learn their `m_frame` from the tool holder and decline when the holder
+is not a frame, so `InitTools()` drops them, and all 124 dialogs are untouched.
+**See `06-what-is-missing.md`** for which tools run, what each remaining one costs,
+and the four findings that cost this stage most of its time.
 
-One prediction in this document is worth revisiting in the light of that. The
-plan said to call the host "per frame"; the code asks only when the answer could
-have changed — a pan, a zoom, a resize, or an explicit invalidation — because the
-window free-runs at the display rate and re-recording on each of those redraws
-would be waste. The distinction is the same one the retained-group design rests
-on, applied one level up.
+Three predictions in this document are worth revisiting.
+
+**"Per frame" was wrong, in the right direction.** The plan said to call the host
+per frame; the code asks only when the answer could have changed — a pan, a zoom, a
+resize, or an explicit invalidation — because the window free-runs at the display
+rate and re-recording on each of those redraws would be waste. The distinction is
+the same one the retained-group design rests on, applied one level up. What M4 added
+is a fourth trigger: a tool that edits the document asks for a repaint through
+`TOOLS_HOLDER::RefreshCanvas()`, which crosses the ABI as `KSCH_INPUT_REDRAW`.
+
+**The interface the tools need did not have to be designed.** The non-goals below
+called "giving the tools an `m_frame` they can use" the largest single piece of work
+left, and it was — but the shape of it was already in the tree.
+`eeschema/schematic_holder.h` was four virtuals of upstream's own, introduced as a
+bridge so that "the relationship between frame and schematic" could be made "less
+intertwined". Growing that, rather than inventing something, is what M4 did.
+
+**"~600 `m_frame->` call sites" is the wrong unit.** Most of them are `GetScreen()`,
+`AddToScreen()` and `UpdateItem()` repeated; the interface is about twenty methods
+and the per-tool conversions are mechanical. `06-what-is-missing.md` has the count
+for every remaining tool.
 
 ## Explicit non-goals for this step
 
@@ -213,10 +229,13 @@ on, applied one level up.
 * ~~Feeding input into `TOOL_MANAGER`.~~ **Done**, and it was as structurally easy
   as this predicted: `TOOL_MANAGER` needed nothing, `TOOL_EVENT` is a plain value
   type, and `HOST_TOOL_DISPATCHER` is a sibling of `TOOL_DISPATCHER` that drops most
-  of its 827 lines because the lines are wx-quirk reconciliation. What remains a
-  non-goal is the thing behind it: **giving the tools a `m_frame` they can use.**
-  `docs/rust-migration/04-host-seam.md` §6 and `06-what-is-missing.md` Stage 4b
-  record the two routes and what each costs.
+  of its 827 lines because the lines are wx-quirk reconciliation.
+* ~~Giving the tools an `m_frame` they can use.~~ **Done for four of them** —
+  selection, move, wire and a small undo/redo/save control — by growing
+  `SCHEMATIC_HOLDER` into what a schematic tool asks its editor for, and hoisting the
+  undo stacks off `wxFrame`. What remains a non-goal is the *rest* of the roster and
+  every dialog; `06-what-is-missing.md` Stage 4b costs each remaining tool
+  individually.
 
 ## Related documents
 

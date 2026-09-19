@@ -37,6 +37,9 @@ Budget your time accordingly. Rendering is the part that is already done.
 | Host input → `TOOL_EVENT` | `include/tool/host_tool_dispatcher.h`, `common/tool/host_tool_dispatcher.cpp` | **Unchanged**, including the key-name → `WXK_*` table |
 | Checked tool-holder casts in `common/tool/` | `COMMON_CONTROL`, `COMMON_TOOLS`, `ZOOM_TOOL`, `PICKER_TOOL`, `GROUP_TOOL`, `PROPERTIES_TOOL`, `EMBED_TOOL` | **Already done** — pcbnew registers most of the same tools, so this hazard is behind you (§4.8) |
 | Process singletons for a headless host | `eeschema/host/sch_host_runtime.cpp` | **Unchanged** — `ksch_runtime_init` stands up wx, the settings manager and the kiface settings, and a board host needs exactly the same |
+| Undo and redo stacks off `wxFrame` | `include/undo_redo_holder.h`, `common/undo_redo_holder.cpp` | **Unchanged** — `UNDO_REDO_HOLDER` is in `common/` for this reason; `PCB_BASE_EDIT_FRAME` already inherits it through `EDA_BASE_FRAME`, so a board host inherits it too and implements `ClearUndoORRedoList` the way `PCB_EDIT_FRAME` does |
+| The editing-context pattern | `eeschema/schematic_holder.h`, `eeschema/schematic_undo_redo.h` | **The pattern, not the code.** pcbnew needs its own `BOARD_HOLDER`-shaped interface and its own `PCB_UNDO_REDO`; §4.11 is what to copy and what to avoid |
+| `TOOL_INTERACTIVE::HasToolMenu()`, `SCH_TOOL_BASE::runsWithoutAFrame()` | `include/tool/tool_interactive.h`, `eeschema/tools/sch_tool_base.h` | The first is **unchanged** and already in `common/`; the second is the shape to copy onto `PCB_TOOL_BASE` |
 | Host shared library + export list | `eeschema/CMakeLists.txt`, `host/sch_host_abi.exports` / `.map` | Copy the pattern: one `SHARED` target over the kiface objects, exporting only the ABI |
 | The ABI, bound and wrapped in Rust | `rust/crates/kicad-sch-sys` | Copy the pattern: `bindgen` in `build.rs`, auto-detected library, and a stub build so the workspace still compiles with no C++ |
 | cargo ↔ CMake integration | `cmake/KiCadRust.cmake` | **Unchanged** |
@@ -481,6 +484,53 @@ Whether pcbnew's connectivity has the same constraint is unchecked, but
 
 ---
 
+### 4.11 The tools need an editing context, and pcbnew's is not the same object
+
+§4.8 above is about the tool holder being *safe*. Making a tool actually *run* is a
+separate problem, and eeschema solved it by growing `SCHEMATIC_HOLDER` — upstream's
+own four-virtual bridge between the schematic and the frame — into what a schematic
+tool asks its editor for: the document, the settings that decide behaviour, and a
+couple of notifications a canvas owner can act on. `SCH_BASE_FRAME` and `SCH_HOST`
+both implement it. `04-host-seam.md` §9 is the full account.
+
+Four things transfer directly.
+
+**Two rules about what belongs on the interface.** Anything inherently a window —
+dialogs, info bars, focus, docked panes — stays off it, and a tool that wants one
+downcasts to the frame and does nothing when the answer is null, with a comment
+saying what is lost. And anything the tool framework already answers stays off it:
+`TOOL_BASE::getView()`/`getViewControls()` come from `TOOL_MANAGER`, and
+`TOOL_MANAGER::GetToolHolder()` answers `ToolStackIsEmpty()`, `IsCurrentTool()`,
+`PushTool()` and `GetDragAction()`. In eeschema that second rule removed most of what
+looked like frame access.
+
+**`~600 m_frame-> call sites` is the wrong unit.** The survey's count for
+`eeschema/tools/` made the work look enormous; in practice most sites are
+`GetScreen()`, `AddToScreen()` and `UpdateItem()` repeated, so the interface is about
+twenty methods and each tool's conversion is mechanical. Count *distinct methods per
+tool*, not sites: `SCH_MOVE_TOOL` had 57 sites and 13 distinct methods, of which 4
+were new.
+
+**Opt in, never out.** `runsWithoutAFrame()` defaults to false, so an unconverted
+tool declines rather than initialising with a null frame and crashing on the first
+click. A converted tool must tolerate a null `m_frame` *and* a null `m_menu` —
+`TOOL_INTERACTIVE` only builds a `TOOL_MENU` when `Pgm().IsGUI()`.
+
+**Expect the defaults nobody has checked.** This is the part most likely to catch
+pcbnew too. A host is the first thing to read a mixin's constructor defaults as they
+were left, because every frame overwrites them from settings before anything reads
+them. In eeschema that was `KIGFX::GAL`'s grid size (zero, and `GRID_HELPER` divides
+by it), `TOOLS_HOLDER`'s drag action (`SELECT`, so every drag rubber-banded) and
+`EDA_DRAW_FRAME`'s shadowed undo limit. **`SCH_HOST` calls
+`TOOLS_HOLDER::CommonSettingsChanged()` in its constructor; a board host must too**,
+and must give its GAL a grid. The grid one is not eeschema-specific at all.
+
+One eeschema-specific finding that has a pcbnew analogue worth looking for: the wire
+tool turned out to be a *prerequisite* of the move tool, because moving a wire off a
+junction has to add one where it left. Look for the equivalent coupling between
+`PCB_POINT_EDITOR`, the router and `PCB_MOVE_TOOL` before assuming they can be
+converted in any order.
+
 ## 5. Suggested staging
 
 1. **Prove the recorder works for boards.** Extend `sch_dump` into a `pcb_dump`
@@ -508,6 +558,11 @@ Whether pcbnew's connectivity has the same constraint is unchecked, but
    depended on the camera.
 7. **The shell**: reuse the structure, add the layer widget, the appearance
    panel and pcbnew's toolbars.
+8. **The editing context, and then one tool at a time** (§4.11). `BOARD_HOLDER`-shaped
+   interface, undo through `UNDO_REDO_HOLDER`, then selection, then move. Do selection
+   first for the same reason eeschema did: it proves the whole round trip through a
+   real KiCad tool and it is the tool with no mutation to get wrong. Expect the
+   defaults check in §4.11 to catch something on day one.
 8. **Input** — only after the tool-holder downcasts are checked, in `pcbnew/` *and*
    in whatever `common/` tools your frame registers (§4.8). `GetToolCanvas()` is
    not the gate it looks like. The dispatcher and the view controls are shared code
@@ -552,14 +607,12 @@ Before claiming the renderer is right:
 
 Stated plainly so you do not assume it exists:
 
-* **A tool that runs on a non-frame holder** (§4.8). The single biggest remaining
-  piece, and it is no longer the dispatcher: input goes from a gpui window through
-  the C ABI into `TOOL_MANAGER::ProcessEvent` and is tested end to end. What it
-  arrives at is a manager with nothing registered in it, because every eeschema
-  tool declines a holder that is not its frame type. A host must decide what
-  `m_frame` is; §4.8 has both routes, and the measurement that helps is that a
-  *single* tool's frame surface is around fourteen methods rather than the
-  aggregate's six hundred call sites.
+* **Most of the tools.** Four of eeschema's twenty-one classes run on a holder that
+  is not a frame — selection, move, wire, and a small undo/redo/save control — and
+  seventeen still decline one. The mechanism is settled (§4.11), so what is left is
+  the same conversion applied again, costed per tool in
+  `06-what-is-missing.md` Stage 4b. For pcbnew the equivalent work has not been
+  started at all, and its tool roster is larger.
 * **Dialogs.** All 124 of eeschema's are still wxWidgets; pcbnew has 224.
   `00-architecture-survey.md` §7.4 discusses keeping them, bridging them
   asynchronously through the existing tool coroutines, or rewriting them, and
