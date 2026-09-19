@@ -47,6 +47,7 @@
 
 // Code under test
 #include <host/sch_host.h>
+#include <host/sch_host_control.h>
 #include <eeschema_settings.h>
 #include <kiface_base.h>
 #include <pgm_base.h>
@@ -59,7 +60,21 @@
 // The tool headers inline through their frame type, so it has to be complete here.
 #include <sch_edit_frame.h>
 
+#include <tool/common_control.h>
+#include <tool/common_tools.h>
+#include <tool/embed_tool.h>
+#include <tool/picker_tool.h>
+#include <tool/properties_tool.h>
+#include <tool/zoom_tool.h>
+#include <tools/ee_graphic_tool.h>
+#include <tools/sch_align_tool.h>
+#include <tools/sch_design_block_control.h>
 #include <tools/sch_drawing_tools.h>
+#include <tools/sch_edit_table_tool.h>
+#include <tools/sch_find_replace_tool.h>
+#include <tools/sch_group_tool.h>
+#include <tools/sch_inspection_tool.h>
+#include <tools/sch_navigate_tool.h>
 #include <tools/sch_edit_tool.h>
 #include <tools/sch_editor_control.h>
 #include <tools/sch_line_wire_bus_tool.h>
@@ -513,10 +528,9 @@ BOOST_AUTO_TEST_SUITE_END()
  * `qa/tests/common/test_host_input.cpp`. What is asserted here is the wiring —
  * that a pointer position pushed in at one end is the cursor the tools would read
  * at the other — and which of the tool roster survives a holder that is not a
- * frame. That used to be none of it; it is now the selection tool, which asks for
- * a SCHEMATIC_HOLDER rather than for a frame. Everything else still declines, and
- * the roster is pinned here so that converting another one fails this test and
- * says so.
+ * frame. That used to be none of it, then three; it is now every eeschema tool
+ * but one, and the roster is pinned here so that converting another one fails
+ * this test and says so.
  */
 BOOST_FIXTURE_TEST_SUITE( SchHostInput, SCH_HOST_SETTINGS_FIXTURE )
 
@@ -541,16 +555,22 @@ BOOST_AUTO_TEST_CASE( TheHostIsItsOwnToolHolder )
 /**
  * Exactly which of the roster runs on a holder that is not a frame.
  *
- * Three do: `SCH_SELECTION_TOOL`, `SCH_MOVE_TOOL` and `SCH_LINE_WIRE_BUS_TOOL`, each
- * because what it asks the holder for is a SCHEMATIC_HOLDER — the document, the
- * settings, the canvas notifications — rather than a window. Every other class here
- * still sets `m_frame` from the holder and returns false when the holder is not its
- * frame type, so `TOOL_MANAGER::InitTools()` unregisters and deletes it.
+ * A tool runs here when what it asks the holder for is a SCHEMATIC_HOLDER — the document,
+ * the settings, the canvas notifications — rather than a window, which it says by
+ * answering `SCH_TOOL_BASE::runsWithoutAFrame()` true. One that has not been converted
+ * still sets `m_frame` from the holder and returns false when the holder is not its frame
+ * type, so `TOOL_MANAGER::InitTools()` unregisters and deletes it.
  *
- * Keep this list exhaustive rather than illustrative. It is what tells the next
- * person converting a tool that it worked.
+ * Running is not the same as working. Several of these register and then decline every
+ * action they own, because what they do *is* a dialog — the find/replace tool has nowhere
+ * to get search terms from, and the inspection tool's ERC lives in DIALOG_ERC. They are
+ * still listed as running, because that is what this case measures, and
+ * `docs/rust-migration/06-what-is-missing.md` Stage 4b says which is which.
+ *
+ * Keep both lists exhaustive rather than illustrative. It is what tells the next person
+ * converting a tool that it worked.
  */
-BOOST_AUTO_TEST_CASE( ThreeToolsRunHereAndTheRestOfTheRosterStillDeclines )
+BOOST_AUTO_TEST_CASE( TheConvertedRosterRunsHereAndTheRestStillDeclines )
 {
     SCH_HOST host;
 
@@ -558,14 +578,39 @@ BOOST_AUTO_TEST_CASE( ThreeToolsRunHereAndTheRestOfTheRosterStillDeclines )
 
     BOOST_REQUIRE( tools != nullptr );
 
+    // eeschema's own tools, all converted.
     BOOST_CHECK( tools->GetTool<SCH_SELECTION_TOOL>() != nullptr );
     BOOST_CHECK( tools->GetTool<SCH_MOVE_TOOL>() != nullptr );
     BOOST_CHECK( tools->GetTool<SCH_LINE_WIRE_BUS_TOOL>() != nullptr );
+    BOOST_CHECK( tools->GetTool<SCH_ALIGN_TOOL>() != nullptr );
+    BOOST_CHECK( tools->GetTool<SCH_EDIT_TABLE_TOOL>() != nullptr );
+    BOOST_CHECK( tools->GetTool<SCH_POINT_EDITOR>() != nullptr );
+    BOOST_CHECK( tools->GetTool<EE_GRAPHIC_TOOL>() != nullptr );
+    BOOST_CHECK( tools->GetTool<SCH_NAVIGATE_TOOL>() != nullptr );
+    BOOST_CHECK( tools->GetTool<SCH_DRAWING_TOOLS>() != nullptr );
+    BOOST_CHECK( tools->GetTool<SCH_EDIT_TOOL>() != nullptr );
+    BOOST_CHECK( tools->GetTool<SCH_INSPECTION_TOOL>() != nullptr );
+    BOOST_CHECK( tools->GetTool<SCH_FIND_REPLACE_TOOL>() != nullptr );
+    BOOST_CHECK( tools->GetTool<SCH_EDITOR_CONTROL>() != nullptr );
 
-    BOOST_CHECK( tools->GetTool<SCH_EDIT_TOOL>() == nullptr );
-    BOOST_CHECK( tools->GetTool<SCH_DRAWING_TOOLS>() == nullptr );
-    BOOST_CHECK( tools->GetTool<SCH_EDITOR_CONTROL>() == nullptr );
-    BOOST_CHECK( tools->GetTool<SCH_POINT_EDITOR>() == nullptr );
+    // Not part of SCH_EDIT_FRAME's roster: undo, redo and save for a holder with no frame.
+    BOOST_CHECK( tools->GetTool<SCH_HOST_CONTROL>() != nullptr );
+
+    // The one eeschema tool that is not converted. It is a design-block library pane and a
+    // properties dialog end to end, and it declines in its own Init() rather than through
+    // SCH_TOOL_BASE's — see SCH_DESIGN_BLOCK_CONTROL::Init().
+    BOOST_CHECK( tools->GetTool<SCH_DESIGN_BLOCK_CONTROL>() == nullptr );
+
+    // Everything else in the roster lives in common/ and is inherited by every KiCad
+    // program, so hoisting it onto TOOLS_HOLDER is pcbnew's and gerbview's decision as much
+    // as eeschema's. Until then they read EDA_DRAW_FRAME and decline.
+    BOOST_CHECK( tools->GetTool<COMMON_TOOLS>() == nullptr );
+    BOOST_CHECK( tools->GetTool<COMMON_CONTROL>() == nullptr );
+    BOOST_CHECK( tools->GetTool<ZOOM_TOOL>() == nullptr );
+    BOOST_CHECK( tools->GetTool<PICKER_TOOL>() == nullptr );
+    BOOST_CHECK( tools->GetTool<SCH_GROUP_TOOL>() == nullptr );
+    BOOST_CHECK( tools->GetTool<PROPERTIES_TOOL>() == nullptr );
+    BOOST_CHECK( tools->GetTool<EMBED_TOOL>() == nullptr );
 
     // The holder's selection is now the selection tool's own, and it is empty
     // rather than absent.

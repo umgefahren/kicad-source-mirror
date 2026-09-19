@@ -166,6 +166,15 @@ BOOST_AUTO_TEST_CASE( ACommitEditsTheDocumentWithoutAFrame )
  * This is deliberately the whole eeschema roster, both editors', because the property
  * being asserted is "no eeschema tool believes a non-frame holder is its frame" and a
  * sampled version of that is worth much less.
+ *
+ * Note what this does *not* contradict. Most of the roster now answers
+ * `runsWithoutAFrame()` true and runs on `SCH_HOST` — see
+ * `test_sch_host.cpp`. They still decline here, and for the earlier of
+ * `SCH_TOOL_BASE::Init()`'s two reasons rather than the later one: NON_FRAME_HOLDER is a
+ * bare TOOLS_HOLDER and not a SCHEMATIC_HOLDER, so there is no editing context to ask for
+ * a screen at all, and `runsWithoutAFrame()` is never reached. A holder that offers
+ * neither a window nor a document is not something any of these tools can run on, and that
+ * is the property this case pins.
  */
 BOOST_AUTO_TEST_CASE( EveryEeschemaToolDeclinesAHolderThatIsNotAFrame )
 {
