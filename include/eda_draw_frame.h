@@ -466,7 +466,10 @@ public:
 
     void RefreshCanvas() override
     {
-        GetCanvas()->Refresh();
+        // Null between construction and createCanvas(), and again during teardown. Callers
+        // used to guard this themselves; one guard here is both fewer and harder to forget.
+        if( GetCanvas() )
+            GetCanvas()->Refresh();
     }
 
     /**

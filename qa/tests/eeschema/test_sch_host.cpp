@@ -38,6 +38,8 @@
 #include <base_units.h>
 #include <gal/recording/draw_stream.h>
 #include <sch_host/sch_host_abi.h>
+#include <sch_commit.h>
+#include <sch_label.h>
 #include <sch_line.h>
 #include <sch_screen.h>
 #include <schematic.h>
@@ -972,6 +974,202 @@ BOOST_AUTO_TEST_CASE( TheToolsCursorRequestIsRecorded )
     // fact that it is the arrow means the tool's loop is running.
     BOOST_CHECK_EQUAL( static_cast<int>( host->GetCurrentCursor() ),
                        static_cast<int>( KICURSOR::ARROW ) );
+}
+
+
+BOOST_AUTO_TEST_SUITE_END()
+
+
+/**
+ * Undo and redo of a schematic edit, on an editing context that is not a wxFrame.
+ *
+ * These are the first tests eeschema's undo has: `SaveCopyInUndoList` and
+ * `PutDataInPreviousState` were members of `SCH_EDIT_FRAME`, so exercising them meant
+ * standing up a window, and nothing in the suite did. They are now `SCH_UNDO_REDO` free
+ * functions over SCHEMATIC_HOLDER — which a frame is — so what is covered here covers the
+ * GUI's undo as well. That is the real reason this stage moved them rather than giving the
+ * host a second implementation.
+ */
+BOOST_FIXTURE_TEST_SUITE( SchHostUndo, SCH_HOST_SETTINGS_FIXTURE )
+
+
+/// The first label on the current sheet, which is the simplest thing to edit and check.
+SCH_LABEL* firstLabel( SCH_HOST& aHost )
+{
+    SCH_SCREEN* screen = aHost.GetScreen();
+
+    BOOST_REQUIRE( screen );
+
+    for( SCH_ITEM* item : screen->Items().OfType( SCH_LABEL_T ) )
+        return static_cast<SCH_LABEL*>( item );
+
+    BOOST_FAIL( "fixture has no label to edit" );
+    return nullptr;
+}
+
+
+std::unique_ptr<SCH_HOST> hostWithALabel()
+{
+    auto host = std::make_unique<SCH_HOST>();
+
+    BOOST_REQUIRE_MESSAGE( host->LoadFile( eeschemaFixture( wxT( "api_kitchen_sink.kicad_sch" ) ) ),
+                           host->GetLastError().ToStdString() );
+
+    host->SetViewportSize( 1920, 1080 );
+    host->ZoomToFit();
+
+    return host;
+}
+
+
+/**
+ * An edit is recorded, undone and redone, and the document ends where it started.
+ *
+ * Note what is *not* here: a frame. The commit goes through the same `SCH_COMMIT` every
+ * eeschema edit goes through, and the undo it records goes on the same stacks.
+ */
+BOOST_AUTO_TEST_CASE( AnEditIsRecordedUndoneAndRedone )
+{
+    std::unique_ptr<SCH_HOST> host = hostWithALabel();
+
+    SCH_LABEL* label = firstLabel( *host );
+    const wxString original = label->GetText();
+
+    BOOST_REQUIRE( !original.IsEmpty() );
+    BOOST_CHECK_EQUAL( host->GetUndoCommandCount(), 0 );
+
+    SCH_COMMIT commit( host->GetToolManager() );
+    commit.Modify( label, host->GetScreen() );
+    label->SetText( wxT( "EDITED_WITHOUT_A_FRAME" ) );
+    commit.Push( wxT( "Rename label" ) );
+
+    BOOST_CHECK_EQUAL( label->GetText(), wxString( wxT( "EDITED_WITHOUT_A_FRAME" ) ) );
+    BOOST_CHECK( host->IsModified() );
+
+    // The edit is on the stack, with the description a menu item would show.
+    BOOST_REQUIRE_EQUAL( host->GetUndoCommandCount(), 1 );
+    BOOST_CHECK_EQUAL( host->GetUndoActionDescription(), wxT( "Rename label" ) );
+    BOOST_CHECK_EQUAL( host->GetRedoCommandCount(), 0 );
+
+    BOOST_REQUIRE( host->Undo() );
+
+    BOOST_CHECK_EQUAL( label->GetText(), original );
+    BOOST_CHECK_EQUAL( host->GetUndoCommandCount(), 0 );
+    BOOST_REQUIRE_EQUAL( host->GetRedoCommandCount(), 1 );
+
+    BOOST_REQUIRE( host->Redo() );
+
+    BOOST_CHECK_EQUAL( label->GetText(), wxString( wxT( "EDITED_WITHOUT_A_FRAME" ) ) );
+    BOOST_CHECK_EQUAL( host->GetUndoCommandCount(), 1 );
+    BOOST_CHECK_EQUAL( host->GetRedoCommandCount(), 0 );
+}
+
+
+/**
+ * Undo restores the *connectivity*, not merely the geometry.
+ *
+ * This is the assertion that makes the rest worth having: a label's net name is derived
+ * state, and getting it back means the connection graph was rebuilt from the restored
+ * document rather than left describing the edited one.
+ */
+BOOST_AUTO_TEST_CASE( UndoRestoresDerivedStateAndNotJustTheItem )
+{
+    std::unique_ptr<SCH_HOST> host = hostWithALabel();
+
+    SCH_LABEL*            label = firstLabel( *host );
+    const SCH_SHEET_PATH& sheet = host->GetCurrentSheet();
+
+    auto connectionName =
+            [&]() -> wxString
+            {
+                std::optional<wxString> name = label->GetConnectionName( &sheet );
+
+                return name ? *name : wxString();
+            };
+
+    const wxString before = connectionName();
+
+    BOOST_REQUIRE( !before.IsEmpty() );
+
+    SCH_COMMIT commit( host->GetToolManager() );
+    commit.Modify( label, host->GetScreen() );
+    label->SetText( wxT( "RENAMED" ) );
+    commit.Push( wxT( "Rename label" ) );
+
+    BOOST_REQUIRE_NE( connectionName(), before );
+
+    BOOST_REQUIRE( host->Undo() );
+
+    BOOST_CHECK_EQUAL( connectionName(), before );
+}
+
+
+/**
+ * Undo with nothing to undo is a no-op that says so, rather than popping an empty stack.
+ */
+BOOST_AUTO_TEST_CASE( ThereIsNothingToUndoOnAFreshDocument )
+{
+    std::unique_ptr<SCH_HOST> host = hostWithALabel();
+
+    BOOST_CHECK( !host->Undo() );
+    BOOST_CHECK( !host->Redo() );
+    BOOST_CHECK( !host->IsModified() );
+}
+
+
+/**
+ * An undo asks the consumer to redraw, because the items it moved are on the screen the
+ * consumer is holding a recorded frame of.
+ */
+BOOST_AUTO_TEST_CASE( UndoAsksTheConsumerToRedraw )
+{
+    std::unique_ptr<SCH_HOST> host = hostWithALabel();
+
+    SCH_LABEL* label = firstLabel( *host );
+
+    SCH_COMMIT commit( host->GetToolManager() );
+    commit.Modify( label, host->GetScreen() );
+    label->SetText( wxT( "EDITED" ) );
+    commit.Push( wxT( "Rename label" ) );
+
+    host->TakeRedrawRequest();
+
+    BOOST_REQUIRE( host->Undo() );
+    BOOST_CHECK( host->TakeRedrawRequest() );
+}
+
+
+/**
+ * The depth limit trims the oldest command and deletes what it owns.
+ *
+ * `ClearUndoORRedoList` is the one piece of undo each editing context has to implement
+ * itself, because whether a picked item may be deleted depends on the document. Running it
+ * under a sanitiser is the point; asserting the count is what a test can do.
+ */
+BOOST_AUTO_TEST_CASE( TheOldestCommandIsDiscardedWhenTheStackIsFull )
+{
+    std::unique_ptr<SCH_HOST> host = hostWithALabel();
+
+    SCH_LABEL* label = firstLabel( *host );
+
+    for( int ii = 0; ii < 4; ++ii )
+    {
+        SCH_COMMIT commit( host->GetToolManager() );
+        commit.Modify( label, host->GetScreen() );
+        label->SetText( wxString::Format( wxT( "EDIT_%d" ), ii ) );
+        commit.Push( wxString::Format( wxT( "Edit %d" ), ii ) );
+    }
+
+    BOOST_CHECK_EQUAL( host->GetUndoCommandCount(), 4 );
+
+    host->ClearUndoORRedoList( SCH_HOST::UNDO_LIST, 2 );
+
+    BOOST_CHECK_EQUAL( host->GetUndoCommandCount(), 2 );
+
+    host->ClearUndoRedoList();
+
+    BOOST_CHECK_EQUAL( host->GetUndoCommandCount(), 0 );
+    BOOST_CHECK_EQUAL( host->GetRedoCommandCount(), 0 );
 }
 
 

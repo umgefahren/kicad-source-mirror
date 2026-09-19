@@ -22,8 +22,11 @@
 #include <settings/app_settings.h>
 #include <settings/color_settings.h>
 #include <settings/settings_manager.h>
+#include <advanced_config.h>
+#include <sch_item.h>
 #include <sch_painter.h>
 #include <sch_render_settings.h>
+#include <schematic_undo_redo.h>
 #include <sch_screen.h>
 #include <sch_sheet.h>
 #include <sch_view.h>
@@ -480,6 +483,146 @@ SCH_RENDER_SETTINGS* SCH_HOST::GetRenderSettings()
 bool SCH_HOST::GetShowAllPins() const
 {
     return RenderSettings().m_ShowHiddenPins;
+}
+
+
+void SCH_HOST::OnModify()
+{
+    // A frame additionally requests an autosave and retitles its window. Neither exists
+    // here; the screen's own modified flag is what IsModified() and the ABI report, and
+    // SCH_COMMIT has already set it.
+    RefreshCanvas();
+}
+
+
+void SCH_HOST::SaveCopyInUndoList( const PICKED_ITEMS_LIST& aItemsList, UNDO_REDO aTypeCommand,
+                                   bool aAppend )
+{
+    SCH_UNDO_REDO::SaveCopyInUndoList( *this, aItemsList, aTypeCommand, aAppend );
+}
+
+
+bool SCH_HOST::Undo()
+{
+    return SCH_UNDO_REDO::Undo( *this );
+}
+
+
+bool SCH_HOST::Redo()
+{
+    return SCH_UNDO_REDO::Redo( *this );
+}
+
+
+void SCH_HOST::ClearUndoORRedoList( UNDO_REDO_LIST aList, int aItemCount )
+{
+    // Identical to SCH_EDIT_FRAME's, which is not shared because the two classes reach
+    // their stacks through different inheritance paths and the body is six lines.
+    if( aItemCount == 0 )
+        return;
+
+    UNDO_REDO_CONTAINER& list = ( aList == UNDO_LIST ) ? m_undoList : m_redoList;
+
+    if( aItemCount < 0 )
+    {
+        list.ClearCommandList();
+        return;
+    }
+
+    for( int ii = 0; ii < aItemCount; ++ii )
+    {
+        if( list.m_CommandsList.empty() )
+            break;
+
+        PICKED_ITEMS_LIST* command = list.m_CommandsList.front();
+
+        list.m_CommandsList.erase( list.m_CommandsList.begin() );
+
+        command->ClearListAndDeleteItems( []( EDA_ITEM* aItem )
+                                          {
+                                              delete aItem;
+                                          } );
+        delete command;
+    }
+}
+
+
+bool SCH_HOST::RecalculateConnections( SCH_COMMIT* aCommit, SCH_CLEANUP_FLAGS aCleanupFlags,
+                                       PROGRESS_REPORTER* aProgressReporter, bool aCleanupDone )
+{
+    if( !m_schematic )
+        return true;
+
+    // The change handler is why this is not simply SCHEMATIC::RecalculateConnections with
+    // nulls: an item whose drawing changed has to be dropped from the view, or its retained
+    // group is replayed with the geometry it had before the rebuild.
+    std::function<void( SCH_ITEM* )> changeHandler =
+            [this]( SCH_ITEM* aChangedItem ) -> void
+            {
+                m_view->Update( aChangedItem, KIGFX::REPAINT );
+            };
+
+    PICKED_ITEMS_LIST* lastUndo = m_undoList.m_CommandsList.empty()
+                                          ? nullptr
+                                          : m_undoList.m_CommandsList.back();
+
+    try
+    {
+        m_schematic->RecalculateConnections( aCommit, aCleanupFlags, m_toolManager,
+                                            aProgressReporter, m_view.get(), &changeHandler,
+                                            lastUndo, aCleanupDone );
+    }
+    catch( const std::exception& error )
+    {
+        if( !ADVANCED_CFG::GetCfg().m_ConnectivityEngine )
+            throw;
+
+        // The engine clears its publication before rethrowing; an edit must not unwind the
+        // tool. A frame shows this in its info bar; here it is the session's last error,
+        // which the ABI reports.
+        m_lastError = wxString::Format( wxT( "Unable to rebuild schematic connectivity: %s" ),
+                                        wxString::FromUTF8( error.what() ) );
+        return false;
+    }
+
+    return true;
+}
+
+
+void SCH_HOST::UpdateHopOveredWires( SCH_ITEM* aItem )
+{
+    // SCH_EDIT_FRAME recomputes the arcs a wire draws where it crosses another. That is
+    // view-only presentation of an unchanged document, and it is not done here yet: a
+    // crossing simply draws as two lines. Recorded in
+    // `docs/rust-migration/06-what-is-missing.md` Stage 4b rather than left silent.
+}
+
+
+void SCH_HOST::SaveCopyForRepeatItem( const SCH_ITEM* aItem )
+{
+    if( !aItem )
+        return;
+
+    m_itemsToRepeat.clear();
+    AddCopyForRepeatItem( aItem );
+}
+
+
+void SCH_HOST::AddCopyForRepeatItem( const SCH_ITEM* aItem )
+{
+    if( !aItem )
+        return;
+
+    // A pointer into the document would dangle the moment the item is deleted — which a
+    // line concatenation does routinely — so this owns a copy. Same reasoning, and the same
+    // flag and parent clearing, as SCH_EDIT_FRAME::AddCopyForRepeatItem.
+    std::unique_ptr<SCH_ITEM> copy(
+            static_cast<SCH_ITEM*>( aItem->Duplicate( IGNORE_PARENT_GROUP ) ) );
+
+    copy->ClearFlags();
+    copy->SetParent( nullptr );
+
+    m_itemsToRepeat.emplace_back( std::move( copy ) );
 }
 
 

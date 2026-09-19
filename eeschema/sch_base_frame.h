@@ -154,6 +154,9 @@ public:
 
     bool GetOverrideLocks() const override { return EDA_DRAW_FRAME::GetOverrideLocks(); }
 
+    /// Also declared by EDA_BASE_FRAME; see ::ResolveItem for why one declaration here.
+    void OnModify() override { EDA_BASE_FRAME::OnModify(); }
+
     /**
      * Repaint now. See SCHEMATIC_HOLDER::ForceRefreshCanvas() for why this is not
      * TOOLS_HOLDER::RefreshCanvas(), which posts a paint event instead.

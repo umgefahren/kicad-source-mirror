@@ -25,11 +25,13 @@
 #include <sch_sheet_path.h>
 #include <schematic_holder.h>
 #include <tool/tools_holder.h>
+#include <undo_redo_holder.h>
 #include <wx/string.h>
 
 class ACTIONS;
 class HOST_TOOL_DISPATCHER;
 class SCHEMATIC;
+class SCH_ITEM;
 class SCH_SCREEN;
 class SCH_RENDER_SETTINGS;
 class TOOL_MANAGER;
@@ -96,16 +98,20 @@ struct SCH_HOST_SHEET_INFO
  * what it needs. ::registerTools registers all of them regardless, so a tool
  * converted upstream of here starts working with no wiring changes.
  *
+ * It is finally an UNDO_REDO_HOLDER, so an edit made here is recorded and can be
+ * undone. The stacks used to be members of `EDA_BASE_FRAME`; the schematic-specific
+ * half of undo is `SCH_UNDO_REDO`, which a frame and this host both run.
+ *
  * ## What is still deliberately absent
  *
- * No undo/redo — the containers are members of `EDA_BASE_FRAME`, and hoisting
- * them is an edit to a base class every KiCad program inherits — and no dialogs.
+ * No dialogs, so nothing that is only reachable through one — page settings being
+ * the case undo itself has to skip.
  *
  * ## Threading
  *
  * Not thread safe, and neither is anything it owns. One session per thread.
  */
-class SCH_HOST : public TOOLS_HOLDER, public SCHEMATIC_HOLDER
+class SCH_HOST : public TOOLS_HOLDER, public SCHEMATIC_HOLDER, public UNDO_REDO_HOLDER
 {
 public:
     SCH_HOST();
@@ -141,7 +147,7 @@ public:
 
     // ------------------------------------------------------------- document
 
-    SCHEMATIC*  GetSchematic() const { return m_schematic; }
+    SCHEMATIC*  GetSchematic() const override { return m_schematic; }
     SCH_SCREEN* GetScreen() const override;
 
     const SCH_SHEET_PATH& GetCurrentSheet() const { return m_currentSheet; }
@@ -314,6 +320,49 @@ public:
 
     SCH_SELECTION_TOOL* GetSelectionTool() override;
 
+    /// The schematic editing context, as opposed to a symbol one.
+    bool IsSchematicEditor() const override { return true; }
+
+    void OnModify() override;
+
+    void SaveCopyInUndoList( const PICKED_ITEMS_LIST& aItemsList, UNDO_REDO aTypeCommand,
+                             bool aAppend ) override;
+
+    /**
+     * Rebuild the connection graph, giving it the view so that a changed item's retained
+     * geometry is dropped.
+     *
+     * `SCH_EDIT_FRAME`'s version additionally tracks which net is highlighted, for a pane
+     * this host does not have. What it does *not* do differently is the rebuild itself,
+     * which is `SCHEMATIC`'s.
+     */
+    bool RecalculateConnections( SCH_COMMIT* aCommit, SCH_CLEANUP_FLAGS aCleanupFlags,
+                                 PROGRESS_REPORTER* aProgressReporter = nullptr,
+                                 bool aCleanupDone = false ) override;
+
+    void UpdateHopOveredWires( SCH_ITEM* aItem ) override;
+
+    const std::vector<std::unique_ptr<SCH_ITEM>>& GetRepeatItems() const override
+    {
+        return m_itemsToRepeat;
+    }
+
+    void SaveCopyForRepeatItem( const SCH_ITEM* aItem ) override;
+    void AddCopyForRepeatItem( const SCH_ITEM* aItem ) override;
+    void ClearRepeatItemsList() override { m_itemsToRepeat.clear(); }
+
+    /**
+     * Drop \a aItemCount of the oldest commands, deleting the items that are no longer on
+     * a screen. Same rules as `SCH_EDIT_FRAME`'s, which is why it is spelled the same way.
+     */
+    void ClearUndoORRedoList( UNDO_REDO_LIST aList, int aItemCount = -1 ) override;
+
+    /// Undo the newest command. @return false if there was nothing to undo.
+    bool Undo();
+
+    /// Redo the newest undone command. @return false if there was nothing to redo.
+    bool Redo();
+
     EESCHEMA_SETTINGS* eeconfig() const override;
 
     SCH_RENDER_SETTINGS* GetRenderSettings() override;
@@ -439,6 +488,9 @@ private:
 
     /// The shape a tool last asked the pointer to take. See SetCurrentCursor().
     KICURSOR m_cursor;
+
+    /// Clones of the items the insert key would repeat. See GetRepeatItems().
+    std::vector<std::unique_ptr<SCH_ITEM>> m_itemsToRepeat;
 };
 
 #endif // KICAD_EESCHEMA_HOST_SCH_HOST_H

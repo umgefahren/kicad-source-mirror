@@ -518,6 +518,7 @@ set( EESCHEMA_SRCS
     schematic.cpp
     schematic_text_var_adapter.cpp
     schematic_settings.cpp
+    schematic_holder.cpp
     schematic_undo_redo.cpp
     sheet.cpp
     symbol.cpp

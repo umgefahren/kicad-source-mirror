@@ -147,6 +147,8 @@ public:
 
     SCHEMATIC& Schematic() const;
 
+    bool IsSchematicEditor() const override { return true; }
+
     std::unique_ptr<GRID_HELPER> MakeGridHelper() override;
 
     /**
@@ -681,7 +683,7 @@ public:
      */
     void DeleteJunction( SCH_COMMIT* aCommit, SCH_ITEM* aItem );
 
-    void UpdateHopOveredWires( SCH_ITEM* aItem );
+    void UpdateHopOveredWires( SCH_ITEM* aItem ) override;
 
     /**
      * Change the unit of \a aSymbol, swapping with another placed unit if the user asks.
@@ -729,7 +731,7 @@ public:
      * @param aAppend set to true to add the item to the previous undo list.
      */
     void SaveCopyInUndoList( const PICKED_ITEMS_LIST& aItemsList, UNDO_REDO aTypeCommand,
-                             bool aAppend );
+                             bool aAppend ) override;
 
     /**
      * Restore an undo or redo command to put data pointed by \a aList in the previous state.
@@ -754,15 +756,15 @@ public:
     /**
      * Clone \a aItem and owns that clone in this container.
      */
-    void SaveCopyForRepeatItem( const SCH_ITEM* aItem );
-    void AddCopyForRepeatItem( const SCH_ITEM* aItem );
+    void SaveCopyForRepeatItem( const SCH_ITEM* aItem ) override;
+    void AddCopyForRepeatItem( const SCH_ITEM* aItem ) override;
 
     /**
      * Return the items which are to be repeated with the insert key.
      *
      * Such objects are owned by this container and must be cloned.
      */
-    const std::vector<std::unique_ptr<SCH_ITEM>>& GetRepeatItems() const
+    const std::vector<std::unique_ptr<SCH_ITEM>>& GetRepeatItems() const override
     {
         return m_items_to_repeat;
     }
@@ -772,7 +774,7 @@ public:
      *
      * These objects are owned by this container.
      */
-    void ClearRepeatItemsList()
+    void ClearRepeatItemsList() override
     {
         m_items_to_repeat.clear();
     }
@@ -834,7 +836,8 @@ public:
      * @return false if recalculation failed; the frame has already reported the failure.
      */
     bool RecalculateConnections( SCH_COMMIT* aCommit, SCH_CLEANUP_FLAGS aCleanupFlags,
-                                 PROGRESS_REPORTER* aProgressReporter = nullptr, bool aCleanupDone = false );
+                                 PROGRESS_REPORTER* aProgressReporter = nullptr,
+                                 bool aCleanupDone = false ) override;
 
     // Commit source cleanup before the exporter's full connectivity rebuild.
     void PrepareForNetlist();

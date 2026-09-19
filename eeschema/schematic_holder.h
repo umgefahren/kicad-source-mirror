@@ -19,9 +19,17 @@
 
 #pragma once
 
+#include <memory>
+#include <vector>
+
 class EDA_ITEM;
 class EESCHEMA_SETTINGS;
+class SCHEMATIC;
 class KIID;
+class PICKED_ITEMS_LIST;
+class PROGRESS_REPORTER;
+class SCH_COMMIT;
+class SCH_ITEM;
 class SCH_RENDER_SETTINGS;
 class SCH_SCREEN;
 class SCH_SELECTION_TOOL;
@@ -30,6 +38,8 @@ class SCH_GLOBALLABEL;
 struct SCH_SELECTION_FILTER_OPTIONS;
 
 enum class KICURSOR;
+enum class UNDO_REDO;
+enum SCH_CLEANUP_FLAGS : int;
 
 /**
  * What a schematic tool needs from whatever is editing the schematic.
@@ -101,9 +111,86 @@ public:
     virtual void UpdateItem( EDA_ITEM* aItem, bool isAddOrDelete = false,
                              bool aUpdateRtree = false ) = 0;
 
+    /**
+     * The document, or null where there is none.
+     *
+     * Null is a real answer rather than a defensive one: a symbol frame has no schematic,
+     * and `SCH_HOST` has none until something is loaded.
+     */
+    virtual SCHEMATIC* GetSchematic() const { return nullptr; }
+
     virtual SCH_SELECTION_TOOL* GetSelectionTool() { return nullptr; }
 
     virtual void IntersheetRefUpdate( SCH_GLOBALLABEL* aItem ) {}
+
+    /**
+     * True for a holder editing a *schematic*, as opposed to a symbol.
+     *
+     * `SCH_COMMIT` needs the distinction: a symbol editor's edits go through a different
+     * path (`pushLibEdit`, which saves whole symbols), and the symbol *viewer* edits
+     * nothing at all. Both are SCHEMATIC_HOLDERs by inheritance and neither is this.
+     */
+    virtual bool IsSchematicEditor() const { return false; }
+
+    // ------------------------------------------------------------------- editing
+
+    /**
+     * Must be called after a model change in order to set the "modify" flag and do other
+     * editor-specific processing.
+     *
+     * `EDA_BASE_FRAME` declares an identical virtual, so a frame has to declare one itself
+     * to say which it means; see SCH_BASE_FRAME.
+     */
+    virtual void OnModify() {}
+
+    /**
+     * Record a command on the undo stack, and clear the redo stack.
+     *
+     * The stacks themselves are #UNDO_REDO_HOLDER's, which both a frame and SCH_HOST also
+     * are; this is the schematic-specific part — making the copies a CHANGED entry needs,
+     * and carrying the repeat-item list along so that undo restores it too.
+     *
+     * @param aAppend true to add to the newest command rather than starting a new one.
+     */
+    virtual void SaveCopyInUndoList( const PICKED_ITEMS_LIST& aItemsList, UNDO_REDO aTypeCommand,
+                                     bool aAppend )
+    {}
+
+    /**
+     * Rebuild the connection graph after an edit.
+     *
+     * @param aCommit the commit the rebuild may add cleanup changes to, or null.
+     * @param aCleanupDone true when the caller has already cleaned up the affected items.
+     * @return false if the rebuild failed, which is reported to the user and recovered
+     *         from rather than thrown.
+     */
+    virtual bool RecalculateConnections( SCH_COMMIT* aCommit, SCH_CLEANUP_FLAGS aCleanupFlags,
+                                         PROGRESS_REPORTER* aProgressReporter = nullptr,
+                                         bool aCleanupDone = false )
+    {
+        return true;
+    }
+
+    /// Recompute the hop-over arcs drawn where a wire crosses another.
+    virtual void UpdateHopOveredWires( SCH_ITEM* aItem ) {}
+
+    // ------------------------------------------------------- items to repeat
+
+    /**
+     * The items the insert key repeats.
+     *
+     * Model state rather than UI state — they are cloned `SCH_ITEM`s owned by the editor —
+     * and undo carries them, so a restored command restores what the insert key would do.
+     */
+    virtual const std::vector<std::unique_ptr<SCH_ITEM>>& GetRepeatItems() const;
+
+    /// Clone \a aItem and own that clone, replacing the current list.
+    virtual void SaveCopyForRepeatItem( const SCH_ITEM* aItem ) {}
+
+    /// Clone \a aItem and own that clone, adding to the current list.
+    virtual void AddCopyForRepeatItem( const SCH_ITEM* aItem ) {}
+
+    virtual void ClearRepeatItemsList() {}
 
     // ------------------------------------------------------------------- the settings
 
