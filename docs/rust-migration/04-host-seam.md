@@ -15,7 +15,10 @@ built on, especially §5–§8), `01-plan.md` (the architecture), `03-build-note
 
 | Path | What it is |
 |---|---|
-| `eeschema/host/sch_host.h` / `.cpp` | `SCH_HOST` — a schematic editor session with no `wxFrame` |
+| `eeschema/host/sch_host.h` / `.cpp` | `SCH_HOST` — a schematic editor session with no `wxFrame`, and a `TOOLS_HOLDER` |
+| `include/view/host_view_controls.h`, `common/view/host_view_controls.cpp` | `HOST_VIEW_CONTROLS` — a `VIEW_CONTROLS` that is told where the pointer is |
+| `include/tool/host_tool_dispatcher.h`, `common/tool/host_tool_dispatcher.cpp` | `HOST_TOOL_DISPATCHER` — host input to `TOOL_EVENT`, wx-free |
+| `qa/tests/common/test_host_input.cpp` | QA coverage for both of those, with no eeschema and no GUI |
 | `include/sch_host/sch_host_abi.h` | The plain-C ABI a Rust UI drives it through |
 | `eeschema/host/sch_host_abi.cpp` | Its implementation, plus the action-registry export |
 | `eeschema/host/sch_host_runtime.cpp` | The process singletons, and `ksch_runtime_init` |
@@ -32,7 +35,7 @@ built on, especially §5–§8), `01-plan.md` (the architecture), `03-build-note
 process singletons, and a program that has its own must keep them. It is compiled
 only into `libkicad_sch_host`, the shared library a non-C++ UI links
 (`-DKICAD_BUILD_RUST_SCH_UI=ON`, off by default because it is a second full
-eeschema link). The export list beside it keeps that library's surface to the 26
+eeschema link). The export list beside it keeps that library's surface to the 30
 `ksch_*` symbols and nothing else — worth doing because the kiface objects bring
 vendored C libraries whose symbols are not hidden by the tree's
 `-fvisibility=hidden`, that flag being C++-only.
@@ -221,10 +224,13 @@ that, and they are the useful part — the two sides agreeing about every struct
 | `ksch_document_info` | 24 |
 | `ksch_sheet_info` | 32 |
 | `ksch_action` | 88 |
+| `ksch_input_event` | 56 |
+| `ksch_editor_state` | 40 |
 
 ### 3.0 The runtime, and why the ABI grew one
 
-`KSCH_ABI_VERSION` is 2. The addition is three calls — `ksch_runtime_init`,
+`KSCH_ABI_VERSION` is 3; this section describes what version 2 added, and §3.4
+what version 3 did. Version 2's addition is three calls — `ksch_runtime_init`,
 `ksch_runtime_shutdown`, `ksch_runtime_is_ready` — and they exist because
 everything else in this header is uncallable without them.
 
@@ -264,10 +270,10 @@ dereference. On any error the caller's out-parameter is left untouched.
 
 Two lifetimes, stated once in the header and honoured everywhere:
 
-* Session-scoped — the error string and the three strings in `ksch_sheet_info`.
-  Valid until the next call on that session. The UTF-8 conversions are parked on
-  the session struct rather than on a temporary, which is the only reason those
-  pointers are safe to return at all.
+* Session-scoped — the error string, the three strings in `ksch_sheet_info` and
+  the two in `ksch_editor_state`. Valid until the next call on that session. The
+  UTF-8 conversions are parked on the session struct rather than on a temporary,
+  which is the only reason those pointers are safe to return at all.
 * Process-scoped — everything in `ksch_action`, and the global error string.
 
 ### 3.3 Coordinates
@@ -280,6 +286,68 @@ on the Rust side.
 the same reason: it has to compose with a camera held over those coordinates. It
 is not `KIGFX::VIEW`'s scale — see §2.4.1, which is also where the bug that
 conflated them is recorded.
+
+**Input positions are the one exception, and deliberately so.**
+`ksch_input_event::x` / `::y` are **screen pixels from the top-left of the
+canvas**, because the session has to derive the world position itself: it does so
+through the same `KIGFX::VIEW_CONTROLS` a tool reads the cursor back from, so a
+cursor a tool has forced or placed is the one the following events carry. A caller
+handing world coordinates in would bypass that, and the tools would disagree with
+the view about where the cursor is. `TOOL_DISPATCHER` takes exactly the same route
+for exactly the same reason (`common/tool/tool_dispatcher.cpp:615`); it is not a
+concession to the ABI's shape.
+
+### 3.4 What version 3 added: input, actions and editor state
+
+Four entry points, bringing the total to 30:
+
+| | |
+|---|---|
+| `ksch_session_dispatch_input` | one `ksch_input_event` to `TOOL_MANAGER`, via `HOST_TOOL_DISPATCHER` |
+| `ksch_session_reset_input` | forget which buttons are down, for a UI that lost focus |
+| `ksch_session_run_action` | a registered action by its dotted name, as a menu does |
+| `ksch_session_editor_state` | the cursor the tools see, the selection size, the tool name, the status text |
+
+Three vocabularies are reconciled inside `toHostInput()`
+(`eeschema/host/sch_host_abi.cpp`) and nowhere else: the ABI's button *ordinals*
+become KiCad's `BUT_*` bits, the ABI's modifier bits become `MD_*` bits, and the
+key's **name** becomes a `WXK_*` code through
+`HOST_TOOL_DISPATCHER::KeyCodeFromName`.
+
+The last two are the decisions worth arguing with, and they land the same way.
+
+**Keys.** The obvious design is to send a `WXK_*` integer, and both this document
+and `06-what-is-missing.md` used to say to transcribe `wx/defs.h` into a Rust
+constant table. Don't: a transcribed table is one wrong entry per silently broken
+shortcut, and nothing in the build would ever notice. Sending the name instead means
+the numbers come out of `wx/defs.h` through a compiler, on the side of the boundary
+that already includes it. `rust/` contains no `WXK_` constant at all.
+
+**Modifiers, which is the same argument with a sharper edge.** On macOS KiCad's
+`MD_CTRL` is **Command**: `wx/defs.h` defines `wxMOD_CMD == wxMOD_CONTROL` there,
+physical Control arrives as `wxMOD_RAW_CONTROL`, and `decodeModifiers` does not look
+at it. So every `.DefaultHotkey( MD_CTRL + 'Z' )` in the tree means ⌘Z on macOS and
+nothing at all for ⌃Z. A UI that reported its modifiers already translated — "this
+is the Ctrl modifier" — would invert that, and silently, because an unmatched hotkey
+is indistinguishable from no hotkey. The ABI therefore carries the *physical* keys
+(::ksch_modifier says so) and `toHostInput()` decides what they mean.
+
+The two result flags a caller gets back matter more than they look:
+
+* `KSCH_INPUT_HANDLED` — a tool or a hotkey claimed it. Note that this is *not*
+  what `TOOL_MANAGER::RunAction( const std::string& )` reports: that overload
+  discards `doRunAction()`'s result and answers "the name resolved", and
+  `ACTION_MANAGER`'s constructor registers every `TOOL_ACTION` in the process — so
+  it would call all ~440 of them handled on a host with no tools.
+  `SCH_HOST::RunActionByName` looks the action up and uses the `TOOL_ACTION&`
+  overload, whose result is `processEvent`'s.
+* `KSCH_INPUT_REDRAW` — something called `TOOLS_HOLDER::RefreshCanvas()`, so the
+  frame the caller is holding is stale. **This is the only notice a UI gets that
+  the document or the view changed behind its back.** It is also, today, never
+  set: eeschema's tools say "the view changed" by calling
+  `m_frame->GetCanvas()->ForceRefresh()` rather than `RefreshCanvas()`. Rerouting
+  those call sites is part of the frame hoist, and it is the part that makes an
+  edit visible — see `06-what-is-missing.md` Stage 4b.
 
 ---
 
@@ -378,23 +446,28 @@ reports and checking that the SVG exists at that path.
 
 ---
 
-## 6. Not done: feeding `TOOL_MANAGER` from Rust
+## 6. Feeding `TOOL_MANAGER` from Rust
 
-This is the next milestone and it is **barely** started. Survey §6 and §7 name
-`TOOLS_HOLDER::GetToolCanvas()` as the blocker. That is right, but it is not the
-worst of it, and the ordering below reflects what the code actually says rather
-than what the survey predicted.
-
-> Since this was written, the ABI is linked and driven from Rust, and the session
-> is held open and re-recorded per view change — see `06-what-is-missing.md`,
-> Stages 1 and 2 — so "the Rust UI cannot reach the document model" is no longer
-> part of what stands in the way. Everything in this section is about the *input*
-> direction.
+> **This section was written when none of it was done, and is kept as written
+> rather than rewritten, because what it got wrong is the useful part.** The
+> current state, for a reader who wants that first:
 >
-> One item in it has moved: §6.2's unchecked downcasts, §6.5's step 1, are fixed
-> (Stage 3). That removes the undefined behaviour and, in doing so, replaces a
-> guess about step 6 with a fact — see the note on §6.2 below. No `TOOL_EVENT` is
-> sent from anywhere yet.
+> * **Done.** Input goes from a gpui window through the C ABI into
+>   `TOOL_MANAGER::ProcessEvent`. `HOST_VIEW_CONTROLS` and `HOST_TOOL_DISPATCHER`
+>   exist, `SCH_HOST` is a `TOOLS_HOLDER` that owns a `TOOL_MANAGER` and registers
+>   eeschema's whole tool roster, and the ABI carries input, action dispatch and
+>   editor state (§3.4). See `06-what-is-missing.md` Stage 4a.
+> * **Not done.** No tool receives any of it: every one declines a holder that is
+>   not its frame type. That is §6.5 step 6, and it is the frame hoist — Stage 4b.
+> * **Wrong twice over below.** §6.1 calls `GetToolCanvas()` the lesser problem and
+>   it is not a problem at all: it is still pure virtual and `SCH_HOST` implements
+>   it in one line. §6.2's count and mechanism were wrong (Stage 3) *and* its scope
+>   was: `common/`'s tools had the same hazard, crashed rather than declined, and
+>   nothing in eeschema's cast list mentioned them.
+>
+> Stages 1 and 2 also removed the premise of the original opening: "the Rust UI
+> cannot reach the document model" stopped being true before this was about input
+> at all.
 
 ### 6.1 `GetToolCanvas()` is smaller than it looks
 
@@ -444,6 +517,15 @@ one-line implementations and six call sites.
 > which `TOOL_MANAGER::InitTools()` already knows how to handle. The consequence
 > for §6.5 step 6 is that registering the eeschema tools on a non-frame holder now
 > gives you *no tools*, visibly and testably, instead of memory corruption.
+>
+> **Wrong a third time, in scope.** "In eeschema" is doing a lot of work in the
+> sentence below, and step 6 registers seven tool classes from `common/` as well:
+> `COMMON_CONTROL`, `COMMON_TOOLS`, `ZOOM_TOOL`, `PICKER_TOOL`, `GROUP_TOOL`,
+> `PROPERTIES_TOOL` and `EMBED_TOOL`. Every one had the same hazard, and because
+> none of them declines, they *crash* rather than dropping out —
+> `ZOOM_TOOL::Init()` calls a virtual through the wild pointer on its second line.
+> All seven are fixed the same way; `06-what-is-missing.md` Stage 4a has the table
+> and the reproduction.
 
 This one the survey did not flag, and it is worse:
 
@@ -509,45 +591,79 @@ program inherits, so it wants its own commit and its own review.
 | `ACTION_MENU : public wxMenu` | rewrite | Context menus. `TOOL_INTERACTIVE::SetContextMenu` is the only coupling point. |
 | Modal dialogs | ~124 files | Do not attempt. Survey §7.4: keep them for bring-up, async-bridge them through `COROUTINE::Yield` later. The coroutine machinery (`include/tool/coroutine.h`, `libcontext`) is wx-free and already supports the suspension this needs. |
 
-### 6.5 Proposed staging
+Status of that table, and where it was wrong:
 
-Each stage lands on its own and leaves the tree working.
+* `VIEW_CONTROLS`, `TOOL_DISPATCHER` and the `TOOLS_HOLDER` virtuals are **done**.
+  `SCH_HOST` overrides `GetCurrentSelection()` — it asks the selection tool, as
+  `SCH_EDIT_FRAME` does, and falls back to the empty selection while there is no
+  tool to ask — plus `RefreshCanvas()`, `DisplayToolMsg()`, `ConfigBaseName()` and
+  `GetToolCanvas()`.
+* **The key-codes row is wrong.** "Transcribe once from `wx/defs.h`" is the
+  obvious design and the wrong one: a transcribed table is one wrong entry per
+  silently broken shortcut, and no part of the build would notice. What was built
+  sends the key's *name* over the ABI and resolves it in C++. §3.4 has the
+  argument, and `grep -rn "WXK_" rust/crates/` is the check.
+* **The zoom-dependent repaint row is unchanged and still pending.** It needs a
+  selection to matter, and there is none.
+* `ACTION_MENU` and the dialogs are untouched. Worth adding to the first row:
+  `TOOL_INTERACTIVE`'s constructor only builds a `TOOL_MENU` when `Pgm().IsGUI()`,
+  and the host runs wx in console mode — so in the host `m_menu` is **null**, and a
+  tool converted for Stage 4b has to tolerate that. `SCH_SELECTION_TOOL::Init()`
+  dereferences it unguarded today.
+
+### 6.5 Proposed staging, and what each step actually cost
+
+Each stage lands on its own and leaves the tree working. Six of the seven are
+done; the order held up, and two of the seven descriptions did not.
 
 1. ~~**Make the downcasts safe.**~~ **Done** — all 16 of §6.2 are `dynamic_cast`
    with a defined no-frame path, and the tools decline a holder that is not their
    frame rather than trusting one. No behaviour change with a real frame, no Rust
    involved, four tests in `qa_eeschema`. `06-what-is-missing.md` Stage 3 has what
-   it actually took, which was not what this line predicted.
-2. **Neutralise `GetToolCanvas()`.** Change the return type to an opaque handle,
-   or give `TOOLS_HOLDER` a default implementation returning `nullptr` and drop
-   the `= 0`. ~12 implementations, six call sites, all listed in §6.1. Optional at
-   this point: step 1's test double implements it in one line returning `nullptr`,
-   which confirms §6.1's claim that a null canvas is already a supported state.
+   it actually took, which was not what this line predicted. **And it was not
+   complete**: `common/`'s seven tool classes had the same hazard and were not in
+   the list, because the list came from grepping eeschema. Step 6 tripped over them
+   immediately.
+2. ~~**Neutralise `GetToolCanvas()`.**~~ **Not done, and dropped.** It is still
+   `= 0`, and that is the right answer: `SCH_HOST::GetToolCanvas()` returns
+   `nullptr` in one line, exactly as step 1's test double does, and changing a base
+   class every KiCad program inherits so that one new class can omit one line buys
+   nothing. This step existed because the survey called it the blocker; it was not
+   one.
 3. **Hoist undo/redo** off `EDA_BASE_FRAME` into a container both it and
-   `SCH_HOST` own (§6.3).
-4. **`HOST_VIEW_CONTROLS`.** Implement the eight pure virtuals against
-   host-supplied pointer state. Testable headlessly with no Rust: assert that
-   cursor position, snapping and `ForceCursorPosition` behave.
-5. **`HOST_TOOL_DISPATCHER`.** A non-wx event source producing the ~10
-   `TOOL_EVENT` shapes of survey §6.3. Unit-test it by feeding synthetic input
-   and asserting on the events, which is far easier than testing the wx one.
-6. **Make `SCH_HOST` a `TOOLS_HOLDER`** and register the eeschema tools. At this
-   point selection and move can be driven from a C++ test with no Rust at all —
-   which is the right place to find out what else breaks. Step 1 found out one
-   thing already: unless `SCH_HOST` *is* a `SCH_BASE_FRAME`, every eeschema tool
-   declines to initialise, so this step is gated on deciding what `m_frame` means
-   for a non-frame host. `06-what-is-missing.md` Stage 4 lays out the two routes.
-7. **Extend the C ABI** with input events and action dispatch
-   (`TOOL_ACTION::MakeEvent()` → `TOOL_MANAGER::ProcessEvent()`), and only then
-   wire Rust to it.
+   `SCH_HOST` own (§6.3). **Still to do**, and deliberately deferred: nothing that
+   exists yet can edit a document, so there is nothing to undo. It belongs with the
+   first tool that mutates.
+4. ~~**`HOST_VIEW_CONTROLS`.**~~ **Done** — the eight pure virtuals against
+   host-supplied pointer state, in `common/view/host_view_controls.cpp`, testable
+   headlessly with no Rust as predicted. `WarpMouseCursor` is the only one that
+   cannot be honoured; it adopts the position, moves the view and records the
+   request, and the survey's "degrades gracefully" holds.
+5. ~~**`HOST_TOOL_DISPATCHER`.**~~ **Done** — the ten `TOOL_EVENT` shapes of survey
+   §6.3, unit-tested by feeding synthetic input and asserting on what a recording
+   tool receives. It was indeed far easier than testing the wx one. Two notes on
+   §6.4's row for it: `IsPastDragThreshold` *is* reused, and
+   `ShouldDropAutoRepeat` deliberately is not — its whole job is to notice a repeat
+   that arrived after the key was released, which is a wx key-model artefact that an
+   ordered event stream cannot produce.
+6. ~~**Make `SCH_HOST` a `TOOLS_HOLDER`** and register the eeschema tools.~~
+   **Done, and it is where the cost was.** This step is why the section above says
+   "the right place to find out what else breaks": registering the roster
+   segfaulted in the constructor, on `common/`'s tools, before a single
+   `TOOL_EVENT` existed. Seven more entry points needed step 1's treatment. And the
+   prediction that "selection and move can be driven from a C++ test at this point"
+   is false: every tool declines, so what a C++ test can assert is that none of
+   them survives. The frame hoist is `06-what-is-missing.md` Stage 4b.
+7. ~~**Extend the C ABI** with input events and action dispatch.~~ **Done** —
+   ABI version 3, four entry points, §3.4. The second half was as cheap as this
+   said: the bindings come from the header on every build, so Rust got them by
+   recompiling. The part that was *not* cheap to get right is where the key-code
+   mapping lives; §3.4 has the argument.
 
-Stages 1–3 are ordinary C++ refactors that improve the tree whether or not the
-Rust work continues, which is a good property for them to have.
-
-Step 7's second half is now cheap: Rust *is* wired to this ABI, through
-`rust/crates/kicad-sch-sys`, so extending it means adding entry points and
-regenerating — the bindings come from the header on every build. See
-`06-what-is-missing.md` for how that landed and what it cost.
+Steps 1, 2 and 3 were described as ordinary C++ refactors that improve the tree
+whether or not the Rust work continues, which was a good property for them to
+have — and step 1's extension into `common/` has it too: `PROPERTIES_TOOL`'s
+`if( editFrame )` guard could not fire before and can now, in every KiCad program.
 
 ---
 

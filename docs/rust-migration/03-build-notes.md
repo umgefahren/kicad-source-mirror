@@ -425,10 +425,10 @@ What was actually run, in that shell, with no extra `-D` flags:
 | `ninja -j14 kicommon` | clean |
 | `ninja -j14 eeschema qa_eeschema` | clean — `_eeschema.kiface` and `eeschema.app` produced |
 | `ninja -j10 qa_common` | clean |
-| `./qa/tests/eeschema/qa_eeschema` | 1703 cases, **no errors**, exit 0 (1699 before Stage 3 added four) |
-| `./qa/tests/common/qa_common` | 1477 cases, **no errors** — this includes the recording-GAL and draw-stream suites in `qa/tests/common/gal/`, which §4 records as never having been run |
-| `cd rust && cargo test --workspace` | 224 passed, 1 ignored, plus the 10 live-host checks |
-| `ninja kicad_sch_host` | the host shared library, 26 exported symbols |
+| `./qa/tests/eeschema/qa_eeschema` | 1716 cases, **no errors**, exit 0 (1699 before Stage 3 added four, 1703 before Stage 4a added thirteen) |
+| `./qa/tests/common/qa_common` | 1509 cases, **no errors** (1477 before Stage 4a added thirty-two) — this includes the recording-GAL and draw-stream suites in `qa/tests/common/gal/`, which §4 records as never having been run |
+| `cd rust && cargo test --workspace` | 248 passed, 1 ignored, plus the 14 live-host checks |
+| `ninja kicad_sch_host` | the host shared library, 30 exported symbols |
 | `ninja eeschema_gpui` | the Rust binary, linked against it |
 | `ctest -L rust` | 4/4, including `qa_rust_sch_sys` against the live host |
 | `eeschema-gpui --schematic <file>` | opens it and draws it |
@@ -446,18 +446,30 @@ Setting the flag under the lock is the fix; six consecutive runs pass. Unrelated
 this work beyond having blocked a clean suite — and it is a hang a user with an
 HTTP library could hit on closing a project, not only a test.
 
-Getting a macOS build to configure and compile needed four fixes in the tree. All of
+Getting a macOS build to configure and compile needed five fixes in the tree. All of
 them are platform bugs that were simply never exercised, not nix workarounds:
 
 | Where | What |
 |---|---|
 | `CMakeLists.txt` | `-fexperimental-library` was added for *any* clang on Apple. Only Apple's own clang ships `libc++experimental`; an upstream LLVM toolchain has `std::jthread`/`std::stop_token` in the main library and fails to link with `library not found for -lc++experimental`. Now gated on `AppleClang`. |
 | `CMakeLists.txt` | `CMAKE_CXX_SCAN_FOR_MODULES OFF`. Nothing here uses C++20 modules, and `clang-scan-deps` runs as a bare binary that does not see flags a compiler wrapper adds through the environment — it failed on `thirdparty/fmt` with `'algorithm' file not found` while the compiler itself was fine. |
+| `CMakeLists.txt` | `FMT_MODULE OFF`, because the line above does not cover it. fmt turns `FMT_USE_CMAKE_MODULES` on by itself whenever the standard is C++20, the generator is Ninja ≥ 1.11 and the compiler is new enough, and `add_module_library( ... USE_CMAKE_MODULES )` then re-enables scanning for that one target — which fails the same way. Found after the fix above, by the `fmt-module` target being the only thing in `ninja` that still could not scan. |
 | `cmake/FindOCC.cmake` | The header search knew only FHS paths. It now also applies the `opencascade` path suffix, so a prefix supplied through `CMAKE_PREFIX_PATH`/`CMAKE_INCLUDE_PATH` works — nix, Homebrew, or a local install. |
 | `cmake/Findngspice.cmake` | Looked for `libngspice.so.0` on every UNIX. macOS names it `libngspice.0.dylib`, so it now lets `find_library` apply the platform's own naming. |
 
 ### macOS-specific things to keep in mind
 
+* **`ninja` with no target does not finish, and that is not this branch's doing.**
+  `kicad/project_tree.cpp` calls `wxTreeCtrl::SetStateImages`, which is a
+  wxWidgets 3.3 API; the `#if` around it is
+  `wxCHECK_VERSION( 3, 3, 0 ) || defined( __WXMAC__ )`, with a comment saying that
+  "KiCad for macOS currently has backported SetStateImages for this control". So
+  the tree assumes KiCad's own *patched* wx on macOS, and `devenv.nix` supplies a
+  stock 3.2.11. The project manager therefore does not compile here. Build named
+  targets — `eeschema`, `qa_eeschema`, `qa_common`, `kicad_sch_host`,
+  `eeschema_gpui` — all of which are unaffected, and all of which the sections
+  above use. Fixing it means either patching wx in `devenv.nix` or widening that
+  guard, and it is nothing to do with the Rust UI.
 * **The wx port is `osx`, not `gtk`.** The GTK-only QA helpers in
   `qa/qa_utils/CMakeLists.txt` are compiled out, so any test that reaches into
   `GtkPrintSettings` or `GdkDisplay` is a Linux-only test by construction.
@@ -471,7 +483,7 @@ them are platform bugs that were simply never exercised, not nix workarounds:
   is also what lets the outline font list see the system fonts.
 * **`tools/rust-gpu-testenv/` is Linux-only** — it exists to give a container a
   software Vulkan device and a headless Wayland compositor. None of it is needed
-  here: `cargo test --workspace` passes as-is (215 tests, one `#[ignore]`d for a
+  here: `cargo test --workspace` passes as-is (248 tests, one `#[ignore]`d for a
   gpui-component leak-detector quirk), and `cargo build -p kicad-eeschema-gpui`
   links against the system Metal stack without Xcode's Metal toolchain being
   installed.

@@ -147,6 +147,7 @@ group data byte-identical, with a frame body of four commands.
 | M1 | Rust workspace; wgpu renderer; gpui-kit shell rendering a recorded draw stream from a golden file | nothing |
 | M2 | `RECORDING_GAL` + C ABI + a `sch-dump` tool that emits a draw stream from a real `.kicad_sch` | C++ build |
 | M3 | Live linkage: Rust loads the host library, renders live, forwards input into `TOOL_MANAGER` | M1, M2 |
+| — | *M3's third clause is satisfied and misleading. Input reaches the manager; the manager has no tools. See "Where this actually got to".* | |
 | M4 | Menus and toolbars generated from the action registry; select / move / wire tools driving the C++ tools | M3 |
 | M5 | Tests: C++ unit tests for `RECORDING_GAL`; Rust decoder and golden-image tests; headless UI interaction tests | M1–M4 |
 | M6 | CMake/Corrosion integration, CI, documentation | M5 |
@@ -175,15 +176,21 @@ headless compositor are set up.
 
 ## Where this actually got to
 
-The milestones above describe the intended shape. What landed is M1, M2 and the
-rendering half of M3: rendering works end to end on all 466 schematics in the
-tree, and the Rust binary loads the host library, opens a real `.kicad_sch`
-through it — `--schematic FILE.kicad_sch` — and re-records the frame from that
-live session whenever the view moves. What has not started is the *input* half of
-M3: nothing a user does reaches `TOOL_MANAGER`. Its C++-side prerequisite has
-landed, though — a `TOOL_MANAGER` pointed at something that is not a `wxFrame` is
-now defined behaviour rather than undefined. **See `06-what-is-missing.md`** for
-precisely where it stops and what the remaining stages are.
+The milestones above describe the intended shape. What landed is **M1, M2 and M3**:
+rendering works end to end on all 466 schematics in the tree; the Rust binary loads
+the host library, opens a real `.kicad_sch` through it —
+`--schematic FILE.kicad_sch` — and re-records the frame from that live session
+whenever the view moves; and every pointer move, click, drag, scroll and key press
+is forwarded into `TOOL_MANAGER::ProcessEvent` as a `TOOL_EVENT`.
+
+What has **not** landed is M4, and the reason is worth stating precisely because
+M3's wording hides it. "Forwards input into `TOOL_MANAGER`" is true and is not
+enough: the manager has no tools in it. Every eeschema tool learns its `m_frame`
+from the tool holder and declines when the holder is not a frame, so
+`InitTools()` drops all twenty-one of them. M4's "select / move / wire tools
+driving the C++ tools" therefore begins with a question M3 did not have to answer —
+what `m_frame` is for a host that is not a frame. **See `06-what-is-missing.md`**
+for precisely where it stops and what the remaining stages are.
 
 One prediction in this document is worth revisiting in the light of that. The
 plan said to call the host "per frame"; the code asks only when the answer could
@@ -203,14 +210,13 @@ on, applied one level up.
 * Removing wxBase. wxWidgets' *GUI* layer leaves the schematic editor's
   presentation path; `wxString` and friends remain as utility types throughout
   the C++ core and are a separate, later migration.
-* Feeding input into `TOOL_MANAGER`. This is the next milestone of substance
-  rather than a structural obstacle: `TOOL_MANAGER` has no wx dependency,
-  `TOOL_EVENT` is a plain value type, and only `TOOL_DISPATCHER` is bound to wx.
-  What is needed is a dispatcher that builds `TOOL_EVENT`s from gpui input — and,
-  it turns out, a decision about what `m_frame` is for a host that is not a
-  `wxFrame`, because since Stage 3 every eeschema tool declines such a holder
-  rather than running off a bogus pointer. `docs/rust-migration/04-host-seam.md`
-  §6 and `06-what-is-missing.md` Stage 4 record what it would take.
+* ~~Feeding input into `TOOL_MANAGER`.~~ **Done**, and it was as structurally easy
+  as this predicted: `TOOL_MANAGER` needed nothing, `TOOL_EVENT` is a plain value
+  type, and `HOST_TOOL_DISPATCHER` is a sibling of `TOOL_DISPATCHER` that drops most
+  of its 827 lines because the lines are wx-quirk reconciliation. What remains a
+  non-goal is the thing behind it: **giving the tools a `m_frame` they can use.**
+  `docs/rust-migration/04-host-seam.md` §6 and `06-what-is-missing.md` Stage 4b
+  record the two routes and what each costs.
 
 ## Related documents
 

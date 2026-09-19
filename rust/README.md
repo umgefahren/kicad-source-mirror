@@ -8,10 +8,13 @@ It is **opt-in and off by default**. The existing wxWidgets schematic editor is
 untouched and unaffected; with `-DKICAD_BUILD_RUST_SCH_UI=OFF` (the default)
 cargo is never invoked and the host shared library is not built.
 
-It opens real `.kicad_sch` files — `--schematic` below — holds the C++ session open
-and re-records the frame from it whenever the view moves. It is still a viewer, not
-an editor: input is collected and discarded. `docs/rust-migration/06-what-is-missing.md`
-is the honest account of the distance from here to an editor.
+It opens real `.kicad_sch` files — `--schematic` below — holds the C++ session open,
+re-records the frame from it whenever the view moves, and hands every pointer move,
+click, drag, scroll and key press to KiCad's `TOOL_MANAGER` as a `TOOL_EVENT`. It is
+still not an editor, and the reason is on the far side of that seam rather than on
+this one: **no tool receives the events**, because every eeschema tool declines a
+tool holder that is not a `wxFrame`. `docs/rust-migration/06-what-is-missing.md` is
+the honest account of the distance from here to an editor.
 
 ## What is and is not here
 
@@ -57,9 +60,9 @@ See `docs/rust-migration/` for the full design:
 |---|---|
 | `kicad-gal` | The Rust half of the draw-stream ABI: decoder, validator, on-disk format, and a builder for constructing streams in tests |
 | `kicad-sch-render` | Turns a draw stream into gpui primitives; camera, culling and the tessellation cache |
-| `kicad-sch-ui` | The application shell: window, menu bar, toolbars, docks, status bar, command palette, input |
+| `kicad-sch-ui` | The application shell: window, menu bar, toolbars, docks, status bar, command palette, input. Deliberately has **no** dependency on `kicad-sch-sys`: it produces `ShellEvent`s and posts them to an `InputSink`, and what is on the other end is the binary's business |
 | `kicad-sch-sys` | The C++ host, linked: `bindgen` over `include/sch_host/sch_host_abi.h` and a safe wrapper around a schematic session |
-| `kicad-eeschema-gpui` | The binary |
+| `kicad-eeschema-gpui` | The binary. The only crate that depends on both the shell and the host, which is why the two adapters live here: `SchematicSession` (shell asks for a frame → host records one) and `HostInputSink` (shell posts an event → host dispatches a `TOOL_EVENT`) |
 
 `kicad-sch-sys` is the only crate here that talks to C++, and it is built so that
 the others never have to care: with no host library found it compiles to an API
@@ -136,10 +139,25 @@ build/rust-target/release/eeschema-gpui --stream qa/data/draw_streams/ecc83_pp_v
 `KICAD_SCH_HOST_DIR=` empty forces the no-host build, which is how that path
 stays tested on a machine that has one.
 
-**Input still goes nowhere.** The window pans, zooms, selects tools and opens
-menus; the pan and the zoom reach the document's camera, and nothing else reaches
-the document at all — the binary installs `NullSink`. See
-`docs/rust-migration/06-what-is-missing.md`.
+**Input reaches the tool framework and stops there.** With `--schematic` the binary
+installs `HostInputSink` instead of `NullSink`, so a pointer move, a click, a drag,
+a scroll, a key press, a tool button and a menu item all cross into C++: the first
+five as `TOOL_EVENT`s through `HOST_TOOL_DISPATCHER`, the last two as
+`TOOL_ACTION`s by name. Nothing answers, because `TOOL_MANAGER` has no tools — see
+`docs/rust-migration/06-what-is-missing.md` Stage 4b. With `--stream` there is no
+session to talk to and the sink is still the null one.
+
+Two things this makes visible in the shell today: the cursor the *tools* would read
+is the grid-snapped one the host reports, and the status bar's selection count comes
+from the host rather than from the shell, so it is honest about being zero rather
+than pretending the shell has a selection of its own.
+
+Keys cross the boundary **by name** — `"escape"`, `"f11"`, `"w"` — and C++ maps them
+onto KiCad's `WXK_*` codes in one function,
+`HOST_TOOL_DISPATCHER::KeyCodeFromName`. That is on purpose: a `WXK_*` table
+transcribed into Rust would be one wrong entry per silently broken shortcut, with
+nothing in the build to notice. `grep -rn "WXK_" rust/crates/` should find nothing but
+comments saying where the mapping lives.
 
 `--frame-stats` puts the frame timing and the renderer's own per-frame numbers in
 the status bar, which is where the live path is visible: the groups drawn and

@@ -7,11 +7,13 @@ and tools exactly where they are.
 
 **If you are evaluating what this actually delivers, read
 [`06-what-is-missing.md`](06-what-is-missing.md) first.** What exists is a
-schematic *viewer*: it opens real `.kicad_sch` files through the C++ host, keeps
-the session open and redraws from it whenever the view moves — and everything a
-user does to the window is collected and discarded. It is not a schematic editor,
-and wxWidgets has not been removed from anything. That document says exactly where
-it stops and what the remaining stages are.
+schematic *viewer with a live input path*: it opens real `.kicad_sch` files through
+the C++ host, keeps the session open and redraws from it whenever the view moves,
+and hands every pointer move, click, drag, scroll and key press to KiCad's
+`TOOL_MANAGER` as a `TOOL_EVENT` — where **no tool receives it**, because every
+eeschema tool declines a holder that is not a `wxFrame`. It is not a schematic
+editor, and wxWidgets has not been removed from anything. That document says
+exactly where it stops and what the remaining stages are.
 
 For the design, start with **`01-plan.md`**.
 
@@ -23,7 +25,7 @@ For the design, start with **`01-plan.md`**.
 | `03-build-notes.md` | Configuring and building the C++ tree, with the exact dependency list and timings | Anyone building |
 | `04-host-seam.md` | The C++ host that owns a schematic session without a `wxFrame`, the C ABI and the shared library Rust links, and what feeding `TOOL_MANAGER` from Rust would still take | Anyone continuing the migration |
 | `05-porting-guide.md` | **How to do this again for pcbnew.** What is reusable unchanged, what is genuinely different about a board editor, and the traps — including the two designs we got wrong and had to redo | Read before starting the next editor |
-| `06-what-is-missing.md` | **What this is not, and what an editor still needs.** What the C++ bridge does and does not yet carry, stage by stage, with Stages 1, 2 and 3 done | Read first if you are judging scope |
+| `06-what-is-missing.md` | **What this is not, and what an editor still needs.** What the C++ bridge does and does not yet carry, stage by stage, with Stages 1, 2, 3 and the input half of 4 done | Read first if you are judging scope |
 
 Two more places hold the parts that are code rather than prose:
 
@@ -67,21 +69,27 @@ and it is the C++ one.
 
 ## Honest status
 
-This step delivers the rendering and presentation seam, not a finished editor.
-Concretely: the Rust application opens a `.kicad_sch`, draws it, and re-records it
-from the live document on every pan and zoom — and then every pointer event, key
-press and tool activation goes to a null sink. `06-what-is-missing.md` covers this
-properly, stage by stage.
+This step delivers the rendering and presentation seam and the input path over it,
+not a finished editor. Concretely: the Rust application opens a `.kicad_sch`, draws
+it, re-records it from the live document on every pan and zoom, and delivers every
+pointer event, key press and tool activation into `TOOL_MANAGER::ProcessEvent`.
 
-**Input is not yet wired into `TOOL_MANAGER`** — that is the next milestone of
-substance, and `04-host-seam.md` records what it would take. Its prerequisite was
-not the one it appeared to be: `GetToolCanvas()` is largely a red herring, while
-unchecked downcasts of the tool holder were undefined behaviour for any non-frame
-host. Those are now fixed (Stage 3), and fixing them turned up the thing the cast
-list hid — with no frame, every eeschema tool declines to initialise, so input
-work has to decide what `m_frame` is for a non-frame host before it starts. See
-`05-porting-guide.md` §4.8. What is not done is stated in each document rather
-than left for a reader to discover.
+**What is missing is on the far end of that: `TOOL_MANAGER` has no tools.**
+`SCH_HOST` registers the same twenty-one tool classes `SCH_EDIT_FRAME` does and
+`InitTools()` drops every one, because each learns its `m_frame` from the tool
+holder and declines when the holder is not a frame. So the events arrive and
+nothing is listening. Closing that is the `m_frame` decision — give the host a
+`wxFrame`, which defers the project's goal, or hoist what the tools need from the
+frame onto an interface, which is the honest version and the largest single piece
+of work left. `06-what-is-missing.md` Stage 4b has both, now costed per tool rather
+than in aggregate.
+
+Two predictions that this branch falsified rather than confirmed, because they are
+the useful part: `GetToolCanvas()` was never the blocker — it is still pure virtual
+and `SCH_HOST` implements it in one line — and "transcribe `WXK_*` into a Rust
+table" is the wrong way to reconcile the key vocabularies. The key crosses the ABI
+as a *name* and C++ resolves it, so the numbers come from `wx/defs.h` through a
+compiler. `grep -rn "WXK_" rust/crates/` finds nothing but comments saying so.
 
 What *is* verified, on this branch:
 
@@ -94,11 +102,12 @@ What *is* verified, on this branch:
   zero failures, zero crashes — with retained geometry reused across repeated
   frames rather than regrown.
 * The recording backend's 30 tests pass inside KiCad's own `qa_common`.
-* `kicad-gal` is 58 tests green, `kicad-sch-render` 89, `kicad-sch-ui` 79, and the
-  Rust shell renders those streams in a real gpui window.
+* `kicad-gal` is 58 tests green, `kicad-sch-render` 89, `kicad-sch-ui` 82,
+  `kicad-eeschema-gpui` 15, and the Rust shell renders those streams in a real gpui
+  window.
 * **The C ABI is linked and driven from Rust.** `kicad-sch-sys` opens a real
   schematic, and the frame it gets back is byte-identical to what
-  `kicad-sch-dump` writes for the same file on the same machine. Eleven checks,
+  `kicad-sch-dump` writes for the same file on the same machine. Fourteen checks,
   registered with CTest as `qa_rust_sch_sys`.
 * **The session is held open and re-recorded live.** A pan or a zoom asks the C++
   session for the frame the canvas is about to paint, and the retained geometry
@@ -113,8 +122,16 @@ What *is* verified, on this branch:
   not one — which `TOOL_MANAGER` already handles by dropping them. Four tests in
   `qa_eeschema` install such a holder; restoring the old cast in `sch_commit.cpp`
   makes one of them segfault. `06-what-is-missing.md` Stage 3 has what the cast
-  list missed.
-* The eeschema and common QA suites both pass in full — 1,703 and 1,477 cases. The
+  list missed — and Stage 4a has what *that* list missed, which is that seven tool
+  classes in `common/` had the same hazard and crashed rather than declining.
+* **Input reaches `TOOL_MANAGER`, end to end.** `HOST_VIEW_CONTROLS` and
+  `HOST_TOOL_DISPATCHER` (both in `common/`, both reusable by pcbnew) turn host
+  input into the ten `TOOL_EVENT` shapes the wx dispatcher produces, without any of
+  its wx-quirk reconciliation; ABI version 3 carries them; and the gpui binary's
+  `HostInputSink` replaces the null sink. 32 tests in `qa_common`, 13 more in
+  `qa_eeschema`, 10 in the binary, 3 more in the shell, 3 live checks against the
+  linked host.
+* The eeschema and common QA suites both pass in full — 1,716 and 1,509 cases. The
   single pre-existing
   `ConnectivityExport/AllegroUsesPublishedNetsAndPreservesDeviceFiles` failure
   recorded earlier on this branch no longer reproduces; a flaky hang in

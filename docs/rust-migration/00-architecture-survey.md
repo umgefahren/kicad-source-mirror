@@ -1397,6 +1397,13 @@ hotkey and every `.DefaultHotkey(...)` in `actions.cpp` / `sch_actions.cpp` brea
 values are in `wx/defs.h`; they are stable ABI and can be transcribed into a Rust constant
 table once.
 
+> **The constraint is right; the last sentence is the advice we did not take, and
+> the record is kept as written.** Transcribing the table is one wrong entry per
+> silently broken shortcut, and nothing in the build would ever say so. What was
+> built instead sends the key's *name* across the C ABI and resolves it in
+> `HOST_TOOL_DISPATCHER::KeyCodeFromName`, where the compiler reads the numbers out
+> of `wx/defs.h`. `rust/` contains no `WXK_` constant. See `04-host-seam.md` §3.4.
+
 ### 6.6 `VIEW_CONTROLS` — already abstract, already the right seam
 
 `class VIEW_CONTROLS` (`include/view/view_controls.h`) is an **abstract base**;
@@ -1433,6 +1440,17 @@ most uses, and `CaptureCursor`/autopan behaviour degrades gracefully.
 its *output* contract is only ~10 distinct `TOOL_EVENT` constructions (§6.3) and two pure
 static helpers are already carved out for reuse. The one genuine constraint is that the Rust
 side must speak `WXK_*` key codes so the hotkey registry keeps working.
+
+> **This verdict held.** Both pieces are built —
+> `KIGFX::HOST_VIEW_CONTROLS` and `HOST_TOOL_DISPATCHER`, in `common/` — the ten
+> event constructions were the whole of the contract, and the rewrite came out
+> roughly a fifth of `tool_dispatcher.cpp`'s length because most of that file is
+> reconciling wx's event model with what the OS did. One of the two static helpers
+> was reused (`IsPastDragThreshold`); the other (`ShouldDropAutoRepeat`) exists to
+> catch a repeat that arrived *after* the key was released, which an ordered event
+> stream cannot produce, so reusing it would have been cargo cult. See
+> `06-what-is-missing.md` Stage 4a. The key-code constraint is real; §6.5's
+> proposed remedy is not the one to use.
 
 ## 7. The host seam: what `SCH_EDIT_FRAME` must be replaced with
 
@@ -1505,6 +1523,19 @@ any host — it is the thing that lets `SCH_DRAWING_TOOLS::PlaceSymbol` block on
 
 `include/tool/tools_holder.h`. This, not `SCH_EDIT_FRAME`, is the real contract
 `TOOL_MANAGER` needs:
+
+> **This section is correct and was the easy part.** `SCH_HOST` satisfies it:
+> `GetToolCanvas()` returns `nullptr`, `GetCurrentSelection()` asks the selection
+> tool as `SCH_EDIT_FRAME` does and falls back to the empty selection while there is
+> none, and `RefreshCanvas()` / `DisplayToolMsg()` / `ConfigBaseName()` are
+> notification-only and route to the UI over the C ABI. The rows below needed no
+> changes to `tools_holder.h` at all — including the one marked **the blocker**,
+> which is still `= 0`.
+>
+> What the section does not say, and is the whole of what remains, is that
+> satisfying `TOOLS_HOLDER` gets a `TOOL_MANAGER` with no tools in it: the contract
+> `TOOL_MANAGER` needs is not the contract the *tools* need, and theirs is
+> `m_frame`. See `06-what-is-missing.md` Stage 4b.
 
 | Line | Member | Notes for a non-wx host |
 |---|---|---|

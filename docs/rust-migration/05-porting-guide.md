@@ -33,6 +33,9 @@ Budget your time accordingly. Rendering is the part that is already done.
 | Draw-stream decoder | `rust/crates/kicad-gal` | **Unchanged** |
 | Stream → gpui primitives | `rust/crates/kicad-sch-render` | Mostly unchanged; see §3.5 |
 | Application shell | `rust/crates/kicad-sch-ui` | Structure reusable, content is editor-specific |
+| `VIEW_CONTROLS` for a host that owns its pointer | `include/view/host_view_controls.h`, `common/view/host_view_controls.cpp` | **Unchanged** — in `common/` for this reason; it knows nothing about schematics |
+| Host input → `TOOL_EVENT` | `include/tool/host_tool_dispatcher.h`, `common/tool/host_tool_dispatcher.cpp` | **Unchanged**, including the key-name → `WXK_*` table |
+| Checked tool-holder casts in `common/tool/` | `COMMON_CONTROL`, `COMMON_TOOLS`, `ZOOM_TOOL`, `PICKER_TOOL`, `GROUP_TOOL`, `PROPERTIES_TOOL`, `EMBED_TOOL` | **Already done** — pcbnew registers most of the same tools, so this hazard is behind you (§4.8) |
 | Process singletons for a headless host | `eeschema/host/sch_host_runtime.cpp` | **Unchanged** — `ksch_runtime_init` stands up wx, the settings manager and the kiface settings, and a board host needs exactly the same |
 | Host shared library + export list | `eeschema/CMakeLists.txt`, `host/sch_host_abi.exports` / `.map` | Copy the pattern: one `SHARED` target over the kiface objects, exporting only the ABI |
 | The ABI, bound and wrapped in Rust | `rust/crates/kicad-sch-sys` | Copy the pattern: `bindgen` in `build.rs`, auto-detected library, and a stub build so the workspace still compiles with no C++ |
@@ -379,6 +382,26 @@ derived `Init()`s that called `SCH_TOOL_BASE::Init()` and discarded its result, 
 the base's return value meant nothing until they were changed to propagate it.
 Expect pcbnew's `PCB_TOOL_BASE` to want the same shape.
 
+**And do not stop at your editor's own directory.** This is the third time the
+same list came up short, and the shape of the mistake is worth more than the
+count. Eeschema's sixteen sites were found by grepping `eeschema/`, the write-up
+recorded that `common/`'s tools were "unchecked" and out of scope — and the very
+next step, registering the roster the frame registers, segfaulted in the host's
+constructor on `common/`'s tools before a single `TOOL_EVENT` existed. Seven more
+entry points needed the same treatment:
+
+| Site | Why it was worse than eeschema's | |
+|---|---|---|
+| `COMMON_CONTROL`, `COMMON_TOOLS` | no `Init()` at all, so nothing could decline; `Reset()` learned the frame and dereferenced it | added one |
+| `ZOOM_TOOL::Init`, `PICKER_TOOL::Init` | `getEditFrame<EDA_DRAW_FRAME>()->AddStandardSubMenus()` — a virtual call on line two | checked |
+| `GROUP_TOOL::Init` | stored a wild frame, then `wxCHECK`ed for something else | checked first |
+| `PROPERTIES_TOOL::UpdateProperties` | `if( editFrame )` on a `static_cast`, so the guard could never fire | `dynamic_cast` |
+| `EMBED_TOOL::Init` | `getModel<EDA_ITEM>()` with no null check — not a frame problem, a model one | null-checked |
+
+pcbnew registers most of the same `common/` tools, so that work is already done for
+it. The lesson is not about `common/`: **the list of what you did not check is the
+same size as the list of what you did.**
+
 **Then find out what your `m_frame` is going to be, early.** The consequence of
 the above is that a non-frame holder gets *no tools at all*, which is defined and
 testable and still not an editor. Survey §7 measured roughly 470 of ~600
@@ -393,15 +416,27 @@ Audit pcbnew for its own equivalents before starting. There are at least
 and `pcb_edit_frame.cpp` also appears in the `GetToolCanvas()` list, so the
 distribution differs.
 
-The rest is bounded: a dispatcher that builds `TOOL_EVENT`s from gpui input and
-feeds `TOOL_MANAGER::ProcessEvent` / `PostEvent` / `DispatchHotKey`. Survey §6 has
-the exact event constructions, the `BUT_*`/`MD_*` bit values, and the constraint
-that hotkeys are `WXK_*` integers, so gpui key codes must map onto the same
-numbers.
+The rest is bounded, and it is **already written and reusable**: `HOST_VIEW_CONTROLS`
+(`include/view/host_view_controls.h`) and `HOST_TOOL_DISPATCHER`
+(`include/tool/host_tool_dispatcher.h`) live in `common/` rather than in eeschema
+for exactly this reason. They know nothing about schematics. A pcbnew host needs
+neither rewritten: make `PCB_HOST` a `TOOLS_HOLDER`, give it one of each, and the
+ten `TOOL_EVENT` shapes of survey §6.3 arrive.
 
-Input is **not** wired up in the schematic port; see §7. What is done is the
-safety of the holder — `qa/tests/eeschema/test_non_frame_tools_holder.cpp` is the
-pattern to copy, including its 4-line `TOOLS_HOLDER` test double.
+`qa/tests/common/test_host_input.cpp` is the pattern to copy for testing it — a
+`RECORDING_GAL`, a `VIEW`, a four-line `TOOLS_HOLDER` double and a tool that
+records every event offered to it, so the whole contract is asserted with no GUI
+and no display. `qa/tests/eeschema/test_non_frame_tools_holder.cpp` is the pattern
+for the cast audit.
+
+**One design decision to inherit rather than re-make.** Survey §6 states the
+constraint correctly — hotkeys are `WXK_*` integers, so the UI's keys must map onto
+the same numbers — and then recommends transcribing `wx/defs.h` into a Rust table.
+Do not. A transcribed table is one wrong entry per silently broken shortcut, and
+nothing in the build will ever tell you. The key crosses the ABI as a **name**
+(`"escape"`, `"f11"`, `"w"`) and `HOST_TOOL_DISPATCHER::KeyCodeFromName` resolves
+it in C++, where a compiler reads the numbers out of the real header. That function
+is shared, so pcbnew gets it for free.
 
 ### 4.9 Toolchain and environment
 
@@ -473,8 +508,16 @@ Whether pcbnew's connectivity has the same constraint is unchecked, but
    depended on the camera.
 7. **The shell**: reuse the structure, add the layer widget, the appearance
    panel and pcbnew's toolbars.
-8. **Input** — only after the tool-holder downcasts are checked and you know what
-   `m_frame` will be (§4.8). `GetToolCanvas()` is not the gate it looks like.
+8. **Input** — only after the tool-holder downcasts are checked, in `pcbnew/` *and*
+   in whatever `common/` tools your frame registers (§4.8). `GetToolCanvas()` is
+   not the gate it looks like. The dispatcher and the view controls are shared code
+   you do not have to write; wiring them to `PCB_HOST` is an afternoon, and it will
+   deliver events to a `TOOL_MANAGER` with no tools in it until step 9.
+9. **Decide what `m_frame` is, and convert one tool.** This is the step that turns
+   an input path into an editor, and it is the largest one. Cost it before step 8
+   rather than after: §4.8's two routes, and the measurement that a single tool's
+   frame surface is around fourteen methods rather than the aggregate's hundreds of
+   call sites.
 
 Steps 1–4 are largely independent of the C++ build and can proceed in parallel
 with it.
@@ -509,12 +552,14 @@ Before claiming the renderer is right:
 
 Stated plainly so you do not assume it exists:
 
-* **Input into `TOOL_MANAGER`** (§4.8). The single biggest remaining piece. Its
-  prerequisite — making a non-frame tool holder safe rather than undefined
-  behaviour — *is* done for eeschema, and doing it revealed that what follows is
-  not only a dispatcher: with no frame, every eeschema tool now declines to
-  initialise, so a host must first decide what `m_frame` is. §4.8 has both routes
-  and the reasoning.
+* **A tool that runs on a non-frame holder** (§4.8). The single biggest remaining
+  piece, and it is no longer the dispatcher: input goes from a gpui window through
+  the C ABI into `TOOL_MANAGER::ProcessEvent` and is tested end to end. What it
+  arrives at is a manager with nothing registered in it, because every eeschema
+  tool declines a holder that is not its frame type. A host must decide what
+  `m_frame` is; §4.8 has both routes, and the measurement that helps is that a
+  *single* tool's frame surface is around fourteen methods rather than the
+  aggregate's six hundred call sites.
 * **Dialogs.** All 124 of eeschema's are still wxWidgets; pcbnew has 224.
   `00-architecture-survey.md` §7.4 discusses keeping them, bridging them
   asynchronously through the existing tool coroutines, or rewriting them, and

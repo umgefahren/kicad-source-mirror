@@ -3,56 +3,51 @@
 This document exists because the previous ones describe what was built, and a
 reader can finish them with the wrong impression of what that adds up to.
 
-**What exists today is a schematic viewer that opens real `.kicad_sch` files and
-redraws them live from the document, plus a seam an editor can be built on. It is
-not a schematic editor, and wxWidgets has not been removed from anything.** The
-wx schematic editor is untouched and is still the only way to edit a schematic.
+**What exists today is a schematic viewer that opens real `.kicad_sch` files,
+redraws them live from the document, and delivers everything the user does to
+KiCad's tool framework — where no tool is yet able to receive it. It is not a
+schematic editor, and wxWidgets has not been removed from anything.** The wx
+schematic editor is untouched and is still the only way to edit a schematic.
 
-> **Stages 1, 2 and 3 below are done.**
+> **Stages 1, 2, 3 and the input half of Stage 4 are done.**
 > `kicad-eeschema-gpui --schematic FILE.kicad_sch` loads the file through
-> eeschema's own reader and keeps the session open for the window's lifetime,
-> asking it for a frame whenever the view moves. The two arrows that used to be
-> missing or drawn-once are both live, and pointing a `TOOL_MANAGER` at something
-> that is not a `wxFrame` is no longer undefined behaviour. What is left is the one
-> that matters most: **nothing the user does reaches the document.**
+> eeschema's own reader, keeps the session open for the window's lifetime, asks it
+> for a frame whenever the view moves, and hands it every pointer move, click,
+> drag, scroll and key press as a `TOOL_EVENT`. All three arrows of the diagram
+> below are live.
 >
-> Stage 3 also changed the shape of Stage 4, and not for the better — see
-> [What this does and does not buy Stage 4](#what-this-does-and-does-not-buy-stage-4).
+> What is left is not an arrow. It is that **`TOOL_MANAGER` has no tools**: every
+> eeschema tool declines a holder that is not a `wxFrame`, deliberately and
+> testably, so the events arrive and nothing is listening. Closing that is the
+> `m_frame` decision — see [Stage 4](#stage-4--a-non-wx-tool-dispatcher-the-input-seam-is-done)
+> and [Stage 4b](#stage-4b--the-frame-hoist-not-started).
 
 ## Exactly where it stops
 
 One fact, checkable in a minute:
 
-**Input is discarded.** The shell builds a complete event vocabulary —
-`PointerDown`, `PointerMove`, `PointerUp`, `DragBegin`, `DragUpdate`, `DragEnd`,
-`Scroll`, `KeyDown`, `KeyUp`, `ToolCancelled`, with buttons and modifiers — and
-the binary hands it `NullSink`, whose entire implementation is
-`fn handle(&mut self, _event: ShellEvent) {}`. Nothing a user does reaches the
-document.
+**Nothing a user does reaches a tool, because there are no tools.**
+`SCH_HOST::registerTools()` registers the same twenty-one tool classes
+`SCH_EDIT_FRAME::setupTools()` does, and `TOOL_MANAGER::InitTools()` unregisters
+and deletes every one of them, because each sets `m_frame` from the tool holder
+and returns false when the holder is not its frame type.
+`qa/tests/eeschema/test_sch_host.cpp` asserts exactly that, so the day a tool
+learns to run without a frame, the test fails and says so.
 
-So the pipeline that works now is:
-
-```
-.kicad_sch ──► SCH_HOST ──► RECORDING_GAL ──► stream in memory
-                   ▲                                    │
-                   │                              C ABI │
-                   └─── viewport ───── gpui window ◄────┘
-                        every view change
-```
-
-and the pipeline an editor needs adds one arrow, alongside that one:
+So the pipeline now is:
 
 ```
 .kicad_sch ──► SCH_HOST ──► RECORDING_GAL ──► stream in memory
                    ▲                                    │
-            TOOL_MANAGER                          C ABI │
-                   ▲                                    │
-                   └───── input ────── gpui window ◄────┘
-                          goes to NullSink
+            TOOL_MANAGER  ◄── HOST_TOOL_DISPATCHER      │
+                   ▲              ▲               C ABI │
+                   │              │                     │
+                   └── viewport ──┴── input ── gpui window ◄────┘
+                                                 every view change
 ```
 
-That arrow is not speculative work either — both its ends exist and are tested.
-What stands between here and it is Stages 3 and 4.
+and what an editor needs is not another arrow but something on the far end of
+that one: a tool that can run when the holder is not a frame.
 
 ## What is already done and does not need redoing
 
@@ -62,15 +57,18 @@ Worth being clear about, because it changes the size of what remains:
 |---|---|
 | `RECORDING_GAL` + `DRAW_STREAM` | Complete. 30 tests in `qa_common` |
 | The draw-stream ABI | Frozen, layout-asserted on both sides, sync-tested |
-| `SCH_HOST` | Loads, renders, enumerates sheets, zooms; 16 tests |
-| The C ABI | 26 entry points, three of them the runtime; implemented, and bound from Rust |
+| `SCH_HOST` | Loads, renders, enumerates sheets, zooms, and is a `TOOLS_HOLDER`; 15 tests, plus 12 on its ABI and 2 on the action registry |
+| The C ABI | 30 entry points, three of them the runtime; implemented, and bound from Rust |
 | `kicad-gal` | Validating decoder, 58 tests |
 | `kicad-sch-render` | Stream → gpui primitives, 89 tests |
-| `kicad-sch-ui` | Shell, 79 tests, the interaction ones against real hit testing |
+| `kicad-sch-ui` | Shell, 82 tests, the interaction ones against real hit testing |
 | Action registry | 440 actions enumerable headless with icons and hotkeys |
-| `kicad-sch-sys` | The ABI linked from Rust, 11 checks against the live host |
+| `kicad-sch-sys` | The ABI linked from Rust, 14 checks against the live host |
 | Live re-render | The canvas asks the session for the frame it is about to paint |
-| A non-frame `TOOLS_HOLDER` | Defined rather than undefined: 16 checked casts, 5 tool entry points that decline, 4 tests |
+| A non-frame `TOOLS_HOLDER` | Defined rather than undefined: 16 checked casts in eeschema, 7 more entry points in `common/`, 11 tests |
+| `HOST_VIEW_CONTROLS` | A `VIEW_CONTROLS` that is told where the pointer is instead of polling the OS |
+| `HOST_TOOL_DISPATCHER` | Host input → `TOOL_EVENT`, wx-free; 32 tests in `qa_common` |
+| Input end to end | gpui → ABI → `TOOL_MANAGER`, with the key names mapped to `WXK_*` in one place |
 
 The rendering half is genuinely finished, on all 466 schematics in the tree.
 
@@ -137,7 +135,7 @@ Two things the code told us that the plan did not:
 
 ### What Stage 1 deliberately did not do
 
-* Input still goes to `NullSink`. Stage 4.
+* Input still went to `NullSink`. That was Stage 4a, below, and is done.
 * The session was dropped after the first frame, so nothing re-rendered from the
   document. That was Stage 2, below, and is done.
 * The hierarchy panel still describes the draw stream rather than the sheet tree,
@@ -367,9 +365,15 @@ does **not** buy a working tool on a non-frame holder, and the staging in
 eeschema tools" — now has a visible, testable answer: every one of them declines.
 `m_frame` is the route to the screen, the selection, the undo stack and every
 dialog, and the survey's count of roughly 600 `m_frame->` sites in
-`eeschema/tools/` is the size of making it not be. Stage 4 has to either give the
+`eeschema/tools/` is the size of making it not be. Stage 4b has to either give the
 host something that *is* a `SCH_BASE_FRAME` or reroute those sites; it cannot
 simply install a holder and expect tools.
+
+Stage 4a went on to install exactly such a holder and register exactly that roster,
+and this is what happened: all twenty-one classes are dropped by `InitTools()` and
+`GetTool<T>()` is null for each, which is defined, testable and not an editor. It
+also found that `common/`'s tools — the ones this stage recorded as unaudited —
+crash rather than decline, which is the other half of the same lesson.
 
 That is a worse answer than the one this stage was expected to produce, and it is
 the true one. It was not visible from the cast list.
@@ -419,55 +423,271 @@ one `SCH_HOST` already meets.
   are guarded by `m_isSymbolEditor` or by a context-menu id that only one editor
   produces; they are a different question from "is the holder a frame at all".
 
-## Stage 4 — A non-wx tool dispatcher
+## Stage 4 — A non-wx tool dispatcher (the input seam is done)
 
-**Effort: the real work. Everything before this is plumbing.**
+**Estimated "the real work". The dispatcher half took about a day and is done;
+the `m_frame` half is not started and is the larger one. Read
+[Stage 4b](#stage-4b--the-frame-hoist-not-started) for what remains.**
 
-`TOOL_MANAGER` has no wx references in its header and `TOOL_EVENT` is a plain
-value type, so the manager itself needs nothing. Only `TOOL_DISPATCHER` is bound
-to wx (`class TOOL_DISPATCHER : public wxEvtHandler`), and it is a translator
-from `wxEvent` to `TOOL_EVENT`. Write a sibling that translates from the shell's
-`ShellEvent` instead and feeds `TOOL_MANAGER::ProcessEvent`, `PostEvent` and
-`DispatchHotKey`.
+Everything from a gpui event to `TOOL_MANAGER::ProcessEvent` now exists and is
+tested end to end. What that took:
 
-Reusable as they stand — they are `static` and wx-free in substance:
+| | |
+|---|---|
+| `include/view/host_view_controls.h`, `common/view/host_view_controls.cpp` | `HOST_VIEW_CONTROLS`: a `VIEW_CONTROLS` that is *told* where the pointer is |
+| `include/tool/host_tool_dispatcher.h`, `common/tool/host_tool_dispatcher.cpp` | `HOST_TOOL_DISPATCHER`: host input → `TOOL_EVENT`, and the one place key names become `WXK_*` |
+| `eeschema/host/sch_host.{h,cpp}` | `SCH_HOST` is a `TOOLS_HOLDER`, owns a `TOOL_MANAGER`, `SCH_ACTIONS` and both of the above, and registers eeschema's roster |
+| `include/sch_host/sch_host_abi.h` (v3) | `ksch_session_dispatch_input`, `_reset_input`, `_run_action`, `_editor_state` |
+| `rust/crates/kicad-sch-sys` | `InputEvent`, `InputOutcome`, `EditorState` and four `Session` methods |
+| `rust/crates/kicad-eeschema-gpui/src/host_sink.rs` | `HostInputSink`, which replaces `NullSink` when a session is open |
+| `rust/crates/kicad-sch-ui/src/input.rs` | `InputSink::take_dirty` and `::selection_count`, so the host can say "re-record" and "this many are selected" |
+| 7 entry points in `common/tool/` | See ["the part that was not in the plan"](#the-part-that-was-not-in-the-plan-3) |
 
-* `TOOL_DISPATCHER::IsPastDragThreshold`
-* `TOOL_DISPATCHER::ShouldDropAutoRepeat`
+`TOOL_MANAGER` needed nothing, as predicted: no wx in its header, and `TOOL_EVENT`
+is a plain value type. `TOOL_DISPATCHER` was rewritten rather than subclassed,
+also as predicted.
 
-The constraint that will bite: **hotkeys are `WXK_*` integers**. gpui key codes
-must map onto exactly those numbers or every keyboard shortcut silently does
-nothing. Survey §6 has the event constructions and the `BUT_*` / `MD_*` bit
-values.
+### What the two dispatchers share, and what they deliberately do not
 
-The step this stage now has to start with, which Stage 3 promoted from an
-assumption to a measured fact: **decide what `m_frame` is.** Every eeschema tool
-declines a holder that is not a `SCH_BASE_FRAME`, deliberately and testably, so
-there is no version of "send a `TOOL_EVENT` and see what happens" that reaches a
-tool. Two routes, and they want costing before either is started:
+`HOST_TOOL_DISPATCHER` reproduces `TOOL_DISPATCHER`'s *output* contract exactly —
+the ten `TOOL_EVENT` shapes of survey §6.3, the `BUT_*`/`MD_*` bit values, click
+position taken from the press rather than the release, `TA_MOUSE_UP` versus
+`TA_MOUSE_CLICK`, the two-modifier wheel gate, the keyboard event carrying the
+cursor — and drops the reconciliation, because the quirks are wx's and not
+KiCad's:
 
-* **Give the host a `SCH_BASE_FRAME`.** Cheap to write and it makes every tool
-  work at once, but it means a `wxFrame` — so wxWidgets' GUI layer stays in the
-  process and the project's stated goal is deferred rather than approached.
-* **Reroute `m_frame`.** `00-architecture-survey.md` §7 measured that roughly 470
-  of the ~600 `m_frame->` sites in `eeschema/tools/` are plain model or settings
-  access with no wx involvement. Hoisting those onto an interface both
-  `SCH_BASE_FRAME` and `SCH_HOST` implement is the honest version and is a large
-  mechanical change — which is exactly why `SCH_HOST`'s header says it is not a
-  refactor of `SCH_EDIT_FRAME`.
+| `TOOL_DISPATCHER` does | and this does not, because |
+|---|---|
+| polls `wxGetMouseState()` to notice a button-up it never received | the host delivers every up, and `POINTER_LEAVE` covers one that happened off-canvas |
+| polls `wxGetKeyState()` to drop an auto-repeat that arrived after release | the host says whether a press is a repeat, and a burst cannot outlive the release |
+| remaps Ctrl+letter from ASCII 1..26, and Alt+digit from Apple raw key codes | those are wx key-event artefacts; a host reports the key and the modifier separately |
+| folds the numpad arrows onto the arrow keys, for `wxEVT_CHAR_HOOK` only | the host reports one or the other and means it |
+| flushes a pending click before Escape, because wx may deliver them out of order | host events are ordered, and the invariant that protects still holds |
+| asks `wxWindow::FindFocus()` whether a text control has focus | the shell decides what its keyboard focus means and does not send the event |
+
+Two things were kept that look droppable. `IsPastDragThreshold` is *reused*, not
+reimplemented — it is `static` and wx-free precisely so it can be. And the macOS
+`DragTimeThreshold`, which promotes a slow trackpad drag after 300 ms regardless
+of distance, is kept under the same platform guard, because it is a real
+behaviour of the wx editor on the same machine rather than a wx artefact.
+
+Three places diverge deliberately, and each is the wx one being wrong rather than
+different:
+
+* **A wheel event carries a position.** `TOOL_DISPATCHER` does not set one, and
+  because the event is `TC_MOUSE` its `HasPosition()` is true anyway — so
+  `Position()` returns the origin instead of tripping the check that exists to
+  catch exactly that. Nothing reads it today; filling it in costs a line.
+* **Losing the pointer, or the focus, *ends* a drag rather than forgetting it.**
+  Clearing the button state alone leaves the tool in its `Wait()` loop with no
+  release coming and no state left to match one against, which is a hang rather
+  than a lost event. The wx dispatcher gets there by a different road: it polls the
+  OS and synthesises the up on the next event it sees. A press that had not become
+  a drag still gets nothing — `flushPendingClicks()` emits a click there, but only
+  because the OS has confirmed the button is up, and losing the pointer says
+  nothing of the kind.
+* **A wheel turn emits motion *and* the wheel event when both are true.** wx
+  suppresses the wheel event if it made a motion event; a tool handles the two
+  independently and suppressing one of two true statements has nothing to
+  recommend it. What is *not* optional is that a wheel turn goes through the motion
+  path at all: zooming moves the world under a stationary pointer, and a tool
+  tracking a drag has to be told.
+
+`ShouldDropAutoRepeat` is the one the plan named as reusable and this does **not**
+use. Its whole job is to notice a repeat that arrived after the key was physically
+released, which is a thing wx's key model produces and an ordered event stream
+cannot. Reusing it would have been cargo cult; the host's own `is_held` flag is
+both simpler and more accurate.
+
+### Where the key-code constraint went
+
+The plan's warning was right and its remedy was not. Hotkeys **are** `WXK_*`
+integers, and a UI whose keys are named rather than numbered has to be mapped onto
+them or every shortcut silently does nothing. But the plan said to transcribe
+`wx/defs.h` into a Rust table, and a transcribed table is one wrong entry per
+silently broken shortcut, forever.
+
+So the key crosses the ABI as a **name** — `"escape"`, `"pagedown"`, `"f11"`,
+`"w"` — and `HOST_TOOL_DISPATCHER::KeyCodeFromName` resolves it in C++, where the
+numbers come out of `wx/defs.h` through the compiler. `rust/` contains no `WXK_`
+constant at all; `grep -rn "WXK_" rust/crates/` finds nothing but the two comments
+that say where the mapping lives. A name the table does not
+know is dropped rather than sent as key zero, which would run whatever is bound
+to 0.
+
+### The part that was not in the plan
+
+**`common/`'s tools crash a non-frame holder, and it is a live crash rather than a
+latent one.** Stage 3 fixed eeschema's tools and said in as many words that
+`common/`'s were unchecked and that the test registered only eeschema's own. The
+first thing this stage did was register the roster `SCH_EDIT_FRAME` registers —
+which includes seven classes from `common/` — and `SCH_HOST`'s constructor
+segfaulted, in `TOOL_MANAGER::InitTools()`, before a single `TOOL_EVENT` existed.
+
+The mechanism is `getEditFrame<T>()` again, exactly as Stage 3 found it. Seven
+entry points needed the Stage-3 treatment:
+
+| Site | What it did | What it does |
+|---|---|---|
+| `COMMON_CONTROL` | no `Init()` at all; `Reset()` stored a wild frame | `Init()` declines a non-frame holder |
+| `COMMON_TOOLS` | no `Init()`; `Reset()` called `m_frame->GetWindowSettings()` through it | `Init()` declines |
+| `ZOOM_TOOL::Init` | `getEditFrame<EDA_DRAW_FRAME>()->AddStandardSubMenus()` | checked, declines |
+| `PICKER_TOOL::Init` | same shape | checked, declines |
+| `GROUP_TOOL::Init` | stored a wild frame, then `wxCHECK`ed for the selection tool | checked, declines before the `wxCHECK` |
+| `PROPERTIES_TOOL::UpdateProperties` | `if( editFrame )` on a `static_cast`, so the guard could never fire | `dynamic_cast`, so it can — the same live bug Stage 3 found in `symbol_editor_control.cpp` |
+| `EMBED_TOOL::Init` | `getModel<EDA_ITEM>()->GetEmbeddedFiles()` with no null check | declines when there is no model, which a host has before its first load |
+
+Reverting any one of them reproduces it. Restoring `ZOOM_TOOL::Init`'s unchecked
+cast makes `SchHostInput/TheHostIsItsOwnToolHolder` fail on `getEditFrame<T>()`'s
+own `wxASSERT` — which is live in this Release QA build, so the tree does warn
+about a wrong holder, and then returns the bad pointer anyway.
+
+The lesson is Stage 3's, one layer out. Stage 3 wrote down that `common/`'s tools
+were unaudited and moved on, which was a correct statement of scope and a poor
+prediction of cost: the next stage could not take a single step without them.
+An enumeration of what was *not* checked is not a smaller problem than an
+enumeration of what was.
+
+### The second part that was not in the plan: ⌘ is Ctrl
+
+The key-code constraint is the one every document on this branch flags, and it has
+a quieter half that none of them mentions: **on macOS, KiCad's `MD_CTRL` is
+Command, not Control.**
+
+`wx/defs.h` defines `wxMOD_CMD == wxMOD_CONTROL` there, and physical Control
+arrives as `wxMOD_RAW_CONTROL`, which `TOOL_DISPATCHER::decodeModifiers` does not
+look at. So in the wx editor on macOS, ⌘Z is undo and ⌃Z is nothing — and every
+`.DefaultHotkey( MD_CTRL + 'Z' )` in the tree is written on that understanding.
+
+A shell that reports gpui's modifiers literally — `platform` (⌘) as "meta",
+`control` (⌃) as "ctrl" — and a host that maps them literally would produce the
+inverse: ⌃Z would undo and ⌘Z would do nothing at all, silently, because an
+unmatched hotkey is indistinguishable from no hotkey. The ABI therefore carries the
+*physical* keys and `toHostInput()` decides what they mean, mapping `KSCH_MOD_META`
+to `MD_CTRL` under `__APPLE__`. Which is the same conclusion as the key names, for
+the same reason: the side that already includes `wx/defs.h` is the side that should
+be doing the translating.
+
+### What this stage deliberately did not do
+
+* **`TOOLS_HOLDER::GetToolCanvas()` is still pure virtual.** §6.5 step 2 proposed
+  giving it a default `nullptr`. It is not worth it: `SCH_HOST` implements it in
+  one line, exactly as Stage 3's four-line test double does, and changing a base
+  class every KiCad program inherits so that one new class can omit one line buys
+  nothing. Survey §7.6's retraction stands — this was never the blocker.
+* **Undo/redo is not hoisted.** Nothing this stage does mutates a document, so
+  there is nothing to undo yet, and moving `UNDO_REDO_CONTAINER` off
+  `EDA_BASE_FRAME` is an edit to a base class every KiCad program inherits. It
+  belongs with the first tool that can edit. §6.3 has the shape.
+* **`VIEW_CONTROLS` does not drive pan and zoom.** The Rust camera still does, and
+  the session adopts it per frame as it has since Stage 2. `HOST_VIEW_CONTROLS`
+  answers where the cursor is, which is what the tools ask it; making it the
+  *authority* on the view is item 2 of the old list and wants a tool that cares.
+* **`WarpMouseCursor` cannot move the pointer.** gpui has no API for it. The
+  implementation does the half it can — adopt the position, move the view — and
+  records the request, so a host that can honour it may. The survey predicted this
+  degrades gracefully, and it does: a tool that warps and then reads the cursor
+  back gets what it asked for.
+
+### Tests
+
+* `qa/tests/common/test_host_input.cpp`, **32 cases** in `qa_common`: seven on
+  `HOST_VIEW_CONTROLS`, twenty-one on the dispatcher — driving synthetic input
+  through a real `TOOL_MANAGER` and asserting on the events a recording tool
+  receives — and four on the key-name table.
+* `qa/tests/eeschema/test_sch_host.cpp`, **13 new cases** in `qa_eeschema`: seven
+  on the host's tool framework, including that the roster is registered and none
+  of it survives, and six on the new ABI entry points.
+* `rust/crates/kicad-eeschema-gpui/src/host_sink.rs`, **10 unit tests** on the
+  translation, against a recorder rather than a linked host.
+* `rust/crates/kicad-sch-ui/tests/shell.rs`, **3 new tests**: a host that reports a
+  change gets a fresh frame, once; the selection count comes from the host; every
+  press gets a release even with two buttons held.
+* `rust/crates/kicad-sch-sys/tests/live_session.rs`, **3 new checks** against the
+  real host: input moves the cursor the tools read, a whole gesture crosses and
+  edits nothing, an unhandled action is reported rather than an error.
+
+`qa_common` is 1,509 cases green (1,477 before), `qa_eeschema` 1,716 (1,703
+before), the Rust workspace 248 plus 14 live checks, and `ctest -L rust` 4/4.
+
+### Four things this stage got wrong first, and how
+
+Kept because they are the shape of mistake this seam invites, not because they are
+interesting individually. Each was found by review rather than by a test, which is
+itself the finding: all four are cases where the code and its own comment agreed
+with each other and both were wrong.
+
+| What | Why the tests missed it |
+|---|---|
+| `TOOL_MANAGER::RunAction( const std::string& )` reports that the *name resolved*, not that anything ran — and `ACTION_MANAGER` registers every action in the process, so a host with no tools would have called all 440 of them "handled" | the test used an action name that does not exist, so it passed either way. `SCH_HOST` now looks the action up and uses the overload whose result is `processEvent`'s |
+| the fast-click-drag demotion also tested `pressed`, which the documented event order guarantees is false by then — so the branch was unreachable and a click-then-drag lost its drag entirely | the test fed `DOWN` then `DBLCLICK` with no release between them, an order the ABI says never happens |
+| `ksch_editor_state::tool_name` was never `""`: `TOOLS_HOLDER::CurrentToolName()` answers an empty stack with the selection tool's name | the test asserted the pointer was non-null |
+| the shell tracks one press at a time, so with two buttons held the release of the first was dropped — and a host with per-button state then believed it held for the rest of the session, turning every later move into a drag from a stale origin | nothing had ever pressed two buttons; this is the failure the dispatcher gave up wx's mouse-state poll on the promise that "the host delivers every up" |
+
+## Stage 4b — The frame hoist (not started)
+
+**Effort: the largest single piece of the project. Now measured rather than
+estimated.**
+
+This is the half of Stage 4 that makes a tool run, and it is the question Stage 3
+said to answer first. The answer is still one of two, and Stage 4's experience
+narrows the choice:
+
+* **Give the host a `SCH_BASE_FRAME`.** Every tool works at once, and wxWidgets'
+  GUI layer stays in the process — so the project's stated goal is deferred rather
+  than approached. Cheap, and it makes the rest of the migration harder rather than
+  easier.
+* **Reroute `m_frame` onto an interface** that both `SCH_BASE_FRAME` and `SCH_HOST`
+  implement. The honest version, and large.
+
+What Stage 4 adds to the costing, for the second route, is that the interface is
+*narrower per tool than the aggregate suggests*. Measured on the three tools the
+old list put first:
+
+| Tool | lines | `m_frame->` sites | distinct methods | dialog calls |
+|---|---|---|---|---|
+| `SCH_SELECTION_TOOL` | 4,402 | 62 | **14** | 0 |
+| `SCH_MOVE_TOOL` | 3,024 | 57 | 13 | 0 |
+| `SCH_LINE_WIRE_BUS_TOOL` | 1,550 | 46 | 15 | 0 |
+
+Fourteen methods, not six hundred sites, is the shape of the interface the
+selection tool needs — and roughly half of those fourteen are `GetScreen()`,
+`Schematic()`, `eeconfig()` and `GetRenderSettings()`, which every tool wants.
+Three further facts that only surface once you try:
+
+* **`m_frame->GetCanvas()->GetView()` does not need the frame at all.**
+  `TOOL_BASE::getView()` and `getViewControls()` come from `TOOL_MANAGER`. Many of
+  the 19 `GetCanvas()` sites in the selection tool collapse to those; the rest want
+  `SetCurrentCursor` and `ForceRefresh`, which are two interface methods.
+* **`RefreshCanvas()` is the notification that already exists and nothing uses.**
+  `TOOLS_HOLDER::RefreshCanvas()` is the wx-free way for a tool to say "the view
+  changed", and eeschema's tools call `m_frame->GetCanvas()->ForceRefresh()`
+  instead. The ABI already carries the result of `RefreshCanvas()` to the UI as
+  `KSCH_INPUT_REDRAW`, and the UI already re-records on it — so those call sites
+  becoming `RefreshCanvas()` is both the mechanical change *and* the thing that
+  makes an edit visible.
+* **`m_menu` is null in a non-GUI process.** `TOOL_INTERACTIVE`'s constructor only
+  builds a `TOOL_MENU` when `Pgm().IsGUI()`, and the host runs wx in console mode,
+  so a converted tool must tolerate `m_menu == nullptr` — `SCH_SELECTION_TOOL::Init`
+  dereferences it unguarded today. That is a small fix and it is invisible from the
+  cast list.
+* **The selection tool is a `wxEvtHandler` with a `wxTimer`.** Its click
+  disambiguation runs off one, and a console-mode wx app has no event loop to fire
+  it. Selection would work with disambiguation degraded, which is a real
+  consequence to accept knowingly rather than discover.
 
 Then, in rough order of how much each unlocks:
 
-1. **Selection.** `SCH_SELECTION_TOOL` — makes the canvas feel alive and proves
-   the round trip.
+1. **Selection.** `SCH_SELECTION_TOOL` — makes the canvas feel alive and proves the
+   round trip through a real KiCad tool.
 2. **Pan/zoom through `VIEW_CONTROLS`** rather than the Rust camera, so C++ and
-   Rust agree on where the view is. `VIEW_CONTROLS` is already abstract;
-   `WX_VIEW_CONTROLS` is just the wx implementation, so this is an
-   implementation, not a refactor.
-3. **Move** — `SCH_MOVE_TOOL`, the first tool that mutates.
+   Rust agree on where the view is. `VIEW_CONTROLS` is already abstract and
+   `HOST_VIEW_CONTROLS` now exists, so this is a rewiring rather than an
+   implementation.
+3. **Move** — `SCH_MOVE_TOOL`, the first tool that mutates. Needs undo/redo
+   hoisted off `EDA_BASE_FRAME` (§6.3) to be more than a one-way edit.
 4. **Wire drawing** — `SCH_LINE_WIRE_BUS_TOOL`.
-5. **Undo/redo.** Lives on `EDA_BASE_FRAME`, so it needs hoisting to the host.
-   This is the genuine debt the survey identified.
+5. **Saving.** Not yet in the ABI at all: there is no `ksch_session_save`.
 
 **Done when:** a user can select, move, draw a wire, undo it, and save a file
 that KiCad reopens unchanged.
@@ -491,39 +711,47 @@ genuinely means Stage 5 completed, and that is a long way past where this is.
 ## Honest sizing
 
 Stages 1–3 were estimated at roughly two to three days and came in there: about a
-day each for 1 and 2, half a day for 3. All three are done. Between them they turn
-a viewer of a recorded frame into a window onto a document that redraws itself, on
-a tool framework that no longer corrupts memory when its holder is not a `wxFrame`.
+day each for 1 and 2, half a day for 3. Stage 4 was estimated as "the real work",
+and that turned out to be two separable halves of very different size: the
+dispatcher and the ABI came in at about a day, and the frame hoist has not been
+started. All of 1, 2, 3 and 4a are done. Between them they turn a viewer of a
+recorded frame into a window onto a document that redraws itself and delivers input
+to a tool framework that no longer corrupts memory when its holder is not a
+`wxFrame`.
 
-All three spent most of their time on something that was not in the plan, and it
-was the same kind of thing every time: a claim that two layers made differently
-and nothing had yet forced them to reconcile.
+Every one of them spent most of its time on something that was not in the plan,
+and it was the same kind of thing every time: a claim that two layers made
+differently and nothing had yet forced them to reconcile.
 
 | Stage | The plan said | The code said |
 |---|---|---|
 | 1 | a recorded stream is canonical | group ordering is not, across standard libraries |
 | 2 | `ksch_viewport::scale` is pixels per internal unit | `SetViewport` fed it to `VIEW::SetScale`, which wants the GAL zoom factor — 2,800× out |
 | 3 | eight (later fourteen) unchecked casts are the hazard | sixteen, and the mechanism is `getEditFrame<T>()`, which the lists never mentioned |
+| 4a | eeschema's tools were the ones that had to be made safe | `common/`'s crash too, in the host's constructor, before an event exists — and Stage 3 had written down that they were unaudited |
+| 4a | transcribe `WXK_*` into a Rust table | don't: send the key's *name* and map it in C++, where a compiler reads the numbers |
 
-None was hard once seen and none was visible until something depended on it. Stage
-3's version is the most useful one to carry into Stage 4, because it is about
-*enumerations* rather than about numbers: a list of call sites, arrived at by
-grepping for a cast, looked like a specification and was not one. The thing that
-made it safe was found by asking where the value comes from, not by fixing the
-places it is used.
+None was hard once seen and none was visible until something depended on it.
+Stages 3 and 4a are two halves of one lesson, and it is the one to carry forward:
+**a list of what you did not check is not smaller than the list of what you did.**
+Stage 3 enumerated call sites by grepping for a cast, and the list was neither
+complete nor sufficient; it also recorded, correctly and in writing, that
+`common/`'s tools were out of scope — and the very next stage could not construct a
+host without them.
 
-Stage 4 is where a schematic editor actually lives, and Stage 3 sharpened the first
-question it has to answer: what `m_frame` is for a host that is not a frame. That
-is a decision about how much of `SCH_EDIT_FRAME` gets hoisted, and it is a larger
-question than "write a dispatcher". Selection alone is still a meaningful
-milestone; a tool set someone would choose over the wx editor is substantially
-more.
+Stage 4b is where a schematic editor actually lives. What 4a contributes to it is a
+smaller estimate than the aggregate: the interface a *single* tool needs from its
+frame is around fourteen methods rather than six hundred call sites, and several of
+the sites that look like they need a frame want `TOOL_BASE::getView()` instead.
+Selection alone is still a meaningful milestone; a tool set someone would choose
+over the wx editor is substantially more.
 
 Stage 5 is a separate project.
 
-**The honest summary of this branch is that it finishes the rendering third of
-the problem and leaves the editing two thirds.** That is a real result — the
-rendering third was the part with the most unknowns, it is settled and tested on
-every schematic in the tree, and it now runs end to end in one process and redraws
-from the live document rather than from a copy — but it is a third. Nothing a user
-does to the window reaches the schematic.
+**The honest summary of this branch is that it finishes the rendering third of the
+problem, wires the input path the editing two thirds will run over, and leaves the
+editing itself.** That is a real result — the rendering third was the part with the
+most unknowns, it is settled and tested on every schematic in the tree, and input
+now travels from a gpui window into `TOOL_MANAGER` with both key vocabularies
+reconciled in one checked place — but a `TOOL_MANAGER` with no tools in it does not
+edit a schematic. Nothing a user does to the window reaches the document.
