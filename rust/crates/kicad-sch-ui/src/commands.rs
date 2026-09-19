@@ -400,8 +400,13 @@ static VIEW_ITEMS: &[MenuEntry] = &[
 static PLACE_GRAPHICS: &[MenuEntry] = &[
     tool(Tool::DrawRectangle),
     tool(Tool::DrawCircle),
+    tool(Tool::DrawEllipse),
     tool(Tool::DrawArc),
+    tool(Tool::DrawEllipseArc),
+    tool(Tool::DrawBezier),
+    tool(Tool::DrawPolygon),
     tool(Tool::DrawLine),
+    SEP,
     tool(Tool::PlaceImage),
 ];
 
@@ -416,22 +421,22 @@ static PLACE_ITEMS: &[MenuEntry] = &[
     tool(Tool::PlaceNoConnect),
     SEP,
     tool(Tool::PlaceLabel),
+    tool(Tool::PlaceClassLabel),
     tool(Tool::PlaceGlobalLabel),
     tool(Tool::PlaceHierLabel),
     SEP,
+    tool(Tool::DrawRuleArea),
     tool(Tool::DrawSheet),
+    tool(Tool::PlaceSheetPin),
     kicad(
-        "Place Sheet Pin",
-        "eeschema.InteractiveDrawing.placeSheetPin",
+        "Sync All Sheet Pins...",
+        "eeschema.InteractiveDrawing.syncAllSheetsPins",
         None,
     ),
     SEP,
     tool(Tool::PlaceText),
-    kicad(
-        "Draw Text Box",
-        "eeschema.InteractiveDrawing.drawTextBox",
-        None,
-    ),
+    tool(Tool::DrawTextBox),
+    tool(Tool::DrawTable),
     MenuEntry::Submenu {
         label: "Graphics",
         items: PLACE_GRAPHICS,
@@ -456,6 +461,14 @@ static INSPECT_ITEMS: &[MenuEntry] = &[
         None,
     ),
     tool(Tool::HighlightNet),
+    // The one-shot sibling of the tool above, and the action backtick is really
+    // bound to. Named apart from the tool so two rows reading "Highlight Net"
+    // do not sit next to each other.
+    kicad(
+        "Highlight Net Under Cursor",
+        "eeschema.EditorControl.highlightNet",
+        Some("`"),
+    ),
     kicad(
         "Clear Net Highlighting",
         "eeschema.EditorControl.clearHighlight",

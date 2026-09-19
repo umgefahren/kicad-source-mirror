@@ -19,6 +19,7 @@ use gpui_kit::component::dock::{
     DockArea, DockLayout, DockPlacement, DockSkin, Panel, PanelEvent, panel_handle,
 };
 use gpui_kit::component::menu::{AppMenuBar, ContextMenuExt, PopupMenu};
+use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::status_bar::StatusBar;
 use gpui_kit::component::theme::{Theme, ThemeMode};
 use gpui_kit::component::{ActiveTheme, Icon, Selectable, Sizable, StyledExt};
@@ -883,40 +884,68 @@ impl SchematicShell {
             .v_flex()
             .w(px(46.))
             .flex_shrink_0()
-            .items_center()
-            .gap_0p5()
-            .py_2()
+            // The workspace row centres its items, so without a definite
+            // height the palette takes its content's height — 30 tools is
+            // taller than the window — and half of it ends up off-screen
+            // rather than scrolling. `h_full` pins it to the row instead.
+            .h_full()
+            .min_h_0()
+            .overflow_hidden()
             .bg(theme.sidebar)
             .border_r_1()
             .border_color(theme.sidebar_border)
-            .children(TOOLS.iter().map(|spec| {
-                let action: Box<dyn Action> = Box::new(RunAction::new(spec.id.as_str()));
-                let tooltip = match spec.shortcut {
-                    Some(key) => format!("{} ({})", spec.label, pretty_key(key)),
-                    None => spec.label.to_string(),
-                };
+            // Thirty tools are taller than the window, so the column scrolls
+            // inside its fixed-width frame instead of clipping the last few.
+            // The scroll region is an inner element on purpose: `Scrollable`
+            // re-ids what it wraps, and re-iding the outer div would take
+            // `tool-palette` out of reach of the tests that look it up by name.
+            // `overflow_y_scrollbar` keeps its own scroll handle, and puts the
+            // `overflow: hidden` a flex item needs on its own wrapper, so
+            // neither has to be spelled out here. `flex_1` is set before it
+            // because the wrapper snapshots the flex properties at that call.
+            .child(
                 div()
                     .v_flex()
+                    .flex_1()
+                    .overflow_y_scrollbar()
                     .items_center()
-                    .when(spec.group_break, |this| {
-                        this.child(div().my_1().w(px(22.)).h(px(1.)).bg(theme.sidebar_border))
-                    })
-                    .child(
-                        Button::new(spec.button_id)
-                            .ghost()
-                            .with_size(px(32.))
-                            .icon(spec.icon)
-                            // `selected` styles it; `toggled` is what reaches
-                            // the accessibility tree as aria-pressed, which is
-                            // both correct for a tool button and the only way
-                            // a test can see which tool is active from outside.
-                            .selected(active == spec.tool)
-                            .toggled(active == spec.tool)
-                            .accessibility_label(spec.label)
-                            .tooltip(tooltip)
-                            .on_click(dispatch(action)),
-                    )
-            }))
+                    .gap_0p5()
+                    .py_2()
+                    .children(TOOLS.iter().map(|spec| {
+                        let action: Box<dyn Action> = Box::new(RunAction::new(spec.id.as_str()));
+                        let tooltip = match spec.shortcut {
+                            Some(key) => format!("{} ({})", spec.label, pretty_key(key)),
+                            None => spec.label.to_string(),
+                        };
+                        div()
+                            .v_flex()
+                            // Without this the buttons compress to fit rather
+                            // than overflowing, and nothing ever scrolls.
+                            .flex_shrink_0()
+                            .items_center()
+                            .when(spec.group_break, |this| {
+                                this.child(
+                                    div().my_1().w(px(22.)).h(px(1.)).bg(theme.sidebar_border),
+                                )
+                            })
+                            .child(
+                                Button::new(spec.button_id)
+                                    .ghost()
+                                    .with_size(px(32.))
+                                    .icon(spec.icon)
+                                    // `selected` styles it; `toggled` is what
+                                    // reaches the accessibility tree as
+                                    // aria-pressed, which is both correct for a
+                                    // tool button and the only way a test can
+                                    // see which tool is active from outside.
+                                    .selected(active == spec.tool)
+                                    .toggled(active == spec.tool)
+                                    .accessibility_label(spec.label)
+                                    .tooltip(tooltip)
+                                    .on_click(dispatch(action)),
+                            )
+                    })),
+            )
     }
 
     fn render_status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {

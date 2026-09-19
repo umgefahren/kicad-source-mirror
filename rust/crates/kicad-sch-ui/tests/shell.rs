@@ -123,6 +123,43 @@ fn frame(cx: &mut TestAppContext, harness: &Harness) {
         .expect("window is live");
 }
 
+/// Bring a tool-palette button into view.
+///
+/// The palette holds more tools than fit beside the canvas, so it scrolls.
+/// gpui's hit testing refuses a click on a clipped element — correctly, since
+/// the user could not click it either — so a test that walks the whole palette
+/// has to scroll the way a user would.
+fn reveal(cx: &mut TestAppContext, harness: &Harness, id: &'static str) {
+    for _ in 0..40 {
+        // Fully inside, not merely intersecting: a click lands on the centre of
+        // the element's bounds, and for a button hanging half out of the clip
+        // that centre is somewhere else entirely.
+        let shown = cx
+            .update_window(harness.window, move |_, window, cx| {
+                window.render_frame(cx);
+                let button = window.find(id).bounds();
+                let palette = window.find("tool-palette").bounds();
+                button.origin.y >= palette.origin.y
+                    && button.origin.y + button.size.height
+                        <= palette.origin.y + palette.size.height
+            })
+            .expect("window is live");
+        if shown {
+            return;
+        }
+        cx.update_window(harness.window, |_, window, cx| {
+            window.scroll(
+                "tool-palette",
+                ScrollDelta::Lines(Point { x: 0., y: -3. }),
+                cx,
+            );
+        })
+        .expect("window is live");
+        cx.run_until_parked();
+    }
+    panic!("{id} never scrolled into view");
+}
+
 /// Click an element, then let the deferred action dispatch run and redraw.
 fn click(cx: &mut TestAppContext, harness: &Harness, id: impl Into<ElementId>) {
     let id = id.into();
@@ -199,6 +236,7 @@ fn every_tool_button_activates_its_tool(cx: &mut TestAppContext) {
             continue;
         }
         harness.sink.clear();
+        reveal(cx, &harness, spec.button_id);
         click(cx, &harness, spec.button_id);
         assert_eq!(
             active_tool(cx, &harness),

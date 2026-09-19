@@ -20,9 +20,10 @@ use crate::input::ToolId;
 
 /// A drawing tool the user can have active.
 ///
-/// Ordered as the left palette presents them: pointer tools, then the things
-/// that carry a net, then the things that carry a name, then sheets, then
-/// graphics, then the utilities.
+/// Ordered as the left palette presents them, and in the same order as
+/// eeschema's own right toolbar (`eeschema/toolbars_sch_editor.cpp`): pointer
+/// tools, then the things that carry a net, then the things that carry a name,
+/// then areas and sheets, then text and graphics, then the utilities.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Tool {
     /// Pick and edit existing items. The tool a session starts in.
@@ -46,20 +47,38 @@ pub enum Tool {
     PlaceNoConnect,
     /// Place a local net label.
     PlaceLabel,
+    /// Place a directive (netclass) label.
+    PlaceClassLabel,
     /// Place a global label.
     PlaceGlobalLabel,
     /// Place a hierarchical label.
     PlaceHierLabel,
+    /// Draw a rule area.
+    DrawRuleArea,
     /// Draw a hierarchical sheet.
     DrawSheet,
+    /// Place sheet pins from a sub-sheet's hierarchical labels.
+    PlaceSheetPin,
     /// Place free text.
     PlaceText,
+    /// Draw a bordered text box.
+    DrawTextBox,
+    /// Draw a table of text cells.
+    DrawTable,
     /// Draw a graphic rectangle.
     DrawRectangle,
     /// Draw a graphic circle.
     DrawCircle,
+    /// Draw a graphic ellipse.
+    DrawEllipse,
     /// Draw a graphic arc.
     DrawArc,
+    /// Draw a graphic elliptical arc.
+    DrawEllipseArc,
+    /// Draw a graphic Bezier curve.
+    DrawBezier,
+    /// Draw a closed graphic polygon.
+    DrawPolygon,
     /// Draw graphic lines.
     DrawLine,
     /// Place a bitmap image.
@@ -139,7 +158,10 @@ pub static TOOLS: &[ToolSpec] = &[
         label: "Highlight Net",
         description: "Highlight every wire on the net under the cursor",
         icon: IconName::Highlighter,
-        shortcut: Some("`"),
+        // Backtick belongs to `highlightNet`, which highlights the net under
+        // the cursor once; this is the modal tool, and KiCad binds it nothing.
+        // The Inspect menu carries the bound one.
+        shortcut: None,
         cursor: CursorStyle::PointingHand,
         group_break: false,
     },
@@ -194,7 +216,7 @@ pub static TOOLS: &[ToolSpec] = &[
         label: "Place Bus Entry",
         description: "Place a wire-to-bus entry",
         icon: IconName::CornerDownRight,
-        shortcut: None,
+        shortcut: Some("z"),
         cursor: CursorStyle::Crosshair,
         group_break: false,
     },
@@ -232,6 +254,17 @@ pub static TOOLS: &[ToolSpec] = &[
         group_break: true,
     },
     ToolSpec {
+        tool: Tool::PlaceClassLabel,
+        id: ToolId("eeschema.InteractiveDrawing.placeClassLabel"),
+        button_id: "tool-class-label",
+        label: "Place Directive Label",
+        description: "Attach a netclass directive to a net",
+        icon: IconName::Tags,
+        shortcut: None,
+        cursor: CursorStyle::Crosshair,
+        group_break: false,
+    },
+    ToolSpec {
         tool: Tool::PlaceGlobalLabel,
         id: ToolId("eeschema.InteractiveDrawing.placeGlobalLabel"),
         button_id: "tool-global-label",
@@ -254,6 +287,17 @@ pub static TOOLS: &[ToolSpec] = &[
         group_break: false,
     },
     ToolSpec {
+        tool: Tool::DrawRuleArea,
+        id: ToolId("eeschema.InteractiveDrawing.drawRuleArea"),
+        button_id: "tool-rule-area",
+        label: "Draw Rule Area",
+        description: "Draw an area that carries its own design rules",
+        icon: IconName::SquareSlash,
+        shortcut: None,
+        cursor: CursorStyle::Crosshair,
+        group_break: true,
+    },
+    ToolSpec {
         tool: Tool::DrawSheet,
         id: ToolId("eeschema.InteractiveDrawing.drawSheet"),
         button_id: "tool-sheet",
@@ -262,7 +306,18 @@ pub static TOOLS: &[ToolSpec] = &[
         icon: IconName::SquareDashed,
         shortcut: Some("s"),
         cursor: CursorStyle::Crosshair,
-        group_break: true,
+        group_break: false,
+    },
+    ToolSpec {
+        tool: Tool::PlaceSheetPin,
+        id: ToolId("eeschema.InteractiveDrawing.placeSheetPin"),
+        button_id: "tool-sheet-pin",
+        label: "Place Sheet Pin",
+        description: "Import a sub-sheet's hierarchical labels as sheet pins",
+        icon: IconName::Import,
+        shortcut: None,
+        cursor: CursorStyle::Crosshair,
+        group_break: false,
     },
     ToolSpec {
         tool: Tool::PlaceText,
@@ -273,6 +328,28 @@ pub static TOOLS: &[ToolSpec] = &[
         icon: IconName::Type,
         shortcut: Some("t"),
         cursor: CursorStyle::IBeam,
+        group_break: true,
+    },
+    ToolSpec {
+        tool: Tool::DrawTextBox,
+        id: ToolId("eeschema.InteractiveDrawing.drawTextBox"),
+        button_id: "tool-text-box",
+        label: "Draw Text Box",
+        description: "Add text inside a box with its own border and fill",
+        icon: IconName::SquareText,
+        shortcut: None,
+        cursor: CursorStyle::IBeam,
+        group_break: false,
+    },
+    ToolSpec {
+        tool: Tool::DrawTable,
+        id: ToolId("eeschema.InteractiveDrawing.drawTable"),
+        button_id: "tool-table",
+        label: "Draw Table",
+        description: "Draw a table of text cells",
+        icon: IconName::Table,
+        shortcut: None,
+        cursor: CursorStyle::Crosshair,
         group_break: false,
     },
     ToolSpec {
@@ -298,6 +375,17 @@ pub static TOOLS: &[ToolSpec] = &[
         group_break: false,
     },
     ToolSpec {
+        tool: Tool::DrawEllipse,
+        id: ToolId("eeschema.InteractiveDrawing.drawEllipse"),
+        button_id: "tool-ellipse",
+        label: "Draw Ellipse",
+        description: "Draw a graphic ellipse",
+        icon: IconName::Ellipse,
+        shortcut: None,
+        cursor: CursorStyle::Crosshair,
+        group_break: false,
+    },
+    ToolSpec {
         tool: Tool::DrawArc,
         id: ToolId("eeschema.InteractiveDrawing.drawArc"),
         button_id: "tool-arc",
@@ -309,13 +397,46 @@ pub static TOOLS: &[ToolSpec] = &[
         group_break: false,
     },
     ToolSpec {
+        tool: Tool::DrawEllipseArc,
+        id: ToolId("eeschema.InteractiveDrawing.drawEllipseArc"),
+        button_id: "tool-ellipse-arc",
+        label: "Draw Elliptical Arc",
+        description: "Draw a graphic arc of an ellipse",
+        icon: IconName::Tangent,
+        shortcut: None,
+        cursor: CursorStyle::Crosshair,
+        group_break: false,
+    },
+    ToolSpec {
+        tool: Tool::DrawBezier,
+        id: ToolId("eeschema.InteractiveDrawing.drawBezier"),
+        button_id: "tool-bezier",
+        label: "Draw Bezier",
+        description: "Draw a graphic Bezier curve",
+        icon: IconName::PenTool,
+        shortcut: None,
+        cursor: CursorStyle::Crosshair,
+        group_break: false,
+    },
+    ToolSpec {
+        tool: Tool::DrawPolygon,
+        id: ToolId("eeschema.InteractiveDrawing.drawPolygon"),
+        button_id: "tool-polygon",
+        label: "Draw Polygon",
+        description: "Draw a closed graphic polygon",
+        icon: IconName::VectorPolygon,
+        shortcut: None,
+        cursor: CursorStyle::Crosshair,
+        group_break: false,
+    },
+    ToolSpec {
         tool: Tool::DrawLine,
         id: ToolId("eeschema.InteractiveDrawingLineWireBus.drawLines"),
         button_id: "tool-line",
         label: "Draw Lines",
         description: "Draw graphic lines that carry no net",
         icon: IconName::PenLine,
-        shortcut: None,
+        shortcut: Some("i"),
         cursor: CursorStyle::Crosshair,
         group_break: false,
     },
@@ -382,13 +503,22 @@ mod tests {
             Tool::PlaceJunction,
             Tool::PlaceNoConnect,
             Tool::PlaceLabel,
+            Tool::PlaceClassLabel,
             Tool::PlaceGlobalLabel,
             Tool::PlaceHierLabel,
+            Tool::DrawRuleArea,
             Tool::DrawSheet,
+            Tool::PlaceSheetPin,
             Tool::PlaceText,
+            Tool::DrawTextBox,
+            Tool::DrawTable,
             Tool::DrawRectangle,
             Tool::DrawCircle,
+            Tool::DrawEllipse,
             Tool::DrawArc,
+            Tool::DrawEllipseArc,
+            Tool::DrawBezier,
+            Tool::DrawPolygon,
             Tool::DrawLine,
             Tool::PlaceImage,
             Tool::DeleteItems,
