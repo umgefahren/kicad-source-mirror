@@ -22,6 +22,7 @@
 
 #include <tool/tool_interactive.h>
 
+class CANVAS_HOLDER;
 class EDA_DRAW_FRAME;
 
 
@@ -45,6 +46,12 @@ public:
 
 private:
     bool selectRegion();
+
+    /// Whatever owns the canvas: the view, its preferences and the cursor. Non-null
+    /// whenever the tool initialised at all, including when #m_frame is null.
+    CANVAS_HOLDER*  m_canvas;
+
+    /// The frame, or **null** when the canvas holder is not one (a headless host).
     EDA_DRAW_FRAME* m_frame;
 };
 

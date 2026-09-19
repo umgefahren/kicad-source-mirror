@@ -402,6 +402,13 @@ void EDA_DRAW_FRAME::UpdateGridSelectBox()
 
 void EDA_DRAW_FRAME::OnUpdateSelectGrid( wxUpdateUIEvent& aEvent )
 {
+    // The event says nothing this needs; the work is the same whoever asked for it.
+    OnGridSelectionChanged();
+}
+
+
+void EDA_DRAW_FRAME::OnGridSelectionChanged()
+{
     // No need to update the grid select box if it doesn't exist or the grid setting change
     // was made using the select box.
     if( m_gridSelectBox == nullptr )
@@ -797,6 +804,21 @@ const wxString EDA_DRAW_FRAME::GetZoomLevelIndicator() const
     // level indicator in dialogs.
     double zoom = m_canvas->GetGAL()->GetZoomFactor();
     return wxString::Format( wxT( "Z %.2f" ), zoom );
+}
+
+
+APP_SETTINGS_BASE* EDA_DRAW_FRAME::config() const
+{
+    // EDA_BASE_FRAME and CANVAS_HOLDER both declare this; declaring it here once says which
+    // the frame means, and the answer is the one the frame always gave.
+    return EDA_BASE_FRAME::config();
+}
+
+
+WINDOW_SETTINGS* EDA_DRAW_FRAME::GetWindowSettings( APP_SETTINGS_BASE* aCfg )
+{
+    // Same disambiguation as ::config().
+    return EDA_BASE_FRAME::GetWindowSettings( aCfg );
 }
 
 

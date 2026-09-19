@@ -19,6 +19,7 @@
 
 #include <class_draw_panel_gal.h>
 #include <eda_draw_frame.h>
+#include <tool/canvas_holder.h>
 #include <preview_items/selection_area.h>
 #include <tool/actions.h>
 #include <tool/tool_manager.h>
@@ -31,6 +32,7 @@
 ZOOM_TOOL::ZOOM_TOOL() :
         TOOL_INTERACTIVE( "common.Control.zoomTool" )
 {
+    m_canvas = nullptr;
     m_frame = nullptr;
 }
 
@@ -41,24 +43,32 @@ ZOOM_TOOL::~ZOOM_TOOL() {}
 
 bool ZOOM_TOOL::Init()
 {
-    // Checked, because the tool holder is not necessarily a frame: a non-wx host
-    // installs one that is not, and the unchecked cast below adjusts a pointer by the
-    // offset of a TOOLS_HOLDER subobject inside a frame — which does not exist in one
-    // that is not a frame. Zooming by rubber band needs the canvas, so declining is
-    // the answer, and TOOL_MANAGER::InitTools() then unregisters this tool.
-    EDA_DRAW_FRAME* frame = dynamic_cast<EDA_DRAW_FRAME*>( m_toolMgr->GetToolHolder() );
+    // Checked, because the tool holder is not necessarily a frame: a non-wx host installs
+    // one that is not. What this tool actually needs is whatever owns the canvas, so that
+    // is what it asks for; a holder that is neither has no view to zoom, and declining is
+    // the framework's own answer — TOOL_MANAGER::InitTools() then unregisters the tool.
+    m_canvas = dynamic_cast<CANVAS_HOLDER*>( m_toolMgr->GetToolHolder() );
 
-    if( !frame )
+    if( !m_canvas )
         return false;
 
-    auto& ctxMenu = m_menu->GetMenu();
+    // Null on a headless holder. Only the menu below wants it, and only for the items
+    // that are themselves menus.
+    m_frame = dynamic_cast<EDA_DRAW_FRAME*>( m_toolMgr->GetToolHolder() );
 
-    // cancel current tool goes in main context menu at the top if present
-    ctxMenu.AddItem( ACTIONS::cancelInteractive, SELECTION_CONDITIONS::ShowAlways, 1 );
-    ctxMenu.AddSeparator( 1 );
+    // TOOL_INTERACTIVE only builds a TOOL_MENU when Pgm().IsGUI(), so there may be none.
+    if( m_menu )
+    {
+        auto& ctxMenu = m_menu->GetMenu();
 
-    // Finally, add the standard zoom/grid items
-    frame->AddStandardSubMenus( *m_menu.get() );
+        // cancel current tool goes in main context menu at the top if present
+        ctxMenu.AddItem( ACTIONS::cancelInteractive, SELECTION_CONDITIONS::ShowAlways, 1 );
+        ctxMenu.AddSeparator( 1 );
+
+        // Finally, add the standard zoom/grid items
+        if( m_frame )
+            m_frame->AddStandardSubMenus( *m_menu.get() );
+    }
 
     return true;
 }
@@ -66,18 +76,19 @@ bool ZOOM_TOOL::Init()
 
 void ZOOM_TOOL::Reset( RESET_REASON aReason )
 {
-    m_frame = getEditFrame<EDA_DRAW_FRAME>();
+    m_canvas = dynamic_cast<CANVAS_HOLDER*>( m_toolMgr->GetToolHolder() );
+    m_frame = dynamic_cast<EDA_DRAW_FRAME*>( m_toolMgr->GetToolHolder() );
 }
 
 
 int ZOOM_TOOL::Main( const TOOL_EVENT& aEvent )
 {
-    SCOPED_TOOL_PUSHER raii( m_frame, aEvent );
+    SCOPED_TOOL_PUSHER raii( m_toolMgr->GetToolHolder(), aEvent );
 
     auto setCursor =
         [&]()
         {
-            m_frame->GetCanvas()->SetCurrentCursor( KICURSOR::ZOOM_IN );
+            m_canvas->SetCanvasCursor( KICURSOR::ZOOM_IN );
         };
 
     // Set initial cursor
@@ -98,8 +109,13 @@ int ZOOM_TOOL::Main( const TOOL_EVENT& aEvent )
         }
         else if( evt->IsClick( BUT_RIGHT ) )
         {
-            SELECTION dummy;
-            m_menu->ShowContextMenu( dummy );
+            // No menu was built when this is not a GUI program; there is then nothing to
+            // pop up, and no pointer to pop it up under either.
+            if( m_menu )
+            {
+                SELECTION dummy;
+                m_menu->ShowContextMenu( dummy );
+            }
         }
         else
         {
@@ -108,7 +124,7 @@ int ZOOM_TOOL::Main( const TOOL_EVENT& aEvent )
     }
 
     // Exit zoom tool
-    m_frame->GetCanvas()->SetCurrentCursor( KICURSOR::ARROW );
+    m_canvas->SetCanvasCursor( KICURSOR::ARROW );
     return 0;
 }
 
@@ -117,7 +133,11 @@ bool ZOOM_TOOL::selectRegion()
 {
     bool                cancelled = false;
     KIGFX::VIEW*        view = getView();
-    EDA_DRAW_PANEL_GAL* canvas = m_frame->GetCanvas();
+
+    // The wx widget, where there is one: the rubber band is scaled against the size of
+    // the window the user dragged it in. With no window the view's own screen size is
+    // the same number, so nothing is lost.
+    EDA_DRAW_PANEL_GAL* canvas = m_canvas->GetCanvasPanel();
 
     getViewControls()->SetAutoPan( true );
 
@@ -151,7 +171,9 @@ bool ZOOM_TOOL::selectRegion()
             }
             else
             {
-                VECTOR2D sSize = view->ToWorld( ToVECTOR2I( canvas->GetClientSize() ), false );
+                VECTOR2I screenSize = canvas ? ToVECTOR2I( canvas->GetClientSize() )
+                                             : view->GetScreenPixelSize();
+                VECTOR2D sSize = view->ToWorld( screenSize, false );
                 VECTOR2D vSize = selectionBox.GetSize();
                 double scale;
                 double ratio = std::max( fabs( vSize.x / sSize.x ), fabs( vSize.y / sSize.y ) );

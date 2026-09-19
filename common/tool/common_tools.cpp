@@ -34,17 +34,37 @@
 #include <kiface_base.h>
 #include <settings/app_settings.h>
 #include <tool/actions.h>
+#include <tool/canvas_holder.h>
 #include <tool/common_tools.h>
 #include <tool/tool_manager.h>
 #include <tool/selection_tool.h>
 #include <tool/grid_helper.h>
+#include <gal_display_options_common.h>
+#include <units_provider.h>
 #include <view/view.h>
 #include <view/view_controls.h>
 #include "macros.h"
 
 
+/**
+ * Persist the GAL display options into \a aSettings.
+ *
+ * `WriteConfig` is on GAL_DISPLAY_OPTIONS_IMPL and not on the KIGFX::GAL_DISPLAY_OPTIONS
+ * that CANVAS_HOLDER hands out, so a holder whose options are not the settings-backed
+ * kind keeps the change for the current session only.
+ */
+static void writeGalOptions( KIGFX::GAL_DISPLAY_OPTIONS& aOptions, WINDOW_SETTINGS* aSettings )
+{
+    GAL_DISPLAY_OPTIONS_IMPL* impl = dynamic_cast<GAL_DISPLAY_OPTIONS_IMPL*>( &aOptions );
+
+    if( impl && aSettings )
+        impl->WriteConfig( *aSettings );
+}
+
+
 COMMON_TOOLS::COMMON_TOOLS() :
     TOOL_INTERACTIVE( "common.Control" ),
+    m_canvas( nullptr ),
     m_frame( nullptr ),
     m_imperialUnit( EDA_UNITS::INCH ),
     m_metricUnit( EDA_UNITS::MM )
@@ -54,30 +74,43 @@ COMMON_TOOLS::COMMON_TOOLS() :
 
 bool COMMON_TOOLS::Init()
 {
-    // Checked, because the tool holder is not necessarily a frame: a non-wx host
-    // installs one that is not. Reset() below reaches straight through m_frame for the
-    // grid list, and every zoom and grid action wants the canvas, so there is nothing
-    // this tool can do without one. TOOL_MANAGER::InitTools() unregisters a tool whose
-    // Init() returns false, which is how it is meant to say so.
-    return dynamic_cast<EDA_DRAW_FRAME*>( m_toolMgr->GetToolHolder() ) != nullptr;
+    // What these actions need is whatever owns the canvas: the view, the grid, the units
+    // and the per-window settings. That is not necessarily a frame — a non-wx host
+    // installs a holder that is not one — but a holder that is neither has no view to
+    // move and no grid to pick, so there is nothing this tool can do. Declining is how
+    // the framework is told: TOOL_MANAGER::InitTools() unregisters a tool whose Init()
+    // returns false.
+    m_canvas = dynamic_cast<CANVAS_HOLDER*>( m_toolMgr->GetToolHolder() );
+
+    if( !m_canvas )
+        return false;
+
+    // Checked, and null on a headless holder: only the dialogs and the status bar below
+    // want it. It used to be an unchecked static_cast, which on a holder that is not a
+    // frame yields a pointer adjusted by the offset of a TOOLS_HOLDER subobject that
+    // does not exist there.
+    m_frame = dynamic_cast<EDA_DRAW_FRAME*>( m_toolMgr->GetToolHolder() );
+
+    return true;
 }
 
 
 void COMMON_TOOLS::Reset( RESET_REASON aReason )
 {
-    m_frame = getEditFrame<EDA_DRAW_FRAME>();
+    m_canvas = dynamic_cast<CANVAS_HOLDER*>( m_toolMgr->GetToolHolder() );
+    m_frame = dynamic_cast<EDA_DRAW_FRAME*>( m_toolMgr->GetToolHolder() );
     m_grids.clear();
 
     if( aReason == RESET_REASON::SHUTDOWN )
         return;
 
-    GRID_SETTINGS& settings = m_frame->GetWindowSettings( m_toolMgr->GetSettings() )->grid;
+    GRID_SETTINGS& settings = m_canvas->GetWindowSettings( m_toolMgr->GetSettings() )->grid;
 
     // Protect against misconfigured settings with no grids
     if( settings.grids.empty() )
-        settings.grids = m_frame->config()->DefaultGridSizeList();
+        settings.grids = m_canvas->config()->DefaultGridSizeList();
 
-    EDA_IU_SCALE   scale = m_frame->GetIuScale();
+    EDA_IU_SCALE   scale = m_canvas->GetUnitsProvider()->GetIuScale();
 
     for( GRID& gridDef : settings.grids )
     {
@@ -115,18 +148,19 @@ int COMMON_TOOLS::SelectionTool( const TOOL_EVENT& aEvent )
 int COMMON_TOOLS::CursorControl( const TOOL_EVENT& aEvent )
 {
     ACTIONS::CURSOR_EVENT_TYPE   type = aEvent.Parameter<ACTIONS::CURSOR_EVENT_TYPE>();
-    std::unique_ptr<GRID_HELPER> grid = m_frame->MakeGridHelper();
+    std::unique_ptr<GRID_HELPER> grid = m_canvas->MakeGridHelper();
     VECTOR2D                     gridSize;
+    TOOLS_HOLDER*                holder = m_toolMgr->GetToolHolder();
 
     if( grid )
-        gridSize = grid->GetGridSize( grid->GetSelectionGrid( m_frame->GetCurrentSelection() ) );
+        gridSize = grid->GetGridSize( grid->GetSelectionGrid( holder->GetCurrentSelection() ) );
     else
         gridSize = getView()->GetGAL()->GetGridSize();
 
     bool     mirroredX = getView()->IsMirroredX();
     VECTOR2D cursor = getViewControls()->GetCursorPosition( false );
 
-    SELECTION& selection = m_frame->GetCurrentSelection();
+    SELECTION& selection = holder->GetCurrentSelection();
 
     if( !getViewControls()->GetSettings().m_lastKeyboardCursorPositionValid && selection.HasReferencePoint() )
     {
@@ -237,7 +271,7 @@ int COMMON_TOOLS::PanControl( const TOOL_EVENT& aEvent )
 
 int COMMON_TOOLS::ZoomRedraw( const TOOL_EVENT& aEvent )
 {
-    m_frame->HardRedraw();
+    m_canvas->HardRedraw();
     return 0;
 }
 
@@ -267,7 +301,7 @@ int COMMON_TOOLS::doZoomInOut( bool aDirection, bool aCenterOnCursor )
         zoom /= 1.3;
 
     // Now look for the next closest menu step
-    std::vector<double>& zoomList = m_frame->GetWindowSettings( m_toolMgr->GetSettings() )->zoom_factors;
+    std::vector<double>& zoomList = m_canvas->GetWindowSettings( m_toolMgr->GetSettings() )->zoom_factors;
     int idx;
 
     if( aDirection )
@@ -328,38 +362,46 @@ int COMMON_TOOLS::ZoomFitSelection( const TOOL_EVENT& aEvent )
 
 int COMMON_TOOLS::doZoomFit( ZOOM_FIT_TYPE_T aFitType )
 {
-    KIGFX::VIEW*        view   = getView();
-    EDA_DRAW_PANEL_GAL* canvas = m_frame->GetCanvas();
-    EDA_DRAW_FRAME*     frame  = getEditFrame<EDA_DRAW_FRAME>();
+    KIGFX::VIEW* view = getView();
 
-    BOX2I    bBox = frame->GetDocumentExtents();
-    BOX2I    defaultBox = canvas->GetDefaultViewBBox();
+    BOX2I    bBox = m_canvas->GetDocumentExtents();
+    BOX2I    defaultBox = m_canvas->GetDefaultViewBBox();
 
     view->SetScale( 1.0 );  // The best scale will be determined later, but this initial
                             // value ensures all view parameters are up to date (especially
                             // at init time)
-    VECTOR2D screenSize = view->ToWorld( ToVECTOR2I( canvas->GetClientSize() ), false );
+
+    // The wx widget where there is one; the view knows the same number of pixels when
+    // there is not, so a holder with no window still fits the document to its viewport.
+    EDA_DRAW_PANEL_GAL* canvas = m_canvas->GetCanvasPanel();
+    VECTOR2I            canvasSize = canvas ? ToVECTOR2I( canvas->GetClientSize() )
+                                            : view->GetScreenPixelSize();
+
+    VECTOR2D screenSize = view->ToWorld( canvasSize, false );
 
     // Currently "Zoom to Objects" is only supported in Eeschema & Pcbnew.  Support for other
     // programs in the suite can be added as needed.
 
+    // Which program this is decides what "all" and "objects" mean, and only a frame can
+    // say. A holder with no frame gets the plain document extents for both, which is what
+    // every program other than pcbnew and eeschema already does.
     if( aFitType == ZOOM_FIT_ALL )
     {
-        if( frame->IsType( FRAME_PCB_EDITOR ) )
-            bBox = m_frame->GetDocumentExtents( false );
+        if( m_frame && m_frame->IsType( FRAME_PCB_EDITOR ) )
+            bBox = m_canvas->GetDocumentExtents( false );
     }
 
     if( aFitType == ZOOM_FIT_OBJECTS )
     {
-        if( frame->IsType( FRAME_SCH ) )
-            bBox = m_frame->GetDocumentExtents( false );
+        if( m_frame && m_frame->IsType( FRAME_SCH ) )
+            bBox = m_canvas->GetDocumentExtents( false );
         else
             aFitType = ZOOM_FIT_ALL; // Just do a "Zoom to Fit" for unsupported editors
     }
 
     if( aFitType == ZOOM_FIT_SELECTION )
     {
-        SELECTION& selection = m_frame->GetCurrentSelection();
+        SELECTION& selection = m_toolMgr->GetToolHolder()->GetCurrentSelection();
 
         if( selection.Empty() )
             return 0;
@@ -381,7 +423,7 @@ int COMMON_TOOLS::doZoomFit( ZOOM_FIT_TYPE_T aFitType )
     if( !std::isfinite( scale ) )
     {
         view->SetCenter( VECTOR2D( 0, 0 ) );
-        canvas->Refresh();
+        m_toolMgr->GetToolHolder()->RefreshCanvas();
         return 0;
     }
 
@@ -389,20 +431,22 @@ int COMMON_TOOLS::doZoomFit( ZOOM_FIT_TYPE_T aFitType )
     // infobar.
     double margin_scale_factor = 1.04;
 
-    if( canvas->GetClientSize().y < 768 )
+    if( canvasSize.y < 768 )
         margin_scale_factor = 1.10;
 
     if( aFitType == ZOOM_FIT_ALL )
     {
         // Leave a bigger margin for library editors & viewers
 
-        if( frame->IsType( FRAME_FOOTPRINT_VIEWER )
-                || frame->IsType( FRAME_SCH_VIEWER ) )
+        // The bigger margins are a library editor's, and only a frame can say it is one;
+        // a holder with no frame keeps the ordinary margin.
+        if( m_frame && ( m_frame->IsType( FRAME_FOOTPRINT_VIEWER )
+                            || m_frame->IsType( FRAME_SCH_VIEWER ) ) )
         {
             margin_scale_factor = 1.30;
         }
-        else if( frame->IsType( FRAME_SCH_SYMBOL_EDITOR )
-                || frame->IsType( FRAME_FOOTPRINT_EDITOR ) )
+        else if( m_frame && ( m_frame->IsType( FRAME_SCH_SYMBOL_EDITOR )
+                                 || m_frame->IsType( FRAME_FOOTPRINT_EDITOR ) ) )
         {
             margin_scale_factor = 1.48;
         }
@@ -410,7 +454,7 @@ int COMMON_TOOLS::doZoomFit( ZOOM_FIT_TYPE_T aFitType )
 
     view->SetScale( scale / margin_scale_factor );
     view->SetCenter( bBox.Centre() );
-    canvas->Refresh();
+    m_toolMgr->GetToolHolder()->RefreshCanvas();
 
     return 0;
 }
@@ -430,13 +474,11 @@ int COMMON_TOOLS::CenterContents( const TOOL_EVENT& aEvent )
 
 int COMMON_TOOLS::doCenter( CENTER_TYPE aCenterType )
 {
-    EDA_DRAW_PANEL_GAL* canvas = m_frame->GetCanvas();
-
     BOX2I bBox;
 
     if( aCenterType == CENTER_TYPE::CENTER_SELECTION )
     {
-        SELECTION& selection = m_frame->GetCurrentSelection();
+        SELECTION& selection = m_toolMgr->GetToolHolder()->GetCurrentSelection();
 
         // No selection: do nothing
         if( selection.Empty() )
@@ -449,16 +491,21 @@ int COMMON_TOOLS::doCenter( CENTER_TYPE aCenterType )
         bBox = getModel<EDA_ITEM>()->ViewBBox();
 
         if( bBox.GetWidth() == 0 || bBox.GetHeight() == 0 )
-            bBox = canvas->GetDefaultViewBBox();
+            bBox = m_canvas->GetDefaultViewBBox();
     }
 
     getView()->SetCenter( bBox.Centre() );
 
-    // Take scrollbars into account
-    VECTOR2D scrollbarSize = VECTOR2D( ToVECTOR2D( canvas->GetSize() - canvas->GetClientSize() ) );
+    // Take scrollbars into account.  Scrollbars are a wx widget's, so a holder with no
+    // window has none and nothing is nudged off centre to make room for them.
+    VECTOR2D scrollbarSize;
+
+    if( EDA_DRAW_PANEL_GAL* canvas = m_canvas->GetCanvasPanel() )
+        scrollbarSize = VECTOR2D( ToVECTOR2D( canvas->GetSize() - canvas->GetClientSize() ) );
+
     VECTOR2D worldScrollbarSize = getView()->ToWorld( scrollbarSize, false );
     getView()->SetCenter( getView()->GetCenter() + worldScrollbarSize / 2.0 );
-    canvas->Refresh();
+    m_toolMgr->GetToolHolder()->RefreshCanvas();
 
     return 0;
 }
@@ -474,7 +521,7 @@ int COMMON_TOOLS::ZoomPreset( const TOOL_EVENT& aEvent )
 // Note: idx == 0 is Auto; idx == 1 is first entry in zoomList
 int COMMON_TOOLS::doZoomToPreset( int idx, bool aCenterOnCursor )
 {
-    std::vector<double>& zoomList = m_frame->GetWindowSettings( m_toolMgr->GetSettings() )->zoom_factors;
+    std::vector<double>& zoomList = m_canvas->GetWindowSettings( m_toolMgr->GetSettings() )->zoom_factors;
 
     if( idx == 0 )      // Zoom Auto
     {
@@ -500,7 +547,7 @@ int COMMON_TOOLS::doZoomToPreset( int idx, bool aCenterOnCursor )
         getView()->SetScale( scale );
     }
 
-    m_frame->GetCanvas()->Refresh();
+    m_toolMgr->GetToolHolder()->RefreshCanvas();
 
     return 0;
 }
@@ -508,7 +555,7 @@ int COMMON_TOOLS::doZoomToPreset( int idx, bool aCenterOnCursor )
 
 int COMMON_TOOLS::GridNext( const TOOL_EVENT& aEvent )
 {
-    int& currentGrid = m_frame->GetWindowSettings( m_toolMgr->GetSettings() )->grid.last_size_idx;
+    int& currentGrid = m_canvas->GetWindowSettings( m_toolMgr->GetSettings() )->grid.last_size_idx;
 
     currentGrid++;
 
@@ -521,7 +568,7 @@ int COMMON_TOOLS::GridNext( const TOOL_EVENT& aEvent )
 
 int COMMON_TOOLS::GridPrev( const TOOL_EVENT& aEvent )
 {
-    int& currentGrid = m_frame->GetWindowSettings( m_toolMgr->GetSettings() )->grid.last_size_idx;
+    int& currentGrid = m_canvas->GetWindowSettings( m_toolMgr->GetSettings() )->grid.last_size_idx;
 
     currentGrid--;
 
@@ -540,7 +587,7 @@ int COMMON_TOOLS::GridPreset( const TOOL_EVENT& aEvent )
 
 int COMMON_TOOLS::GridPreset( int idx, bool aFromHotkey )
 {
-    int& currentGrid = m_frame->GetWindowSettings( m_toolMgr->GetSettings() )->grid.last_size_idx;
+    int& currentGrid = m_canvas->GetWindowSettings( m_toolMgr->GetSettings() )->grid.last_size_idx;
 
     currentGrid = std::clamp( idx, 0, (int) m_grids.size() - 1 );
 
@@ -550,17 +597,16 @@ int COMMON_TOOLS::GridPreset( int idx, bool aFromHotkey )
 
 int COMMON_TOOLS::OnGridChanged( bool aFromHotkey )
 {
-    int& currentGrid = m_frame->GetWindowSettings( m_toolMgr->GetSettings() )->grid.last_size_idx;
+    int& currentGrid = m_canvas->GetWindowSettings( m_toolMgr->GetSettings() )->grid.last_size_idx;
 
     currentGrid = std::max( 0, std::min( currentGrid, static_cast<int>( m_grids.size() ) - 1 ) );
 
     // Update the combobox (if any)
-    wxUpdateUIEvent dummy;
-    m_frame->OnUpdateSelectGrid( dummy );
+    m_canvas->OnGridSelectionChanged();
 
     // Update GAL canvas from screen
     getView()->GetGAL()->SetGridSize( m_grids[ currentGrid ] );
-    getView()->GetGAL()->SetGridVisibility( m_frame->GetWindowSettings( m_toolMgr->GetSettings() )->grid.show );
+    getView()->GetGAL()->SetGridVisibility( m_canvas->GetWindowSettings( m_toolMgr->GetSettings() )->grid.show );
     getView()->MarkTargetDirty( KIGFX::TARGET_NONCACHED );
 
     // Put cursor on new grid
@@ -577,44 +623,52 @@ int COMMON_TOOLS::OnGridChanged( bool aFromHotkey )
 
 int COMMON_TOOLS::GridFast1( const TOOL_EVENT& aEvent )
 {
-    return GridPreset( m_frame->GetWindowSettings( m_toolMgr->GetSettings() )->grid.fast_grid_1, true );
+    return GridPreset( m_canvas->GetWindowSettings( m_toolMgr->GetSettings() )->grid.fast_grid_1, true );
 }
 
 
 int COMMON_TOOLS::GridFast2( const TOOL_EVENT& aEvent )
 {
-    return GridPreset( m_frame->GetWindowSettings( m_toolMgr->GetSettings() )->grid.fast_grid_2, true );
+    return GridPreset( m_canvas->GetWindowSettings( m_toolMgr->GetSettings() )->grid.fast_grid_2, true );
 }
 
 
 int COMMON_TOOLS::GridFastCycle( const TOOL_EVENT& aEvent )
 {
-    if( m_frame->GetWindowSettings( m_toolMgr->GetSettings() )->grid.last_size_idx
-        == m_frame->GetWindowSettings( m_toolMgr->GetSettings() )->grid.fast_grid_1 )
+    if( m_canvas->GetWindowSettings( m_toolMgr->GetSettings() )->grid.last_size_idx
+        == m_canvas->GetWindowSettings( m_toolMgr->GetSettings() )->grid.fast_grid_1 )
     {
-        return GridPreset( m_frame->GetWindowSettings( m_toolMgr->GetSettings() )->grid.fast_grid_2, true );
+        return GridPreset( m_canvas->GetWindowSettings( m_toolMgr->GetSettings() )->grid.fast_grid_2, true );
     }
 
-    return GridPreset( m_frame->GetWindowSettings( m_toolMgr->GetSettings() )->grid.fast_grid_1, true );
+    return GridPreset( m_canvas->GetWindowSettings( m_toolMgr->GetSettings() )->grid.fast_grid_1, true );
 }
 
 
 int COMMON_TOOLS::ToggleGrid( const TOOL_EVENT& aEvent )
 {
-    m_frame->SetGridVisibility( !m_frame->IsGridVisible() );
+    m_canvas->SetGridVisibility( !m_canvas->GridVisible() );
     return 0;
 }
 
 
 int COMMON_TOOLS::ToggleGridOverrides( const TOOL_EVENT& aEvent )
 {
-    m_frame->SetGridOverrides( !m_frame->IsGridOverridden() );
+    m_canvas->SetGridOverrides( !m_canvas->GridOverridden() );
     return 0;
 }
 
 
 int COMMON_TOOLS::GridProperties( const TOOL_EVENT& aEvent )
 {
+    // Everything here is a window: the preferences dialog itself, and CallAfter(), which
+    // is the frame's wx event loop and is what keeps the modal dialog from opening inside
+    // this tool's own event handler. There is no non-wx way to defer, so with no frame
+    // the grid preferences simply cannot be opened; the grid is still settable through
+    // the actions above and through the settings file.
+    if( !m_frame )
+        return 0;
+
     auto showGridPrefs =
             [this]( const wxString& aParentName )
             {
@@ -643,16 +697,21 @@ int COMMON_TOOLS::GridProperties( const TOOL_EVENT& aEvent )
 
 int COMMON_TOOLS::GridOrigin( const TOOL_EVENT& aEvent )
 {
-    VECTOR2I           origin = m_frame->GetGridOrigin();
+    // The origin is asked for in a modal dialog, which is a window and needs a parent.
+    // With no frame there is nobody to ask, so the origin stays where it is.
+    if( !m_frame )
+        return 0;
+
+    VECTOR2I           origin = m_canvas->GetGridOrigin();
     WX_PT_ENTRY_DIALOG dlg( m_frame, _( "Grid Origin" ), _( "X:" ), _( "Y:" ), origin, true );
 
     if( dlg.ShowModal() == wxID_OK )
     {
-        m_frame->SetGridOrigin( dlg.GetValue() );
+        m_canvas->SetGridOrigin( dlg.GetValue() );
 
         m_toolMgr->ResetTools( TOOL_BASE::REDRAW );
-        m_toolMgr->RunAction( ACTIONS::gridSetOrigin, new VECTOR2D( m_frame->GetGridOrigin() ) );
-        m_frame->GetCanvas()->ForceRefresh();
+        m_toolMgr->RunAction( ACTIONS::gridSetOrigin, new VECTOR2D( m_canvas->GetGridOrigin() ) );
+        m_canvas->ForceRefreshCanvas();
     }
 
     return 0;
@@ -670,25 +729,29 @@ int COMMON_TOOLS::SwitchUnits( const TOOL_EVENT& aEvent )
     else
         wxASSERT_MSG( false, wxS( "Invalid unit for the frame" ) );
 
-    m_frame->ChangeUserUnits( newUnit );
+    m_canvas->SwitchUserUnits( newUnit );
     return 0;
 }
 
 
 int COMMON_TOOLS::ToggleUnits( const TOOL_EVENT& aEvent )
 {
-    m_frame->ChangeUserUnits( EDA_UNIT_UTILS::IsImperialUnit( m_frame->GetUserUnits() ) ?
-                                      m_metricUnit :
-                                      m_imperialUnit );
+    EDA_UNITS currentUnit = m_canvas->GetUnitsProvider()->GetUserUnits();
+
+    m_canvas->SwitchUserUnits( EDA_UNIT_UTILS::IsImperialUnit( currentUnit ) ? m_metricUnit
+                                                                             : m_imperialUnit );
     return 0;
 }
 
 
 int COMMON_TOOLS::TogglePolarCoords( const TOOL_EVENT& aEvent )
 {
-    m_frame->SetStatusText( wxEmptyString );
-    m_frame->SetShowPolarCoords( !m_frame->GetShowPolarCoords() );
-    m_frame->UpdateStatusBar();
+    // The status bar is a window's; with none there is no stale readout to blank.
+    if( m_frame )
+        m_frame->SetStatusText( wxEmptyString );
+
+    m_canvas->SetPolarCoords( !m_canvas->PolarCoords() );
+    m_canvas->UpdateStatusBar();
 
     return 0;
 }
@@ -696,7 +759,10 @@ int COMMON_TOOLS::TogglePolarCoords( const TOOL_EVENT& aEvent )
 
 int COMMON_TOOLS::ResetLocalCoords( const TOOL_EVENT& aEvent )
 {
-    if( !m_frame->GetScreen() )     // Can happen in footprint chooser frame
+    // The local origin lives on the frame's BASE_SCREEN, and the only thing that reads it
+    // is the frame's status bar. A holder with no frame has neither, so there is nothing
+    // to reset and nothing that would show it.
+    if( !m_frame || !m_frame->GetScreen() )     // Can happen in footprint chooser frame
         return 0;
 
     const KIGFX::VC_SETTINGS& vcSettings = m_toolMgr->GetCurrentToolVC();
@@ -707,7 +773,7 @@ int COMMON_TOOLS::ResetLocalCoords( const TOOL_EVENT& aEvent )
     else
         m_frame->GetScreen()->m_LocalOrigin = getViewControls()->GetCursorPosition();
 
-    m_frame->UpdateStatusBar();
+    m_canvas->UpdateStatusBar();
 
     return 0;
 }
@@ -715,10 +781,10 @@ int COMMON_TOOLS::ResetLocalCoords( const TOOL_EVENT& aEvent )
 
 int COMMON_TOOLS::ToggleCursor( const TOOL_EVENT& aEvent )
 {
-    auto& galOpts = m_frame->GetGalDisplayOptions();
+    KIGFX::GAL_DISPLAY_OPTIONS& galOpts = m_canvas->GetGalDisplayOptions();
 
     galOpts.m_forceDisplayCursor = !galOpts.m_forceDisplayCursor;
-    galOpts.WriteConfig( *m_frame->GetWindowSettings( m_toolMgr->GetSettings() ) );
+    writeGalOptions( galOpts, m_canvas->GetWindowSettings( m_toolMgr->GetSettings() ) );
     galOpts.NotifyChanged();
 
     return 0;
@@ -727,10 +793,10 @@ int COMMON_TOOLS::ToggleCursor( const TOOL_EVENT& aEvent )
 
 int COMMON_TOOLS::CursorSmallCrosshairs( const TOOL_EVENT& aEvent )
 {
-    GAL_DISPLAY_OPTIONS_IMPL& galOpts = m_frame->GetGalDisplayOptions();
+    KIGFX::GAL_DISPLAY_OPTIONS& galOpts = m_canvas->GetGalDisplayOptions();
 
     galOpts.SetCursorMode( KIGFX::CROSS_HAIR_MODE::SMALL_CROSS );
-    galOpts.WriteConfig( *m_frame->GetWindowSettings( m_toolMgr->GetSettings() ) );
+    writeGalOptions( galOpts, m_canvas->GetWindowSettings( m_toolMgr->GetSettings() ) );
     galOpts.NotifyChanged();
 
     return 0;
@@ -739,10 +805,10 @@ int COMMON_TOOLS::CursorSmallCrosshairs( const TOOL_EVENT& aEvent )
 
 int COMMON_TOOLS::CursorFullCrosshairs( const TOOL_EVENT& aEvent )
 {
-    GAL_DISPLAY_OPTIONS_IMPL& galOpts = m_frame->GetGalDisplayOptions();
+    KIGFX::GAL_DISPLAY_OPTIONS& galOpts = m_canvas->GetGalDisplayOptions();
 
     galOpts.SetCursorMode( KIGFX::CROSS_HAIR_MODE::FULLSCREEN_CROSS );
-    galOpts.WriteConfig( *m_frame->GetWindowSettings( m_toolMgr->GetSettings() ) );
+    writeGalOptions( galOpts, m_canvas->GetWindowSettings( m_toolMgr->GetSettings() ) );
     galOpts.NotifyChanged();
 
     return 0;
@@ -751,10 +817,10 @@ int COMMON_TOOLS::CursorFullCrosshairs( const TOOL_EVENT& aEvent )
 
 int COMMON_TOOLS::Cursor45Crosshairs( const TOOL_EVENT& aEvent )
 {
-    GAL_DISPLAY_OPTIONS_IMPL& galOpts = m_frame->GetGalDisplayOptions();
+    KIGFX::GAL_DISPLAY_OPTIONS& galOpts = m_canvas->GetGalDisplayOptions();
 
     galOpts.SetCursorMode( KIGFX::CROSS_HAIR_MODE::FULLSCREEN_DIAGONAL );
-    galOpts.WriteConfig( *m_frame->GetWindowSettings( m_toolMgr->GetSettings() ) );
+    writeGalOptions( galOpts, m_canvas->GetWindowSettings( m_toolMgr->GetSettings() ) );
     galOpts.NotifyChanged();
 
     return 0;
@@ -763,16 +829,14 @@ int COMMON_TOOLS::Cursor45Crosshairs( const TOOL_EVENT& aEvent )
 
 int COMMON_TOOLS::ToggleBoundingBoxes( const TOOL_EVENT& aEvent )
 {
-    EDA_DRAW_PANEL_GAL* canvas = m_frame->GetCanvas();
-
-    if( canvas )
+    if( KIGFX::VIEW* view = getView() )
     {
-        KIGFX::RENDER_SETTINGS* rs = canvas->GetView()->GetPainter()->GetSettings();
+        KIGFX::RENDER_SETTINGS* rs = view->GetPainter()->GetSettings();
 
         rs->SetDrawBoundingBoxes( !rs->GetDrawBoundingBoxes() );
 
-        canvas->GetView()->UpdateAllItems( KIGFX::ALL );
-        canvas->ForceRefresh();
+        view->UpdateAllItems( KIGFX::ALL );
+        m_canvas->ForceRefreshCanvas();
     }
 
     return 0;

@@ -601,12 +601,15 @@ BOOST_AUTO_TEST_CASE( TheConvertedRosterRunsHereAndTheRestStillDeclines )
     // SCH_TOOL_BASE's — see SCH_DESIGN_BLOCK_CONTROL::Init().
     BOOST_CHECK( tools->GetTool<SCH_DESIGN_BLOCK_CONTROL>() == nullptr );
 
-    // Everything else in the roster lives in common/ and is inherited by every KiCad
-    // program, so hoisting it onto TOOLS_HOLDER is pcbnew's and gerbview's decision as much
-    // as eeschema's. Until then they read EDA_DRAW_FRAME and decline.
-    BOOST_CHECK( tools->GetTool<COMMON_TOOLS>() == nullptr );
+    // The two common/ tools that move the view. They ask for a CANVAS_HOLDER now
+    // rather than an EDA_DRAW_FRAME, which is Stage 4b step 2, so pan, zoom,
+    // zoom-to-fit, zoom-window, the grid list and the unit switch all run here.
+    BOOST_CHECK( tools->GetTool<COMMON_TOOLS>() != nullptr );
+    BOOST_CHECK( tools->GetTool<ZOOM_TOOL>() != nullptr );
+
+    // The rest of common/'s roster still reads EDA_DRAW_FRAME and declines. Each is a
+    // separate hoist and none of them moves the view, which is why step 2 stopped here.
     BOOST_CHECK( tools->GetTool<COMMON_CONTROL>() == nullptr );
-    BOOST_CHECK( tools->GetTool<ZOOM_TOOL>() == nullptr );
     BOOST_CHECK( tools->GetTool<PICKER_TOOL>() == nullptr );
     BOOST_CHECK( tools->GetTool<SCH_GROUP_TOOL>() == nullptr );
     BOOST_CHECK( tools->GetTool<EMBED_TOOL>() == nullptr );
