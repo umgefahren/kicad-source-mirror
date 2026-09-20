@@ -147,6 +147,17 @@ public:
 
     SCHEMATIC& Schematic() const;
 
+    /**
+     * @copydoc SCHEMATIC_HOLDER::GetSchematic
+     *
+     * The same document ::Schematic returns, as a pointer, because the interface has to
+     * be able to say "none" — a symbol frame is a SCHEMATIC_HOLDER too and has no
+     * schematic at all.
+     */
+    SCHEMATIC* GetSchematic() const override { return m_schematic; }
+
+    bool IsSchematicEditor() const override { return true; }
+
     std::unique_ptr<GRID_HELPER> MakeGridHelper() override;
 
     /**
@@ -235,7 +246,6 @@ public:
     /**
      * Automatically set the rotation of an item (if the item supports it).
      */
-    void AutoRotateItem( SCH_SCREEN* aScreen, SCH_ITEM* aItem );
 
     /**
      * Update the hierarchy navigation tree and history
@@ -467,6 +477,15 @@ public:
     void DisplayCurrentSheet();
 
     /**
+     * @copydoc SCHEMATIC_HOLDER::DisplaySheet
+     *
+     * The pair ::SetCurrentSheet then ::DisplayCurrentSheet, which is what every caller
+     * of the two did by hand before this existed. Always succeeds: this frame can show
+     * any sheet of the schematic it holds.
+     */
+    bool DisplaySheet( const SCH_SHEET_PATH& aPath ) override;
+
+    /**
      * Use the wxWidgets print code to draw an image of the current sheet onto the clipboard.
      */
     void DrawCurrentSheetToClipboard();
@@ -529,7 +548,6 @@ public:
      * @param aEnd The ending point for trimming
      * @return True if any wires were changed by this operation
      */
-    bool TrimWire( SCH_COMMIT* aCommit, const VECTOR2I& aStart, const VECTOR2I& aEnd );
 
     void OnOpenPcbnew();
     void OnOpenCvpcb();
@@ -681,7 +699,7 @@ public:
      */
     void DeleteJunction( SCH_COMMIT* aCommit, SCH_ITEM* aItem );
 
-    void UpdateHopOveredWires( SCH_ITEM* aItem );
+    void UpdateHopOveredWires( SCH_ITEM* aItem ) override;
 
     /**
      * Change the unit of \a aSymbol, swapping with another placed unit if the user asks.
@@ -729,7 +747,7 @@ public:
      * @param aAppend set to true to add the item to the previous undo list.
      */
     void SaveCopyInUndoList( const PICKED_ITEMS_LIST& aItemsList, UNDO_REDO aTypeCommand,
-                             bool aAppend );
+                             bool aAppend ) override;
 
     /**
      * Restore an undo or redo command to put data pointed by \a aList in the previous state.
@@ -754,15 +772,15 @@ public:
     /**
      * Clone \a aItem and owns that clone in this container.
      */
-    void SaveCopyForRepeatItem( const SCH_ITEM* aItem );
-    void AddCopyForRepeatItem( const SCH_ITEM* aItem );
+    void SaveCopyForRepeatItem( const SCH_ITEM* aItem ) override;
+    void AddCopyForRepeatItem( const SCH_ITEM* aItem ) override;
 
     /**
      * Return the items which are to be repeated with the insert key.
      *
      * Such objects are owned by this container and must be cloned.
      */
-    const std::vector<std::unique_ptr<SCH_ITEM>>& GetRepeatItems() const
+    const std::vector<std::unique_ptr<SCH_ITEM>>& GetRepeatItems() const override
     {
         return m_items_to_repeat;
     }
@@ -772,7 +790,7 @@ public:
      *
      * These objects are owned by this container.
      */
-    void ClearRepeatItemsList()
+    void ClearRepeatItemsList() override
     {
         m_items_to_repeat.clear();
     }
@@ -834,7 +852,8 @@ public:
      * @return false if recalculation failed; the frame has already reported the failure.
      */
     bool RecalculateConnections( SCH_COMMIT* aCommit, SCH_CLEANUP_FLAGS aCleanupFlags,
-                                 PROGRESS_REPORTER* aProgressReporter = nullptr, bool aCleanupDone = false );
+                                 PROGRESS_REPORTER* aProgressReporter = nullptr,
+                                 bool aCleanupDone = false ) override;
 
     // Commit source cleanup before the exporter's full connectivity rebuild.
     void PrepareForNetlist();

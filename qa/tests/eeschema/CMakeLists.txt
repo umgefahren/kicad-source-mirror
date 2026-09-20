@@ -30,6 +30,9 @@ include_directories(
     ${CMAKE_SOURCE_DIR}/eeschema/widgets
     # Symbol editor white-box tests include <symbol_edit_frame.h>.
     ${CMAKE_SOURCE_DIR}/eeschema/symbol_editor
+    # The tool headers include their siblings unqualified, so a test that constructs a
+    # tool (test_non_frame_tools_holder.cpp) needs eeschema/tools on the path too.
+    ${CMAKE_SOURCE_DIR}/eeschema/tools
     # dialog_sim_model.h (white-box tested for issue 23687) includes <dialog_sim_model_base.h>.
     ${CMAKE_SOURCE_DIR}/eeschema/dialogs
     ${CMAKE_SOURCE_DIR}/common/dialogs
@@ -224,8 +227,16 @@ set( QA_EESCHEMA_SRCS
     test_sch_api_hittest.cpp
     test_sch_api_proto.cpp
     test_sch_commit.cpp
+
+    # A TOOL_MANAGER whose holder is not a frame, which is what a non-wx host installs.
+    test_non_frame_tools_holder.cpp
+
     test_shape_corner_radius.cpp
     test_sch_group.cpp
+
+    # The non-wx host seam and its C ABI (eeschema/host/).
+    test_sch_host.cpp
+
     test_pin_numbers.cpp
     test_pin_map.cpp
     test_pin_map_roundtrip.cpp

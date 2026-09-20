@@ -113,7 +113,7 @@ public:
      *
      * Path is <user settings>/installed_packages.json
      */
-    void SaveInstalledPackages();
+    bool SaveInstalledPackages();
 
     /**
      * @brief Fetches repository metadata from given url

@@ -1,0 +1,28 @@
+# The gpui-kit application shell for the schematic editor: window, menu bar,
+# toolbars, docks, status bar, command palette and the canvas host element.
+#
+# Deliberately knows nothing about KiCad's document model. It draws the
+# schematic through `kicad-sch-render` and reports what the user did through
+# `InputSink`, which is a plain Rust trait, so the whole shell is testable
+# before any of the C++ host exists.
+
+[package]
+name = "kicad-sch-ui"
+version.workspace = true
+# gpui-pre 0.3.5 is an edition-2024 crate and the canonical way to open a
+# window goes through an async closure, which edition 2021 cannot parse.
+edition = "2024"
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "gpui-kit application shell for the KiCad schematic editor"
+
+[dependencies]
+gpui-kit = "0.6.1"
+# The renderer owns the camera, the tessellation cache and the draw stream; the
+# shell drives them rather than keeping a second copy of any of it.
+kicad-sch-render.workspace = true
+kicad-gal.workspace = true
+
+[dev-dependencies]
+gpui-kit = { version = "0.6.1", features = ["test-support"] }

@@ -74,6 +74,12 @@
 #include <settings/settings_manager.h>
 #include <symbol_editor_settings.h>
 #include <core/kicad_algo.h>
+#include <gal/graphics_abstraction_layer.h>
+#include <schematic.h>
+#include <schematic_holder.h>
+#include <sch_screen.h>
+#include <sch_view.h>
+#include <view/view.h>
 #include <view/view_controls.h>
 #include <wx/textdlg.h>
 #include <wx/msgdlg.h>
@@ -307,16 +313,58 @@ SCH_EDIT_TOOL::SCH_EDIT_TOOL() :
 }
 
 
+VECTOR2I SCH_EDIT_TOOL::getNearestGridPosition( const VECTOR2I& aPosition ) const
+{
+    // EDA_DRAW_FRAME::GetNearestGridPosition, rounded against the view's grid rather than a
+    // canvas's — the canvas draws with the same GAL the view holds. The offset terms the
+    // frame's version carries are for a non-zero grid origin, which eeschema never has: see
+    // SCH_BASE_FRAME::GetGridOrigin, which answers (0, 0) and refuses to be set.
+    VECTOR2D gridSize = getView()->GetGAL()->GetGridSize();
+
+    return KiROUND( KiROUND( aPosition.x / gridSize.x ) * gridSize.x,
+                    KiROUND( aPosition.y / gridSize.y ) * gridSize.y );
+}
+
+
+VECTOR2I SCH_EDIT_TOOL::getNearestHalfGridPosition( const VECTOR2I& aPosition ) const
+{
+    // As ::getNearestGridPosition, on half the grid.
+    VECTOR2D gridSize = getView()->GetGAL()->GetGridSize() / 2.0;
+
+    return KiROUND( KiROUND( aPosition.x / gridSize.x ) * gridSize.x,
+                    KiROUND( aPosition.y / gridSize.y ) * gridSize.y );
+}
+
+
+void SCH_EDIT_TOOL::testDanglingEnds()
+{
+    // SCH_EDIT_FRAME::TestDanglingEnds is the screen's own test plus a repaint of whatever it
+    // changed; the screen is the editor's and the view is the tool framework's, so neither
+    // half of it needs a window.
+    std::function<void( SCH_ITEM* )> changeHandler =
+            [&]( SCH_ITEM* aChangedItem ) -> void
+            {
+                getView()->Update( aChangedItem, KIGFX::REPAINT );
+            };
+
+    m_editor->GetScreen()->TestDanglingEnds( nullptr, &changeHandler );
+}
+
+
 using S_C = SCH_CONDITIONS;
 
 bool SCH_EDIT_TOOL::Init()
 {
-    SCH_TOOL_BASE::Init();
+    // Declines a tool holder that is not this tool's frame; see SCH_TOOL_BASE::Init().
+    if( !SCH_TOOL_BASE::Init() )
+        return false;
 
     SCH_DRAWING_TOOLS* drawingTools = m_toolMgr->GetTool<SCH_DRAWING_TOOLS>();
     SCH_MOVE_TOOL*     moveTool = m_toolMgr->GetTool<SCH_MOVE_TOOL>();
 
-    wxASSERT_MSG( drawingTools, "eeshema.InteractiveDrawing tool is not available" );
+    // Neither of these is converted yet, so TOOL_MANAGER unregisters them on a holder that is
+    // not a frame; what they are wanted for here is the menus, which such a holder has none of.
+    wxASSERT_MSG( drawingTools || !m_frame, "eeshema.InteractiveDrawing tool is not available" );
 
     static const std::vector<KICAD_T> attribTypes = { SCH_SYMBOL_T, SCH_SHEET_T, SCH_RULE_AREA_T };
     static const std::vector<KICAD_T> sheetTypes = { SCH_SHEET_T };
@@ -335,8 +383,13 @@ bool SCH_EDIT_TOOL::Init()
     auto attribDNPCond =
             [this]( const SELECTION& aSel )
             {
-                SCH_SHEET_PATH* sheet = &m_frame->GetCurrentSheet();
-                wxString        variant = m_frame->Schematic().GetCurrentVariant();
+                SCHEMATIC* schematic = m_editor->GetSchematic();
+
+                if( !schematic )
+                    return false;
+
+                SCH_SHEET_PATH* sheet = &schematic->CurrentSheet();
+                wxString        variant = schematic->GetCurrentVariant();
                 int             checked = 0;
                 int             unchecked = 0;
 
@@ -379,8 +432,13 @@ bool SCH_EDIT_TOOL::Init()
     auto attribExcludeFromSimCond =
             [this]( const SELECTION& aSel )
             {
-                SCH_SHEET_PATH* sheet = &m_frame->GetCurrentSheet();
-                wxString        variant = m_frame->Schematic().GetCurrentVariant();
+                SCHEMATIC* schematic = m_editor->GetSchematic();
+
+                if( !schematic )
+                    return false;
+
+                SCH_SHEET_PATH* sheet = &schematic->CurrentSheet();
+                wxString        variant = schematic->GetCurrentVariant();
                 int             checked = 0;
                 int             unchecked = 0;
 
@@ -423,8 +481,13 @@ bool SCH_EDIT_TOOL::Init()
     auto attribExcludeFromBOMCond =
             [this]( const SELECTION& aSel )
             {
-                SCH_SHEET_PATH* sheet = &m_frame->GetCurrentSheet();
-                wxString        variant = m_frame->Schematic().GetCurrentVariant();
+                SCHEMATIC* schematic = m_editor->GetSchematic();
+
+                if( !schematic )
+                    return false;
+
+                SCH_SHEET_PATH* sheet = &schematic->CurrentSheet();
+                wxString        variant = schematic->GetCurrentVariant();
                 int             checked = 0;
                 int             unchecked = 0;
 
@@ -468,8 +531,13 @@ bool SCH_EDIT_TOOL::Init()
     auto attribExcludeFromBoardCond =
             [this]( const SELECTION& aSel )
             {
-                SCH_SHEET_PATH* sheet = &m_frame->GetCurrentSheet();
-                wxString        variant = m_frame->Schematic().GetCurrentVariant();
+                SCHEMATIC* schematic = m_editor->GetSchematic();
+
+                if( !schematic )
+                    return false;
+
+                SCH_SHEET_PATH* sheet = &schematic->CurrentSheet();
+                wxString        variant = schematic->GetCurrentVariant();
                 int             checked = 0;
                 int             unchecked = 0;
 
@@ -511,8 +579,13 @@ bool SCH_EDIT_TOOL::Init()
 
     auto attribExcludeFromPosFilesCond = [this]( const SELECTION& aSel )
     {
-        SCH_SHEET_PATH* sheet = &m_frame->GetCurrentSheet();
-        wxString        variant = m_frame->Schematic().GetCurrentVariant();
+        SCHEMATIC* schematic = m_editor->GetSchematic();
+
+        if( !schematic )
+            return false;
+
+        SCH_SHEET_PATH* sheet = &schematic->CurrentSheet();
+        wxString        variant = schematic->GetCurrentVariant();
         int             checked = 0;
         int             unchecked = 0;
 
@@ -541,11 +614,13 @@ bool SCH_EDIT_TOOL::Init()
     auto anyTextTool =
             [this]( const SELECTION& aSel )
             {
-                return ( m_frame->IsCurrentTool( SCH_ACTIONS::placeLabel )
-                      || m_frame->IsCurrentTool( SCH_ACTIONS::placeClassLabel )
-                      || m_frame->IsCurrentTool( SCH_ACTIONS::placeGlobalLabel )
-                      || m_frame->IsCurrentTool( SCH_ACTIONS::placeHierLabel )
-                      || m_frame->IsCurrentTool( SCH_ACTIONS::placeSchematicText ) );
+                TOOLS_HOLDER* holder = m_toolMgr->GetToolHolder();
+
+                return ( holder->IsCurrentTool( SCH_ACTIONS::placeLabel )
+                      || holder->IsCurrentTool( SCH_ACTIONS::placeClassLabel )
+                      || holder->IsCurrentTool( SCH_ACTIONS::placeGlobalLabel )
+                      || holder->IsCurrentTool( SCH_ACTIONS::placeHierLabel )
+                      || holder->IsCurrentTool( SCH_ACTIONS::placeSchematicText ) );
             };
 
     auto duplicateCondition =
@@ -575,7 +650,8 @@ bool SCH_EDIT_TOOL::Init()
                 {
                     if( getView()->IsLayerVisible( LAYER_SCHEMATIC_DRAWINGSHEET ) )
                     {
-                        DS_PROXY_VIEW_ITEM* ds = m_frame->GetCanvas()->GetView()->GetDrawingSheet();
+                        KIGFX::SCH_VIEW*    view = static_cast<KIGFX::SCH_VIEW*>( getView() );
+                        DS_PROXY_VIEW_ITEM* ds = view->GetDrawingSheet();
                         VECTOR2D            cursor = getViewControls()->GetCursorPosition( false );
 
                         if( ds && ds->HitTestDrawingSheetItems( getView(), cursor ) )
@@ -735,22 +811,33 @@ bool SCH_EDIT_TOOL::Init()
 
     auto singleSheetCondition = S_C::Count( 1 ) && S_C::OnlyTypes( sheetTypes );
 
-    auto variantActiveCondition =
-            [this]( const SELECTION& aSel )
+    // The active design variant is the document's, and there is no document until one is
+    // loaded; an editor showing nothing shows no variant either.
+    auto currentVariant =
+            [this]() -> wxString
             {
-                return !m_frame->Schematic().GetCurrentVariant().IsEmpty();
+                if( SCHEMATIC* schematic = m_editor->GetSchematic() )
+                    return schematic->GetCurrentVariant();
+
+                return wxEmptyString;
+            };
+
+    auto variantActiveCondition =
+            [currentVariant]( const SELECTION& aSel )
+            {
+                return !currentVariant().IsEmpty();
             };
 
     auto noVariantActiveCondition =
-            [this]( const SELECTION& aSel )
+            [currentVariant]( const SELECTION& aSel )
             {
-                return m_frame->Schematic().GetCurrentVariant().IsEmpty();
+                return currentVariant().IsEmpty();
             };
 
     auto symbolHasVariantSymbol =
-            [this]( const SELECTION& aSel )
+            [this, currentVariant]( const SELECTION& aSel )
             {
-                if( m_frame->Schematic().GetCurrentVariant().IsEmpty() || aSel.GetSize() != 1 )
+                if( currentVariant().IsEmpty() || aSel.GetSize() != 1 )
                     return false;
 
                 SCH_SYMBOL* sym = dynamic_cast<SCH_SYMBOL*>( aSel.Front() );
@@ -758,10 +845,9 @@ bool SCH_EDIT_TOOL::Init()
                 if( !sym )
                     return false;
 
-                SCH_SHEET_PATH& sheet = m_frame->GetCurrentSheet();
+                SCH_SHEET_PATH& sheet = m_editor->GetSchematic()->CurrentSheet();
 
-                std::optional<SCH_SYMBOL_VARIANT> variant =
-                        sym->GetVariant( sheet, m_frame->Schematic().GetCurrentVariant() );
+                std::optional<SCH_SYMBOL_VARIANT> variant = sym->GetVariant( sheet, currentVariant() );
 
                 return variant.has_value() && variant->m_SymbolOverride.has_value();
             };
@@ -882,102 +968,110 @@ bool SCH_EDIT_TOOL::Init()
             SCH_TABLECELL_T,
     } );
 
-    //
-    // Add edit actions to the move tool menu
-    //
-    CONDITIONAL_MENU& moveMenu = moveTool->GetToolMenu().GetMenu();
+    // Every menu below belongs to a window: TOOL_INTERACTIVE only builds a TOOL_MENU when
+    // Pgm().IsGUI(), so in a console-mode process there is none to hang these from, and
+    // the two tools they are attached to may have none either. Each action is still
+    // registered and still runs; only its right-click presentation is lost.
+    if( m_selectionTool && m_selectionTool->HasToolMenu() && moveTool && moveTool->HasToolMenu()
+        && drawingTools && drawingTools->HasToolMenu() )
+    {
+        //
+        // Add edit actions to the move tool menu
+        //
+        CONDITIONAL_MENU& moveMenu = moveTool->GetToolMenu().GetMenu();
 
-    moveMenu.AddSeparator();
-    moveMenu.AddMenu( makeSymbolUnitMenu( moveTool ), S_C::SingleMultiUnitSymbol, 1 );
-    moveMenu.AddMenu( makeBodyStyleMenu( moveTool ),  S_C::SingleMultiBodyStyleSymbol, 1 );
+        moveMenu.AddSeparator();
+        moveMenu.AddMenu( makeSymbolUnitMenu( moveTool ), S_C::SingleMultiUnitSymbol, 1 );
+        moveMenu.AddMenu( makeBodyStyleMenu( moveTool ),  S_C::SingleMultiBodyStyleSymbol, 1 );
 
-    moveMenu.AddMenu( makeTransformMenu(),            orientCondition, 200 );
-    moveMenu.AddMenu( makeAttributesMenu(),           S_C::HasTypes( attribTypes ), 200 );
-    moveMenu.AddItem( SCH_ACTIONS::swap,              swapSelectionCondition, 200 );
-    moveMenu.AddItem( SCH_ACTIONS::properties,        propertiesCondition, 200 );
-    moveMenu.AddMenu( makeEditFieldsMenu(),           S_C::SingleSymbol, 200 );
+        moveMenu.AddMenu( makeTransformMenu(),            orientCondition, 200 );
+        moveMenu.AddMenu( makeAttributesMenu(),           S_C::HasTypes( attribTypes ), 200 );
+        moveMenu.AddItem( SCH_ACTIONS::swap,              swapSelectionCondition, 200 );
+        moveMenu.AddItem( SCH_ACTIONS::properties,        propertiesCondition, 200 );
+        moveMenu.AddMenu( makeEditFieldsMenu(),           S_C::SingleSymbol, 200 );
 
-    moveMenu.AddSeparator();
-    moveMenu.AddItem( ACTIONS::cut,                   S_C::IdleSelection );
-    moveMenu.AddItem( ACTIONS::copy,                  S_C::IdleSelection );
-    moveMenu.AddItem( ACTIONS::copyAsText,            canCopyText && S_C::IdleSelection );
-    moveMenu.AddItem( ACTIONS::doDelete,              S_C::NotEmpty );
-    moveMenu.AddItem( ACTIONS::duplicate,             duplicateCondition );
+        moveMenu.AddSeparator();
+        moveMenu.AddItem( ACTIONS::cut,                   S_C::IdleSelection );
+        moveMenu.AddItem( ACTIONS::copy,                  S_C::IdleSelection );
+        moveMenu.AddItem( ACTIONS::copyAsText,            canCopyText && S_C::IdleSelection );
+        moveMenu.AddItem( ACTIONS::doDelete,              S_C::NotEmpty );
+        moveMenu.AddItem( ACTIONS::duplicate,             duplicateCondition );
 
-    //
-    // Add editing actions to the drawing tool menu
-    //
-    CONDITIONAL_MENU& drawMenu = drawingTools->GetToolMenu().GetMenu();
+        //
+        // Add editing actions to the drawing tool menu
+        //
+        CONDITIONAL_MENU& drawMenu = drawingTools->GetToolMenu().GetMenu();
 
-    drawMenu.AddItem( SCH_ACTIONS::clearHighlight,    haveHighlight && S_C::Idle, 1 );
-    drawMenu.AddSeparator(                            haveHighlight && S_C::Idle, 1 );
+        drawMenu.AddItem( SCH_ACTIONS::clearHighlight,    haveHighlight && S_C::Idle, 1 );
+        drawMenu.AddSeparator(                            haveHighlight && S_C::Idle, 1 );
 
-    drawMenu.AddItem( SCH_ACTIONS::enterSheet,        sheetSelection && S_C::Idle, 1 );
-    drawMenu.AddSeparator(                            sheetSelection && S_C::Idle, 1 );
+        drawMenu.AddItem( SCH_ACTIONS::enterSheet,        sheetSelection && S_C::Idle, 1 );
+        drawMenu.AddSeparator(                            sheetSelection && S_C::Idle, 1 );
 
-    drawMenu.AddMenu( makeSymbolUnitMenu( drawingTools ), S_C::SingleMultiUnitSymbol, 1 );
-    drawMenu.AddMenu( makeBodyStyleMenu( drawingTools ),  S_C::SingleMultiBodyStyleSymbol, 1 );
+        drawMenu.AddMenu( makeSymbolUnitMenu( drawingTools ), S_C::SingleMultiUnitSymbol, 1 );
+        drawMenu.AddMenu( makeBodyStyleMenu( drawingTools ),  S_C::SingleMultiBodyStyleSymbol, 1 );
 
-    drawMenu.AddMenu( makeTransformMenu(),            orientCondition, 200 );
-    drawMenu.AddMenu( makeAttributesMenu(),           S_C::HasTypes( attribTypes ), 200 );
-    drawMenu.AddItem( SCH_ACTIONS::properties,        propertiesCondition, 200 );
-    drawMenu.AddMenu( makeEditFieldsMenu(),           S_C::SingleSymbol, 200 );
-    drawMenu.AddItem( SCH_ACTIONS::autoplaceFields,   autoplaceCondition, 200 );
+        drawMenu.AddMenu( makeTransformMenu(),            orientCondition, 200 );
+        drawMenu.AddMenu( makeAttributesMenu(),           S_C::HasTypes( attribTypes ), 200 );
+        drawMenu.AddItem( SCH_ACTIONS::properties,        propertiesCondition, 200 );
+        drawMenu.AddMenu( makeEditFieldsMenu(),           S_C::SingleSymbol, 200 );
+        drawMenu.AddItem( SCH_ACTIONS::autoplaceFields,   autoplaceCondition, 200 );
 
-    drawMenu.AddItem( SCH_ACTIONS::editWithLibEdit,   S_C::SingleSymbolOrPower && S_C::Idle, 200 );
+        drawMenu.AddItem( SCH_ACTIONS::editWithLibEdit,   S_C::SingleSymbolOrPower && S_C::Idle, 200 );
 
-    drawMenu.AddItem( SCH_ACTIONS::toLabel,           anyTextTool && S_C::Idle, 200 );
-    drawMenu.AddItem( SCH_ACTIONS::toHLabel,          anyTextTool && S_C::Idle, 200 );
-    drawMenu.AddItem( SCH_ACTIONS::toGLabel,          anyTextTool && S_C::Idle, 200 );
-    drawMenu.AddItem( SCH_ACTIONS::toText,            anyTextTool && S_C::Idle, 200 );
-    drawMenu.AddItem( SCH_ACTIONS::toTextBox,         anyTextTool && S_C::Idle, 200 );
+        drawMenu.AddItem( SCH_ACTIONS::toLabel,           anyTextTool && S_C::Idle, 200 );
+        drawMenu.AddItem( SCH_ACTIONS::toHLabel,          anyTextTool && S_C::Idle, 200 );
+        drawMenu.AddItem( SCH_ACTIONS::toGLabel,          anyTextTool && S_C::Idle, 200 );
+        drawMenu.AddItem( SCH_ACTIONS::toText,            anyTextTool && S_C::Idle, 200 );
+        drawMenu.AddItem( SCH_ACTIONS::toTextBox,         anyTextTool && S_C::Idle, 200 );
 
-    //
-    // Add editing actions to the selection tool menu
-    //
-    CONDITIONAL_MENU& selToolMenu = m_selectionTool->GetToolMenu().GetMenu();
+        //
+        // Add editing actions to the selection tool menu
+        //
+        CONDITIONAL_MENU& selToolMenu = m_selectionTool->GetToolMenu().GetMenu();
 
-    selToolMenu.AddMenu( makeSymbolUnitMenu( m_selectionTool ),  S_C::SingleMultiUnitSymbol, 1 );
-    selToolMenu.AddMenu( makeBodyStyleMenu( m_selectionTool ),   S_C::SingleMultiBodyStyleSymbol, 1 );
-    selToolMenu.AddMenu( makePinFunctionMenu( m_selectionTool ), S_C::SingleMultiFunctionPin, 1 );
-    selToolMenu.AddMenu( makePinTricksMenu( m_selectionTool ),   S_C::AllPinsOrSheetPins, 1 );
+        selToolMenu.AddMenu( makeSymbolUnitMenu( m_selectionTool ),  S_C::SingleMultiUnitSymbol, 1 );
+        selToolMenu.AddMenu( makeBodyStyleMenu( m_selectionTool ),   S_C::SingleMultiBodyStyleSymbol, 1 );
+        selToolMenu.AddMenu( makePinFunctionMenu( m_selectionTool ), S_C::SingleMultiFunctionPin, 1 );
+        selToolMenu.AddMenu( makePinTricksMenu( m_selectionTool ),   S_C::AllPinsOrSheetPins, 1 );
 
-    selToolMenu.AddMenu( makeTransformMenu(),          orientCondition, 200 );
-    selToolMenu.AddMenu( makeAttributesMenu(),         S_C::HasTypes( attribTypes ), 200 );
-    selToolMenu.AddItem( SCH_ACTIONS::swap,            swapSelectionCondition, 200 );
-    selToolMenu.AddItem( SCH_ACTIONS::properties,      propertiesCondition, 200 );
-    selToolMenu.AddMenu( makeEditFieldsMenu(),         S_C::SingleSymbol, 200 );
-    selToolMenu.AddItem( SCH_ACTIONS::autoplaceFields, autoplaceCondition, 200 );
+        selToolMenu.AddMenu( makeTransformMenu(),          orientCondition, 200 );
+        selToolMenu.AddMenu( makeAttributesMenu(),         S_C::HasTypes( attribTypes ), 200 );
+        selToolMenu.AddItem( SCH_ACTIONS::swap,            swapSelectionCondition, 200 );
+        selToolMenu.AddItem( SCH_ACTIONS::properties,      propertiesCondition, 200 );
+        selToolMenu.AddMenu( makeEditFieldsMenu(),         S_C::SingleSymbol, 200 );
+        selToolMenu.AddItem( SCH_ACTIONS::autoplaceFields, autoplaceCondition, 200 );
 
-    selToolMenu.AddItem( SCH_ACTIONS::editWithLibEdit, S_C::SingleSymbolOrPower && S_C::Idle, 200 );
-    selToolMenu.AddItem( SCH_ACTIONS::changeSymbol,
-                         S_C::SingleSymbolOrPower && noVariantActiveCondition, 200 );
-    selToolMenu.AddItem( SCH_ACTIONS::updateSymbol, S_C::SingleSymbolOrPower, 200 );
-    selToolMenu.AddItem( SCH_ACTIONS::changeSymbols,
-                         S_C::MultipleSymbolsOrPower && noVariantActiveCondition, 200 );
-    selToolMenu.AddItem( SCH_ACTIONS::updateSymbols, S_C::MultipleSymbolsOrPower, 200 );
+        selToolMenu.AddItem( SCH_ACTIONS::editWithLibEdit, S_C::SingleSymbolOrPower && S_C::Idle, 200 );
+        selToolMenu.AddItem( SCH_ACTIONS::changeSymbol,
+                             S_C::SingleSymbolOrPower && noVariantActiveCondition, 200 );
+        selToolMenu.AddItem( SCH_ACTIONS::updateSymbol, S_C::SingleSymbolOrPower, 200 );
+        selToolMenu.AddItem( SCH_ACTIONS::changeSymbols,
+                             S_C::MultipleSymbolsOrPower && noVariantActiveCondition, 200 );
+        selToolMenu.AddItem( SCH_ACTIONS::updateSymbols, S_C::MultipleSymbolsOrPower, 200 );
 
-    selToolMenu.AddItem( SCH_ACTIONS::setVariantSymbol,
-                         S_C::SingleSymbolOrPower && variantActiveCondition, 200 );
-    selToolMenu.AddItem( SCH_ACTIONS::clearVariantSymbol,
-                         symbolHasVariantSymbol, 200 );
-    selToolMenu.AddMenu( makeConvertToMenu(), toChangeCondition, 200 );
+        selToolMenu.AddItem( SCH_ACTIONS::setVariantSymbol,
+                             S_C::SingleSymbolOrPower && variantActiveCondition, 200 );
+        selToolMenu.AddItem( SCH_ACTIONS::clearVariantSymbol,
+                             symbolHasVariantSymbol, 200 );
+        selToolMenu.AddMenu( makeConvertToMenu(), toChangeCondition, 200 );
 
-    selToolMenu.AddItem( SCH_ACTIONS::cleanupSheetPins, sheetHasUndefinedPins, 250 );
-    selToolMenu.AddMenu( makeLockMenu( m_selectionTool ), S_C::NotEmpty, 250 );
+        selToolMenu.AddItem( SCH_ACTIONS::cleanupSheetPins, sheetHasUndefinedPins, 250 );
+        selToolMenu.AddMenu( makeLockMenu( m_selectionTool ), S_C::NotEmpty, 250 );
 
-    selToolMenu.AddSeparator( 300 );
-    selToolMenu.AddItem( ACTIONS::cut,                 S_C::IdleSelection, 300 );
-    selToolMenu.AddItem( ACTIONS::copy,                S_C::IdleSelection, 300 );
-    selToolMenu.AddItem( ACTIONS::copyAsText,          canCopyText && S_C::IdleSelection, 300 );
-    selToolMenu.AddItem( ACTIONS::paste,               S_C::Idle, 300 );
-    selToolMenu.AddItem( ACTIONS::pasteSpecial,        S_C::Idle, 300 );
-    selToolMenu.AddItem( ACTIONS::doDelete,            S_C::NotEmpty, 300 );
-    selToolMenu.AddItem( ACTIONS::duplicate,           duplicateCondition, 300 );
+        selToolMenu.AddSeparator( 300 );
+        selToolMenu.AddItem( ACTIONS::cut,                 S_C::IdleSelection, 300 );
+        selToolMenu.AddItem( ACTIONS::copy,                S_C::IdleSelection, 300 );
+        selToolMenu.AddItem( ACTIONS::copyAsText,          canCopyText && S_C::IdleSelection, 300 );
+        selToolMenu.AddItem( ACTIONS::paste,               S_C::Idle, 300 );
+        selToolMenu.AddItem( ACTIONS::pasteSpecial,        S_C::Idle, 300 );
+        selToolMenu.AddItem( ACTIONS::doDelete,            S_C::NotEmpty, 300 );
+        selToolMenu.AddItem( ACTIONS::duplicate,           duplicateCondition, 300 );
 
-    selToolMenu.AddSeparator( 400 );
-    selToolMenu.AddItem( ACTIONS::selectAll,           S_C::ShowAlways, 400 );
-    selToolMenu.AddItem( ACTIONS::unselectAll,         S_C::ShowAlways, 400 );
+        selToolMenu.AddSeparator( 400 );
+        selToolMenu.AddItem( ACTIONS::selectAll,           S_C::ShowAlways, 400 );
+        selToolMenu.AddItem( ACTIONS::unselectAll,         S_C::ShowAlways, 400 );
+    }
 
     ACTION_MANAGER* mgr = m_toolMgr->GetActionManager();
 
@@ -1055,7 +1149,7 @@ int SCH_EDIT_TOOL::Rotate( const TOOL_EVENT& aEvent )
     bool        moving = false;
     SCH_COMMIT  localCommit( m_toolMgr );
     SCH_COMMIT* commit = dynamic_cast<SCH_COMMIT*>( aEvent.Commit() );
-    SCH_SCREEN* screen = m_frame->GetScreen();
+    SCH_SCREEN* screen = m_editor->GetScreen();
 
     std::map<SCH_SHEET_PIN*, SCH_NO_CONNECT*> noConnects;
 
@@ -1085,7 +1179,7 @@ int SCH_EDIT_TOOL::Rotate( const TOOL_EVENT& aEvent )
         else if( head->IsConnectable() )
             rotPoint = head->GetPosition();
         else
-            rotPoint = m_frame->GetNearestHalfGridPosition( head->GetBoundingBox().GetCenter() );
+            rotPoint = getNearestHalfGridPosition( head->GetBoundingBox().GetCenter() );
 
         if( !moving )
             commit->Modify( head, screen, RECURSE_MODE::RECURSE );
@@ -1098,7 +1192,7 @@ int SCH_EDIT_TOOL::Rotate( const TOOL_EVENT& aEvent )
 
             symbol->Rotate( rotPoint, !clockwise );
 
-            if( m_frame->eeconfig()->m_AutoplaceFields.enable )
+            if( m_editor->eeconfig()->m_AutoplaceFields.enable )
             {
                 AUTOPLACE_ALGO fieldsAutoplaced = symbol->GetFieldsAutoplaced();
 
@@ -1192,11 +1286,11 @@ int SCH_EDIT_TOOL::Rotate( const TOOL_EVENT& aEvent )
         {
             // Rotate the group on itself. Groups do not have an anchor point.
             SCH_GROUP* group = static_cast<SCH_GROUP*>( head );
-            rotPoint = m_frame->GetNearestHalfGridPosition( group->GetPosition() );
+            rotPoint = getNearestHalfGridPosition( group->GetPosition() );
 
             group->Rotate( rotPoint, !clockwise );
 
-            group->Move( rotPoint - m_frame->GetNearestHalfGridPosition( group->GetPosition() ) );
+            group->Move( rotPoint - getNearestHalfGridPosition( group->GetPosition() ) );
 
             break;
         }
@@ -1205,11 +1299,11 @@ int SCH_EDIT_TOOL::Rotate( const TOOL_EVENT& aEvent )
         {
             // Rotate the table on itself. Tables do not have an anchor point.
             SCH_TABLE* table = static_cast<SCH_TABLE*>( head );
-            rotPoint = m_frame->GetNearestHalfGridPosition( table->GetCenter() );
+            rotPoint = getNearestHalfGridPosition( table->GetCenter() );
 
             table->Rotate( rotPoint, !clockwise );
 
-            table->Move( rotPoint - m_frame->GetNearestHalfGridPosition( table->GetCenter() ) );
+            table->Move( rotPoint - getNearestHalfGridPosition( table->GetCenter() ) );
 
             break;
         }
@@ -1228,7 +1322,7 @@ int SCH_EDIT_TOOL::Rotate( const TOOL_EVENT& aEvent )
 
             noConnects = sheet->GetNoConnects();
 
-            rotPoint = m_frame->GetNearestHalfGridPosition( sheet->GetRotationCenter() );
+            rotPoint = getNearestHalfGridPosition( sheet->GetRotationCenter() );
             sheet->Rotate( rotPoint, !clockwise );
 
             break;
@@ -1238,14 +1332,14 @@ int SCH_EDIT_TOOL::Rotate( const TOOL_EVENT& aEvent )
             UNIMPLEMENTED_FOR( head->GetClass() );
         }
 
-        m_frame->UpdateItem( head, false, true );
+        m_editor->UpdateItem( head, false, true );
     }
     else
     {
         if( moving && selection.HasReferencePoint() )
             rotPoint = selection.GetReferencePoint();
         else
-            rotPoint = m_frame->GetNearestHalfGridPosition( selection.GetCenter() );
+            rotPoint = getNearestHalfGridPosition( selection.GetCenter() );
     }
 
     for( EDA_ITEM* edaItem : selection )
@@ -1327,7 +1421,7 @@ int SCH_EDIT_TOOL::Rotate( const TOOL_EVENT& aEvent )
                         item->Type(), posBefore.x, posBefore.y, posAfter.x, posAfter.y );
         }
 
-        m_frame->UpdateItem( item, false, true );
+        m_editor->UpdateItem( item, false, true );
         updateItem( item, true );
     }
 
@@ -1359,7 +1453,8 @@ int SCH_EDIT_TOOL::Rotate( const TOOL_EVENT& aEvent )
         lwbTool->TrimOverLappingWires( commit, &selectionCopy );
         lwbTool->AddJunctionsIfNeeded( commit, &selectionCopy );
 
-        m_frame->Schematic().CleanUp( commit );
+        if( SCHEMATIC* schematic = m_editor->GetSchematic() )
+            schematic->CleanUp( commit );
 
         if( !localCommit.Empty() )
             localCommit.Push( _( "Rotate" ) );
@@ -1384,7 +1479,7 @@ int SCH_EDIT_TOOL::Mirror( const TOOL_EVENT& aEvent )
     bool        moving = item->IsMoving();
     SCH_COMMIT  localCommit( m_toolMgr );
     SCH_COMMIT* commit = dynamic_cast<SCH_COMMIT*>( aEvent.Commit() );
-    SCH_SCREEN* screen = m_frame->GetScreen();
+    SCH_SCREEN* screen = m_editor->GetScreen();
 
     std::map<SCH_SHEET_PIN*, SCH_NO_CONNECT*> noConnects;
 
@@ -1469,7 +1564,7 @@ int SCH_EDIT_TOOL::Mirror( const TOOL_EVENT& aEvent )
             noConnects = static_cast<SCH_SHEET*>( item )->GetNoConnects();
 
             // Mirror the sheet on itself. Sheets do not have a anchor point.
-            VECTOR2I mirrorPoint = m_frame->GetNearestHalfGridPosition( item->GetBoundingBox().Centre() );
+            VECTOR2I mirrorPoint = getNearestHalfGridPosition( item->GetBoundingBox().Centre() );
 
             if( vertical )
                 item->MirrorVertically( mirrorPoint.y );
@@ -1489,11 +1584,11 @@ int SCH_EDIT_TOOL::Mirror( const TOOL_EVENT& aEvent )
         }
 
         connections = item->IsConnectable();
-        m_frame->UpdateItem( item, false, true );
+        m_editor->UpdateItem( item, false, true );
     }
     else if( selection.GetSize() > 1 )
     {
-        VECTOR2I mirrorPoint = m_frame->GetNearestHalfGridPosition( selection.GetCenter() );
+        VECTOR2I mirrorPoint = getNearestHalfGridPosition( selection.GetCenter() );
 
         for( EDA_ITEM* edaItem : selection )
         {
@@ -1541,7 +1636,7 @@ int SCH_EDIT_TOOL::Mirror( const TOOL_EVENT& aEvent )
             }
 
             connections |= item->IsConnectable();
-            m_frame->UpdateItem( item, false, true );
+            m_editor->UpdateItem( item, false, true );
         }
     }
 
@@ -1576,7 +1671,8 @@ int SCH_EDIT_TOOL::Mirror( const TOOL_EVENT& aEvent )
             lwbTool->TrimOverLappingWires( commit, &selectionCopy );
             lwbTool->AddJunctionsIfNeeded( commit, &selectionCopy );
 
-            m_frame->Schematic().CleanUp( commit );
+            if( SCHEMATIC* schematic = m_editor->GetSchematic() )
+                schematic->CleanUp( commit );
         }
 
         if( !localCommit.Empty() )
@@ -1711,8 +1807,8 @@ int SCH_EDIT_TOOL::Swap( const TOOL_EVENT& aEvent )
 
         if( !moving )
         {
-            commit->Modify( a, m_frame->GetScreen(), RECURSE_MODE::RECURSE );
-            commit->Modify( b, m_frame->GetScreen(), RECURSE_MODE::RECURSE );
+            commit->Modify( a, m_editor->GetScreen(), RECURSE_MODE::RECURSE );
+            commit->Modify( b, m_editor->GetScreen(), RECURSE_MODE::RECURSE );
         }
 
         VECTOR2I aPos = a->GetPosition(), bPos = b->GetPosition();
@@ -1810,8 +1906,8 @@ int SCH_EDIT_TOOL::Swap( const TOOL_EVENT& aEvent )
 
         connections |= a->IsConnectable();
         connections |= b->IsConnectable();
-        m_frame->UpdateItem( a, false, true );
-        m_frame->UpdateItem( b, false, true );
+        m_editor->UpdateItem( a, false, true );
+        m_editor->UpdateItem( b, false, true );
     }
 
     if( moving )
@@ -1824,8 +1920,8 @@ int SCH_EDIT_TOOL::Swap( const TOOL_EVENT& aEvent )
             m_toolMgr->RunAction( ACTIONS::selectionClear );
 
         if( connections )
-            m_frame->TestDanglingEnds();
-        m_frame->OnModify();
+            testDanglingEnds();
+        m_editor->OnModify();
 
         if( !localCommit.Empty() )
             localCommit.Push( _( "Swap" ) );
@@ -1846,9 +1942,13 @@ int SCH_EDIT_TOOL::Swap( const TOOL_EVENT& aEvent )
  */
 int SCH_EDIT_TOOL::SwapPins( const TOOL_EVENT& aEvent )
 {
-    wxCHECK( m_frame, 0 );
+    // Every refusal below is an info-bar message, and the project name the refusals are
+    // decided from is the frame's. Without a window this would swap pins on a shared symbol
+    // without being able to say that it had; it declines instead.
+    if( !m_frame )
+        return 0;
 
-    if( !m_frame->eeconfig()->m_Input.allow_unconstrained_pin_swaps )
+    if( !m_editor->eeconfig()->m_Input.allow_unconstrained_pin_swaps )
         return 0;
 
     SCH_SELECTION&         selection = m_selectionTool->RequestSelection( { SCH_PIN_T } );
@@ -1929,7 +2029,7 @@ int SCH_EDIT_TOOL::SwapPins( const TOOL_EVENT& aEvent )
 
     // Stage the parent symbol so undo/redo captures the cache copy that UpdatePins() may rebuild
     // after we touch any shared library pins.
-    commit->Modify( parentSymbol, m_frame->GetScreen(), RECURSE_MODE::RECURSE ); // RECURSE is harmless here
+    commit->Modify( parentSymbol, m_editor->GetScreen(), RECURSE_MODE::RECURSE ); // RECURSE is harmless here
 
     bool swappedLibPins = false;
 
@@ -1942,22 +2042,22 @@ int SCH_EDIT_TOOL::SwapPins( const TOOL_EVENT& aEvent )
         // it had to operate on the shared library pins (meaning the schematic instance still
         // referenced them), in which case UpdatePins() below promotes the symbol to an instance
         // copy that reflects the new pin order.
-        commit->Modify( aPin, m_frame->GetScreen(), RECURSE_MODE::RECURSE );
-        commit->Modify( bPin, m_frame->GetScreen(), RECURSE_MODE::RECURSE );
+        commit->Modify( aPin, m_editor->GetScreen(), RECURSE_MODE::RECURSE );
+        commit->Modify( bPin, m_editor->GetScreen(), RECURSE_MODE::RECURSE );
 
         swappedLibPins |= SwapPinGeometry( aPin, bPin );
 
         connections |= aPin->IsConnectable();
         connections |= bPin->IsConnectable();
-        m_frame->UpdateItem( aPin, false, true );
-        m_frame->UpdateItem( bPin, false, true );
+        m_editor->UpdateItem( aPin, false, true );
+        m_editor->UpdateItem( bPin, false, true );
     }
 
     if( swappedLibPins )
         parentSymbol->UpdatePins(); // clone the library data into the schematic cache with new geometry
 
     // Refresh changed symbol in screen R-Tree / lib caches
-    m_frame->UpdateItem( parentSymbol, false, true );
+    m_editor->UpdateItem( parentSymbol, false, true );
 
     SCH_SELECTION selectionCopy = selection;
 
@@ -1970,12 +2070,13 @@ int SCH_EDIT_TOOL::SwapPins( const TOOL_EVENT& aEvent )
     lwbTool->TrimOverLappingWires( commit, &selectionCopy );
     lwbTool->AddJunctionsIfNeeded( commit, &selectionCopy );
 
-    m_frame->Schematic().CleanUp( commit );
+    if( SCHEMATIC* schematic = m_editor->GetSchematic() )
+        schematic->CleanUp( commit );
 
     if( connections )
-        m_frame->TestDanglingEnds();
+        testDanglingEnds();
 
-    m_frame->OnModify();
+    m_editor->OnModify();
 
     if( !localCommit.Empty() )
         localCommit.Push( _( "Swap Pins" ) );
@@ -2066,19 +2167,30 @@ int SCH_EDIT_TOOL::SwapPinLabels( const TOOL_EVENT& aEvent )
     if( orderedPins.size() < 2 )
         return 0;
 
-    const SCH_SHEET_PATH& sheetPath = m_frame->GetCurrentSheet();
+    SCHEMATIC* schematic = m_editor->GetSchematic();
+
+    if( !schematic )
+        return 0;
+
+    const SCH_SHEET_PATH& sheetPath = schematic->CurrentSheet();
 
     std::vector<SCH_LABEL_BASE*> labels;
 
     for( EDA_ITEM* item : orderedPins )
     {
         SCH_PIN*        pin = static_cast<SCH_PIN*>( item );
-        SCH_LABEL_BASE* label = findSingleNetLabelForPin( pin, m_frame->Schematic(), sheetPath );
+        SCH_LABEL_BASE* label = findSingleNetLabelForPin( pin, *schematic, sheetPath );
 
         if( !label )
         {
-            m_frame->ShowInfoBarError(
-                    _( "Each selected pin must have exactly one attached net label and no other pin connections." ) );
+            // A window: without one there is no info bar to say why nothing happened. The
+            // refusal itself still stands.
+            if( m_frame )
+            {
+                m_frame->ShowInfoBarError( _( "Each selected pin must have exactly one attached net label "
+                                              "and no other pin connections." ) );
+            }
+
             return 0;
         }
 
@@ -2087,10 +2199,10 @@ int SCH_EDIT_TOOL::SwapPinLabels( const TOOL_EVENT& aEvent )
 
     if( labels.size() >= 2 )
     {
-        SCH_COMMIT commit( m_frame );
+        SCH_COMMIT commit( m_toolMgr );
 
         for( SCH_LABEL_BASE* lb : labels )
-            commit.Modify( lb, m_frame->GetScreen() );
+            commit.Modify( lb, m_editor->GetScreen() );
 
         for( size_t i = 0; i < labels.size() - 1; ++i )
         {
@@ -2117,7 +2229,12 @@ int SCH_EDIT_TOOL::SwapUnitLabels( const TOOL_EVENT& aEvent )
     if( selectedUnits.size() < 2 )
         return 0;
 
-    const SCH_SHEET_PATH& sheetPath = m_frame->GetCurrentSheet();
+    SCHEMATIC* schematic = m_editor->GetSchematic();
+
+    if( !schematic )
+        return 0;
+
+    const SCH_SHEET_PATH& sheetPath = schematic->CurrentSheet();
 
     // Build ordered label vectors (sorted by pin X/Y) for each selected unit
     std::vector<std::vector<SCH_LABEL_BASE*>> symbolLabelVectors;
@@ -2128,12 +2245,17 @@ int SCH_EDIT_TOOL::SwapUnitLabels( const TOOL_EVENT& aEvent )
 
         for( SCH_PIN* pin : symbol->GetPins( &sheetPath ) )
         {
-            SCH_LABEL_BASE* label = findSingleNetLabelForPin( pin, m_frame->Schematic(), sheetPath );
+            SCH_LABEL_BASE* label = findSingleNetLabelForPin( pin, *schematic, sheetPath );
 
             if( !label )
             {
-                m_frame->ShowInfoBarError( _( "Each pin of selected units must have exactly one attached net label and "
-                                              "no other pin connections." ) );
+                // A window: without one there is no info bar to say why nothing happened.
+                if( m_frame )
+                {
+                    m_frame->ShowInfoBarError( _( "Each pin of selected units must have exactly one attached "
+                                                  "net label and no other pin connections." ) );
+                }
+
                 return 0;
             }
 
@@ -2163,12 +2285,12 @@ int SCH_EDIT_TOOL::SwapUnitLabels( const TOOL_EVENT& aEvent )
     const size_t pinCount = symbolLabelVectors.front().size();
 
     // Perform cyclic swap of labels across all selected symbols, per pin index
-    SCH_COMMIT commit( m_frame );
+    SCH_COMMIT commit( m_toolMgr );
 
     for( size_t pin = 0; pin < pinCount; pin++ )
     {
         for( auto& vec : symbolLabelVectors )
-            commit.Modify( vec[pin], m_frame->GetScreen() );
+            commit.Modify( vec[pin], m_editor->GetScreen() );
 
         wxString carry = symbolLabelVectors.back()[pin]->GetText();
 
@@ -2190,10 +2312,27 @@ int SCH_EDIT_TOOL::SwapUnitLabels( const TOOL_EVENT& aEvent )
 
 int SCH_EDIT_TOOL::RepeatDrawItem( const TOOL_EVENT& aEvent )
 {
-    const std::vector<std::unique_ptr<SCH_ITEM>>& sourceItems = m_frame->GetRepeatItems();
+    const std::vector<std::unique_ptr<SCH_ITEM>>& sourceItems = m_editor->GetRepeatItems();
+    SCHEMATIC*                                    schematic = m_editor->GetSchematic();
 
-    if( sourceItems.empty() )
+    if( sourceItems.empty() || !schematic )
         return 0;
+
+    for( const auto& item : sourceItems )
+    {
+        if( !m_frame && item->Type() == SCH_SHEET_T )
+        {
+            SCH_SHEET_LIST hierarchy = schematic->Hierarchy();
+            SCH_SHEET_LIST source( static_cast<SCH_SHEET*>( item.get() ) );
+            const wxString destination = m_editor->GetScreen()->GetFileName();
+            if( !destination.empty() && hierarchy.TestForRecursion( source, destination ) )
+            {
+                m_toolMgr->GetToolHolder()->DisplayToolMsg(
+                        _( "Cannot repeat a sheet into its own hierarchy." ) );
+                return 0;
+            }
+        }
+    }
 
     m_toolMgr->RunAction( ACTIONS::selectionClear );
 
@@ -2208,13 +2347,13 @@ int SCH_EDIT_TOOL::RepeatDrawItem( const TOOL_EVENT& aEvent )
 
         // Ensure newItem has a suitable parent: the current screen, because an item from
         // a list of items to repeat must be attached to this current screen
-        newItem->SetParent( m_frame->GetScreen() );
+        newItem->SetParent( m_editor->GetScreen() );
 
         if( SCH_GROUP* enteredGroup = selectionTool->GetEnteredGroup() )
         {
             if( newItem->IsGroupableType() )
             {
-                commit.Modify( enteredGroup, m_frame->GetScreen(), RECURSE_MODE::NO_RECURSE );
+                commit.Modify( enteredGroup, m_editor->GetScreen(), RECURSE_MODE::NO_RECURSE );
                 enteredGroup->AddItem( newItem );
             }
         }
@@ -2224,7 +2363,9 @@ int SCH_EDIT_TOOL::RepeatDrawItem( const TOOL_EVENT& aEvent )
             // If incrementing tries to go below zero, tell user why the value is repeated
             if( EESCHEMA_SETTINGS* cfg = GetAppSettings<EESCHEMA_SETTINGS>( "eeschema" ) )
             {
-                if( !label->IncrementLabel( cfg->m_Drawing.repeat_label_increment ) )
+                // A window: without one there is no info bar to warn in. The label is
+                // repeated unchanged either way.
+                if( !label->IncrementLabel( cfg->m_Drawing.repeat_label_increment ) && m_frame )
                     m_frame->ShowInfoBarWarning( _( "Label value cannot go below zero" ), true );
             }
         }
@@ -2241,8 +2382,12 @@ int SCH_EDIT_TOOL::RepeatDrawItem( const TOOL_EVENT& aEvent )
                                      schIUScale.MilsToIU( cfg->m_Drawing.default_repeat_offset_y ) ) );
         }
 
-        // If cloning a sheet, check that we aren't going to create recursion
-        if( newItem->Type() == SCH_SHEET_T )
+        // If cloning a sheet, check that we aren't going to create recursion.
+        //
+        // Both halves of this are the frame's: the recursion test reports what it found in a
+        // dialog, and the way out of it is the sheet properties dialog asking for a new file
+        // name. Without a window the clone keeps the file name it was copied from.
+        if( newItem->Type() == SCH_SHEET_T && m_frame )
         {
             SCH_SHEET_PATH* currentSheet = &m_frame->GetCurrentSheet();
             SCH_SHEET*      sheet = static_cast<SCH_SHEET*>( newItem );
@@ -2267,34 +2412,54 @@ int SCH_EDIT_TOOL::RepeatDrawItem( const TOOL_EVENT& aEvent )
 
         m_toolMgr->RunAction<EDA_ITEM*>( ACTIONS::selectItem, newItem );
         newItem->SetFlags( IS_NEW );
-        m_frame->AddToScreen( newItem, m_frame->GetScreen() );
-        commit.Added( newItem, m_frame->GetScreen() );
+        m_editor->AddToScreen( newItem, m_editor->GetScreen() );
+        commit.Added( newItem, m_editor->GetScreen() );
 
         if( newItem->Type() == SCH_SYMBOL_T )
         {
-            SCHEMATIC_SETTINGS& projSettings = m_frame->Schematic().Settings();
+            SCHEMATIC_SETTINGS& projSettings = schematic->Settings();
             int                 annotateStartNum = projSettings.m_AnnotateStartNum;
             ANNOTATE_ORDER_T    annotateOrder = static_cast<ANNOTATE_ORDER_T>( projSettings.m_AnnotateSortOrder );
             ANNOTATE_ALGO_T     annotateAlgo = static_cast<ANNOTATE_ALGO_T>( projSettings.m_AnnotateMethod );
 
-            if( m_frame->eeconfig()->m_AnnotatePanel.automatic )
+            if( m_editor->eeconfig()->m_AnnotatePanel.automatic )
             {
                 static_cast<SCH_SYMBOL*>( newItem )->ClearAnnotation( nullptr, false );
                 NULL_REPORTER reporter;
-                m_frame->AnnotateSymbols( &commit, ANNOTATE_SELECTION, annotateOrder, annotateAlgo,
-                                          true /* recursive */, annotateStartNum, false, false, false,
-                                          reporter, SYMBOL_FILTER_NON_POWER );
+
+                if( m_frame )
+                {
+                    m_frame->AnnotateSymbols( &commit, ANNOTATE_SELECTION, annotateOrder, annotateAlgo,
+                                              true /* recursive */, annotateStartNum, false, false, false,
+                                              reporter, SYMBOL_FILTER_NON_POWER );
+                }
+                else
+                {
+                    // Use the native reference allocator for every instance of the repeated
+                    // symbol, as placement does. The enclosing commit owns the new symbol.
+                    SCH_SHEET_LIST hierarchy = schematic->Hierarchy();
+                    SCH_REFERENCE_LIST all, repeated, existing;
+                    hierarchy.GetSymbols( all, SYMBOL_FILTER_ALL );
+                    for( size_t i = 0; i < all.GetCount(); ++i )
+                        ( all[i].GetSymbol() == newItem ? repeated : existing ).AddItem( all[i] );
+                    repeated.SetRefDesTracker( projSettings.m_refDesTracker );
+                    repeated.ReannotateByOptions( annotateOrder, annotateAlgo, annotateStartNum,
+                                                  existing, false, &hierarchy );
+                    repeated.UpdateAnnotation();
+                    schematic->CurrentSheet().UpdateAllScreenReferences();
+                }
             }
 
             // Annotation clears the selection so re-add the item
             m_toolMgr->RunAction<EDA_ITEM*>( ACTIONS::selectItem, newItem );
 
-            restore_state = !m_toolMgr->RunSynchronousAction( SCH_ACTIONS::move, &commit );
+            restore_state = !MoveWithCommit( &commit );
         }
 
         if( restore_state )
         {
             commit.Revert();
+            return 0;
         }
         else
         {
@@ -2308,13 +2473,13 @@ int SCH_EDIT_TOOL::RepeatDrawItem( const TOOL_EVENT& aEvent )
         lwbTool->TrimOverLappingWires( &commit, &newItems );
         lwbTool->AddJunctionsIfNeeded( &commit, &newItems );
 
-        m_frame->Schematic().CleanUp( &commit );
+        schematic->CleanUp( &commit );
         commit.Push( _( "Repeat Item" ) );
 
-        m_frame->SaveCopyForRepeatItem( static_cast<SCH_ITEM*>( newItems[0] ) );
+        m_editor->SaveCopyForRepeatItem( static_cast<SCH_ITEM*>( newItems[0] ) );
 
         for( size_t ii = 1; ii < newItems.GetSize(); ++ii )
-            m_frame->AddCopyForRepeatItem( static_cast<SCH_ITEM*>( newItems[ii] ) );
+            m_editor->AddCopyForRepeatItem( static_cast<SCH_ITEM*>( newItems[ii] ) );
     }
 
     return 0;
@@ -2323,7 +2488,7 @@ int SCH_EDIT_TOOL::RepeatDrawItem( const TOOL_EVENT& aEvent )
 
 int SCH_EDIT_TOOL::DoDelete( const TOOL_EVENT& aEvent )
 {
-    SCH_SCREEN*           screen = m_frame->GetScreen();
+    SCH_SCREEN*           screen = m_editor->GetScreen();
 
     m_selectionTool->RequestSelection( SCH_COLLECTOR::DeletableItems );
     m_selectionTool->FilterSelectionForLockedItems();
@@ -2367,26 +2532,26 @@ int SCH_EDIT_TOOL::DoDelete( const TOOL_EVENT& aEvent )
 
             if( !alg::contains( items, sheet ) )
             {
-                commit.Modify( sheet, m_frame->GetScreen() );
+                commit.Modify( sheet, m_editor->GetScreen() );
                 sheet->RemovePin( pin );
             }
         }
         else if( sch_item->Type() == SCH_FIELD_T )
         {
             // Hide field
-            commit.Modify( item, m_frame->GetScreen() );
+            commit.Modify( item, m_editor->GetScreen() );
             static_cast<SCH_FIELD*>( sch_item )->SetVisible( false );
         }
         else if( sch_item->Type() == SCH_TABLECELL_T )
         {
             // Clear contents of table cell
-            commit.Modify( item, m_frame->GetScreen() );
+            commit.Modify( item, m_editor->GetScreen() );
             static_cast<SCH_TABLECELL*>( sch_item )->SetText( wxEmptyString );
         }
         else if( sch_item->Type() == SCH_RULE_AREA_T )
         {
             sch_item->SetFlags( STRUCT_DELETED );
-            commit.Remove( item, m_frame->GetScreen() );
+            commit.Remove( item, m_editor->GetScreen() );
         }
         else if( sch_item->Type() == SCH_GROUP_T )
         {
@@ -2395,17 +2560,17 @@ int SCH_EDIT_TOOL::DoDelete( const TOOL_EVENT& aEvent )
                     [&]( SCH_ITEM* aChild )
                     {
                         aChild->SetFlags( STRUCT_DELETED );
-                        commit.Remove( aChild, m_frame->GetScreen() );
+                        commit.Remove( aChild, m_editor->GetScreen() );
                     },
                     RECURSE_MODE::RECURSE );
 
             sch_item->SetFlags( STRUCT_DELETED );
-            commit.Remove( sch_item, m_frame->GetScreen() );
+            commit.Remove( sch_item, m_editor->GetScreen() );
         }
         else
         {
             sch_item->SetFlags( STRUCT_DELETED );
-            commit.Remove( item, m_frame->GetScreen() );
+            commit.Remove( item, m_editor->GetScreen() );
             updateHierarchy |= ( sch_item->Type() == SCH_SHEET_T );
         }
     }
@@ -2418,12 +2583,13 @@ int SCH_EDIT_TOOL::DoDelete( const TOOL_EVENT& aEvent )
             continue;
 
         if( junction->HasFlag( STRUCT_DELETED ) || !screen->IsExplicitJunction( point ) )
-            m_frame->DeleteJunction( &commit, junction );
+            m_editor->DeleteJunction( &commit, junction );
     }
 
     commit.Push( _( "Delete" ) );
 
-    if( updateHierarchy )
+    // The hierarchy navigator is a pane of the frame's.
+    if( updateHierarchy && m_frame )
         m_frame->UpdateHierarchyNavigator();
 
     return 0;
@@ -2432,6 +2598,11 @@ int SCH_EDIT_TOOL::DoDelete( const TOOL_EVENT& aEvent )
 
 void SCH_EDIT_TOOL::editFieldText( SCH_FIELD* aField )
 {
+    // This edit is the dialog: what a field should say is the user's answer, not something
+    // that can be computed. Without a window to parent it there is nothing to do.
+    if( !m_frame )
+        return;
+
     KICAD_T    parentType = aField->GetParent() ? aField->GetParent()->Type() : SCHEMATIC_T;
     SCH_COMMIT commit( m_toolMgr );
     wxString   caption;
@@ -2455,20 +2626,20 @@ void SCH_EDIT_TOOL::editFieldText( SCH_FIELD* aField )
 
     // The dialog changes nothing before OK, and staging bumps the connectivity revision
     if( aField->GetEditFlags() == 0 ) // i.e. not edited, or moved
-        commit.Modify( aField, m_frame->GetScreen() );
+        commit.Modify( aField, m_editor->GetScreen() );
 
     dlg.UpdateField( &commit, aField, &m_frame->GetCurrentSheet() );
 
     if( parentType == SCH_SYMBOL_T && aField->GetId() == FIELD_T::REFERENCE )
         static_cast<SCH_ITEM*>( aField->GetParent() )->SetConnectivityDirty();
 
-    if( m_frame->eeconfig()->m_AutoplaceFields.enable || parentType == SCH_SHEET_T )
+    if( m_editor->eeconfig()->m_AutoplaceFields.enable || parentType == SCH_SHEET_T )
     {
         SCH_ITEM*      parent = static_cast<SCH_ITEM*>( aField->GetParent() );
         AUTOPLACE_ALGO fieldsAutoplaced = parent->GetFieldsAutoplaced();
 
         if( fieldsAutoplaced == AUTOPLACE_AUTO || fieldsAutoplaced == AUTOPLACE_MANUAL )
-            parent->AutoplaceFields( m_frame->GetScreen(), fieldsAutoplaced );
+            parent->AutoplaceFields( m_editor->GetScreen(), fieldsAutoplaced );
     }
 
     if( !commit.Empty() )
@@ -2485,6 +2656,14 @@ int SCH_EDIT_TOOL::EditField( const TOOL_EVENT& aEvent )
 
     bool      clearSelection = sel.IsHover();
     EDA_ITEM* item = sel.Front();
+    if( !m_frame )
+    {
+        if( item->Type() == SCH_PIN_T ) item = item->GetParent();
+        m_selectionTool->ClearSelection( true );
+        m_selectionTool->AddItemToSel( static_cast<SCH_ITEM*>( item ) );
+        m_editor->RequestItemProperties( static_cast<SCH_ITEM*>( item ) );
+        return 0;
+    }
 
     if( item->Type() == SCH_FIELD_T )
     {
@@ -2587,9 +2766,9 @@ int SCH_EDIT_TOOL::AutoplaceFields( const TOOL_EVENT& aEvent )
     for( SCH_ITEM* sch_item : autoplaceItems )
     {
         if( !moving && !sch_item->IsNew() )
-            commit.Modify( sch_item, m_frame->GetScreen() );
+            commit.Modify( sch_item, m_editor->GetScreen() );
 
-        sch_item->AutoplaceFields( m_frame->GetScreen(), AUTOPLACE_MANUAL );
+        sch_item->AutoplaceFields( m_editor->GetScreen(), AUTOPLACE_MANUAL );
 
         updateItem( sch_item, true );
     }
@@ -2613,6 +2792,11 @@ int SCH_EDIT_TOOL::AutoplaceFields( const TOOL_EVENT& aEvent )
 
 int SCH_EDIT_TOOL::ChangeSymbols( const TOOL_EVENT& aEvent )
 {
+    // This action is the dialog; which symbol to change to is chosen in it. Without a window
+    // to parent it there is nothing it can do.
+    if( !m_frame )
+        return 0;
+
     SCH_SYMBOL*    selectedSymbol = nullptr;
     SCH_SELECTION& selection = m_selectionTool->RequestSelection( { SCH_SYMBOL_T } );
 
@@ -2650,6 +2834,11 @@ int SCH_EDIT_TOOL::ChangeSymbols( const TOOL_EVENT& aEvent )
 
 int SCH_EDIT_TOOL::SetVariantSymbol( const TOOL_EVENT& aEvent )
 {
+    // This action is the symbol chooser, and its compatibility refusals are message boxes.
+    // Without a window to parent them there is nothing it can do.
+    if( !m_frame )
+        return 0;
+
     SCH_SELECTION& selection = m_selectionTool->RequestSelection( { SCH_SYMBOL_T } );
 
     if( selection.Empty() )
@@ -2756,13 +2945,16 @@ int SCH_EDIT_TOOL::SetVariantSymbol( const TOOL_EVENT& aEvent )
     SCH_COMMIT      commit( m_toolMgr );
     SCH_SHEET_PATH& currentSheet = m_frame->GetCurrentSheet();
 
-    commit.Modify( symbol, m_frame->GetScreen() );
+    commit.Modify( symbol, m_editor->GetScreen() );
 
     symbol->SetVariantSymbolOverride( currentSheet, variantName, picked.LibId );
     symbol->ClearCaches();
 
     commit.Push( _( "Set Variant Symbol" ) );
-    m_frame->GetCanvas()->Refresh();
+
+    // The whole symbol is redrawn from a different library symbol, so a targeted update is
+    // not enough; RefreshCanvas posts the repaint the canvas owner would.
+    m_toolMgr->GetToolHolder()->RefreshCanvas();
 
     if( selection.IsHover() )
         m_toolMgr->RunAction( ACTIONS::selectionClear );
@@ -2779,16 +2971,17 @@ int SCH_EDIT_TOOL::ClearVariantSymbol( const TOOL_EVENT& aEvent )
         return 0;
 
     SCH_SYMBOL* symbol = dynamic_cast<SCH_SYMBOL*>( selection.Front() );
+    SCHEMATIC*  schematic = m_editor->GetSchematic();
 
-    if( !symbol )
+    if( !symbol || !schematic )
         return 0;
 
-    wxString variantName = m_frame->Schematic().GetCurrentVariant();
+    wxString variantName = schematic->GetCurrentVariant();
 
     if( variantName.IsEmpty() )
         return 0;
 
-    SCH_SHEET_PATH& currentSheet = m_frame->GetCurrentSheet();
+    SCH_SHEET_PATH& currentSheet = schematic->CurrentSheet();
 
     std::optional<SCH_SYMBOL_VARIANT> existingVariant =
             symbol->GetVariant( currentSheet, variantName );
@@ -2797,13 +2990,16 @@ int SCH_EDIT_TOOL::ClearVariantSymbol( const TOOL_EVENT& aEvent )
         return 0;
 
     SCH_COMMIT commit( m_toolMgr );
-    commit.Modify( symbol, m_frame->GetScreen() );
+    commit.Modify( symbol, m_editor->GetScreen() );
 
     symbol->ClearVariantSymbolOverride( currentSheet, variantName );
     symbol->ClearCaches();
 
     commit.Push( _( "Clear Variant Symbol" ) );
-    m_frame->GetCanvas()->Refresh();
+
+    // The whole symbol is redrawn from a different library symbol, so a targeted update is
+    // not enough; RefreshCanvas posts the repaint the canvas owner would.
+    m_toolMgr->GetToolHolder()->RefreshCanvas();
 
     if( selection.IsHover() )
         m_toolMgr->RunAction( ACTIONS::selectionClear );
@@ -2822,15 +3018,12 @@ int SCH_EDIT_TOOL::CycleBodyStyle( const TOOL_EVENT& aEvent )
     SCH_SYMBOL* symbol = (SCH_SYMBOL*) selection.Front();
     SCH_COMMIT  commit( m_toolMgr );
 
-    if( !symbol->IsNew() )
-        commit.Modify( symbol, m_frame->GetScreen() );
-
     int nextBodyStyle = symbol->GetBodyStyle() + 1;
 
     if( nextBodyStyle > symbol->GetBodyStyleCount() )
         nextBodyStyle = 1;
 
-    m_frame->SelectBodyStyle( symbol, nextBodyStyle );
+    m_editor->SelectBodyStyle( m_toolMgr, symbol, nextBodyStyle, &commit );
 
     if( symbol->IsNew() )
         m_toolMgr->PostAction( ACTIONS::refreshPreview );
@@ -2847,6 +3040,13 @@ int SCH_EDIT_TOOL::CycleBodyStyle( const TOOL_EVENT& aEvent )
 
 int SCH_EDIT_TOOL::Properties( const TOOL_EVENT& aEvent )
 {
+    if( !m_frame )
+    {
+        SCH_SELECTION& selected = m_selectionTool->RequestSelection();
+        if( selected.Size() == 1 ) m_editor->RequestItemProperties( static_cast<SCH_ITEM*>( selected.Front() ) );
+        return 0;
+    }
+
     SCH_SELECTION& selection = m_selectionTool->RequestSelection();
     bool           clearSelection = selection.IsHover();
 
@@ -2918,7 +3118,7 @@ int SCH_EDIT_TOOL::Properties( const TOOL_EVENT& aEvent )
         }
         else
         {
-            frame()->ShowInfoBarMsg( _( "Use Properties panel to edit properties common to selected items." ) );
+            m_frame->ShowInfoBarMsg( _( "Use Properties panel to edit properties common to selected items." ) );
             return 0;
         }
 
@@ -2961,16 +3161,16 @@ int SCH_EDIT_TOOL::Properties( const TOOL_EVENT& aEvent )
     default:
         if( selection.Size() > 1 )
         {
-            WX_INFOBAR* infobar = frame()->GetInfoBar();
+            WX_INFOBAR* infobar = m_frame->GetInfoBar();
 
             infobar->RemoveAllButtons();
 
-            if( !frame()->GetPropertiesPanel()->IsShownOnScreen() )
+            if( !m_frame->GetPropertiesPanel()->IsShownOnScreen() )
             {
                 infobar->AddLink( _( "Show Properties panel" ),
                         [this]( wxHyperlinkEvent& )
                         {
-                            frame()->ToggleProperties();
+                            m_frame->ToggleProperties();
                         } );
             }
 
@@ -2993,6 +3193,17 @@ int SCH_EDIT_TOOL::Properties( const TOOL_EVENT& aEvent )
 
 void SCH_EDIT_TOOL::EditProperties( EDA_ITEM* aItem )
 {
+    if( !m_frame )
+    {
+        if( auto* item = dynamic_cast<SCH_ITEM*>( aItem ) )
+        {
+            m_selectionTool->ClearSelection( true );
+            m_selectionTool->AddItemToSel( item );
+            m_editor->RequestItemProperties( item );
+        }
+        return;
+    }
+
     switch( aItem->Type() )
     {
     case SCH_SYMBOL_T:
@@ -3014,15 +3225,15 @@ void SCH_EDIT_TOOL::EditProperties( EDA_ITEM* aItem )
 
         if( retval == SYMBOL_PROPS_EDIT_OK )
         {
-            if( m_frame->eeconfig()->m_AutoplaceFields.enable )
+            if( m_editor->eeconfig()->m_AutoplaceFields.enable )
             {
                 AUTOPLACE_ALGO fieldsAutoplaced = symbol->GetFieldsAutoplaced();
 
                 if( fieldsAutoplaced == AUTOPLACE_AUTO || fieldsAutoplaced == AUTOPLACE_MANUAL )
-                    symbol->AutoplaceFields( m_frame->GetScreen(), fieldsAutoplaced );
+                    symbol->AutoplaceFields( m_editor->GetScreen(), fieldsAutoplaced );
             }
 
-            m_frame->OnModify();
+            m_editor->OnModify();
         }
         else if( retval == SYMBOL_PROPS_EDIT_SCHEMATIC_SYMBOL )
         {
@@ -3093,7 +3304,7 @@ void SCH_EDIT_TOOL::EditProperties( EDA_ITEM* aItem )
         originalHierarchy.BuildSheetList( &m_frame->Schematic().Root(), true );
 
         SCH_COMMIT commit( m_toolMgr );
-        commit.Modify( sheet, m_frame->GetScreen() );
+        commit.Modify( sheet, m_editor->GetScreen() );
         okPressed = m_frame->EditSheetProperties( sheet, &m_frame->GetCurrentSheet(), &isUndoable, &doClearAnnotation,
                                                   &updateHierarchyNavigator );
 
@@ -3113,7 +3324,7 @@ void SCH_EDIT_TOOL::EditProperties( EDA_ITEM* aItem )
                 items.emplace_back( sheet );
                 m_frame->Schematic().OnItemsRemoved( items );
                 m_frame->Schematic().OnItemsAdded( items );
-                m_frame->OnModify();
+                m_editor->OnModify();
                 m_frame->Schematic().RefreshHierarchy();
                 m_frame->UpdateHierarchyNavigator();
             }
@@ -3138,7 +3349,7 @@ void SCH_EDIT_TOOL::EditProperties( EDA_ITEM* aItem )
         // Only a push republishes the staged sheet; a cancel, a file change and the annotation
         // reset each leave the screen revision ahead of the last recalculation
         if( !okPressed || !isUndoable || doClearAnnotation )
-            m_frame->RecalculateConnections( nullptr, NO_CLEANUP );
+            m_editor->RecalculateConnections( nullptr, NO_CLEANUP );
 
         if( okPressed )
             m_frame->GetCanvas()->Refresh();
@@ -3251,7 +3462,7 @@ void SCH_EDIT_TOOL::EditProperties( EDA_ITEM* aItem )
     updateItem( aItem, false );
 
     if( SCH_ITEM* schItem = dynamic_cast<SCH_ITEM*>( aItem ) )
-        m_frame->GetScreen()->UpdateDisplayBounds( schItem );
+        m_editor->GetScreen()->UpdateDisplayBounds( schItem );
 }
 
 
@@ -3366,7 +3577,7 @@ int SCH_EDIT_TOOL::ChangeTextType( const TOOL_EVENT& aEvent )
                     }
                 }
 
-                position = m_frame->GetNearestGridPosition( position );
+                position = getNearestGridPosition( position );
                 href = textbox->GetHyperlink();
                 break;
             }
@@ -3578,7 +3789,7 @@ int SCH_EDIT_TOOL::ChangeTextType( const TOOL_EVENT& aEvent )
             new_eda_text->SetBold( eda_text->IsBold() );
             new_eda_text->SetItalic( eda_text->IsItalic() );
 
-            newtext->AutoplaceFields( m_frame->GetScreen(), AUTOPLACE_AUTO );
+            newtext->AutoplaceFields( m_editor->GetScreen(), AUTOPLACE_AUTO );
 
             SCH_LABEL_BASE* label = dynamic_cast<SCH_LABEL_BASE*>( item );
             SCH_LABEL_BASE* new_label = dynamic_cast<SCH_LABEL_BASE*>( newtext );
@@ -3600,15 +3811,15 @@ int SCH_EDIT_TOOL::ChangeTextType( const TOOL_EVENT& aEvent )
             if( selected )
                 m_toolMgr->RunAction<EDA_ITEM*>( ACTIONS::unselectItem, item );
 
-            m_frame->RemoveFromScreen( item, m_frame->GetScreen() );
+            m_editor->RemoveFromScreen( item, m_editor->GetScreen() );
 
-            if( commit->GetStatus( item, m_frame->GetScreen() ) == CHT_ADD )
-                commit->Unstage( item, m_frame->GetScreen() );
+            if( commit->GetStatus( item, m_editor->GetScreen() ) == CHT_ADD )
+                commit->Unstage( item, m_editor->GetScreen() );
             else
-                commit->Removed( item, m_frame->GetScreen() );
+                commit->Removed( item, m_editor->GetScreen() );
 
-            m_frame->AddToScreen( newtext, m_frame->GetScreen() );
-            commit->Added( newtext, m_frame->GetScreen() );
+            m_editor->AddToScreen( newtext, m_editor->GetScreen() );
+            commit->Added( newtext, m_editor->GetScreen() );
 
             if( selected )
                 m_toolMgr->RunAction<EDA_ITEM*>( ACTIONS::selectItem, newtext );
@@ -3658,7 +3869,7 @@ int SCH_EDIT_TOOL::JustifyText( const TOOL_EVENT& aEvent )
         item = static_cast<SCH_ITEM*>( edaItem );
 
         if( !moving )
-            commit->Modify( item, m_frame->GetScreen() );
+            commit->Modify( item, m_editor->GetScreen() );
 
         if( item->Type() == SCH_FIELD_T )
         {
@@ -3683,7 +3894,7 @@ int SCH_EDIT_TOOL::JustifyText( const TOOL_EVENT& aEvent )
                 setJustify( label );
         }
 
-        m_frame->UpdateItem( item, false, true );
+        m_editor->UpdateItem( item, false, true );
     }
 
     // Update R-Tree for modified items
@@ -3718,6 +3929,11 @@ int SCH_EDIT_TOOL::JustifyText( const TOOL_EVENT& aEvent )
 
 int SCH_EDIT_TOOL::CleanupSheetPins( const TOOL_EVENT& aEvent )
 {
+    // This action asks the user to confirm a destructive edit before making it. Without a
+    // window to ask in it declines rather than delete pins unasked.
+    if( !m_frame )
+        return 0;
+
     SCH_SELECTION& selection = m_selectionTool->RequestSelection( { SCH_SHEET_T } );
     SCH_SHEET*     sheet = (SCH_SHEET*) selection.Front();
     SCH_COMMIT     commit( m_toolMgr );
@@ -3728,7 +3944,7 @@ int SCH_EDIT_TOOL::CleanupSheetPins( const TOOL_EVENT& aEvent )
     if( !IsOK( m_frame, _( "Do you wish to delete the unreferenced pins from this sheet?" ) ) )
         return 0;
 
-    commit.Modify( sheet, m_frame->GetScreen() );
+    commit.Modify( sheet, m_editor->GetScreen() );
 
     sheet->CleanupSheet();
 
@@ -3745,6 +3961,11 @@ int SCH_EDIT_TOOL::CleanupSheetPins( const TOOL_EVENT& aEvent )
 
 int SCH_EDIT_TOOL::EditPageNumber( const TOOL_EVENT& aEvent )
 {
+    // This action is the text entry dialog: the new page number is the user's answer.
+    // Without a window to parent it there is nothing it can do.
+    if( !m_frame )
+        return 0;
+
     SCH_SELECTION& selection = m_selectionTool->RequestSelection( { SCH_SHEET_T } );
 
     if( selection.GetSize() > 1 )
@@ -3759,7 +3980,7 @@ int SCH_EDIT_TOOL::EditPageNumber( const TOOL_EVENT& aEvent )
     if( sheet )
     {
         // When changing the page number of a selected sheet, the current screen owns the sheet.
-        screen = m_frame->GetScreen();
+        screen = m_editor->GetScreen();
 
         instance.push_back( sheet );
     }
@@ -3776,7 +3997,7 @@ int SCH_EDIT_TOOL::EditPageNumber( const TOOL_EVENT& aEvent )
         else
         {
             // The root sheet and root screen are effectively the same thing.
-            screen = m_frame->GetScreen();
+            screen = m_editor->GetScreen();
         }
 
         sheet = m_frame->GetCurrentSheet().Last();
@@ -3796,7 +4017,7 @@ int SCH_EDIT_TOOL::EditPageNumber( const TOOL_EVENT& aEvent )
     if( dlg.ShowModal() == wxID_CANCEL || dlg.GetValue() == instance.GetPageNumber() )
         return 0;
 
-    SCH_COMMIT commit( m_frame );
+    SCH_COMMIT commit( m_toolMgr );
 
     commit.Modify( sheet, screen );
 
@@ -3804,7 +4025,7 @@ int SCH_EDIT_TOOL::EditPageNumber( const TOOL_EVENT& aEvent )
 
     if( instance == m_frame->GetCurrentSheet() )
     {
-        m_frame->GetScreen()->SetPageNumber( dlg.GetValue() );
+        m_editor->GetScreen()->SetPageNumber( dlg.GetValue() );
         m_frame->OnPageSettingsChange();
     }
 
@@ -3850,22 +4071,26 @@ int SCH_EDIT_TOOL::SetAttribute( const TOOL_EVENT& aEvent )
                     ? m_selectionTool->RequestSelection( { SCH_SYMBOL_T } )
                     : m_selectionTool->RequestSelection( { SCH_SYMBOL_T, SCH_SHEET_T, SCH_RULE_AREA_T } );
     std::set<std::pair<SCH_ITEM*, SCH_SCREEN*>> collectedItems;
+    SCHEMATIC*                                 schematic = m_editor->GetSchematic();
+
+    if( !schematic )
+        return 0;
 
     for( EDA_ITEM* item : selection )
     {
         if( SCH_SYMBOL* symbol = dynamic_cast<SCH_SYMBOL*>( item) )
         {
-            collectedItems.insert( { symbol, m_frame->GetScreen() } );
+            collectedItems.insert( { symbol, m_editor->GetScreen() } );
 
             // The attributes should be kept in sync in multi-unit parts.
             // Of course the symbol must be annotated to collect other units.
-            if( symbol->IsAnnotated( &m_frame->GetCurrentSheet() ) )
+            if( symbol->IsAnnotated( &schematic->CurrentSheet() ) )
             {
-                wxString ref = symbol->GetRef( &m_frame->GetCurrentSheet() );
+                wxString ref = symbol->GetRef( &schematic->CurrentSheet() );
                 int      unit = symbol->GetUnit();
                 LIB_ID   libId = symbol->GetLibId();
 
-                for( SCH_SHEET_PATH& sheet : m_frame->Schematic().Hierarchy() )
+                for( SCH_SHEET_PATH& sheet : schematic->Hierarchy() )
                 {
                     SCH_SCREEN*              screen = sheet.LastScreen();
                     std::vector<SCH_SYMBOL*> otherUnits;
@@ -3879,17 +4104,17 @@ int SCH_EDIT_TOOL::SetAttribute( const TOOL_EVENT& aEvent )
         }
         else if( SCH_SHEET* sheet = dynamic_cast<SCH_SHEET*>( item ) )
         {
-            collectedItems.insert( { sheet, m_frame->GetScreen() } );
+            collectedItems.insert( { sheet, m_editor->GetScreen() } );
         }
         else if( SCH_RULE_AREA* ruleArea = dynamic_cast<SCH_RULE_AREA*>( item ) )
         {
-            collectedItems.insert( { ruleArea, m_frame->GetScreen() } );
+            collectedItems.insert( { ruleArea, m_editor->GetScreen() } );
         }
     }
 
     SCH_COMMIT      commit( m_toolMgr );
-    SCH_SHEET_PATH* sheet = &m_frame->GetCurrentSheet();
-    wxString        variant = m_frame->Schematic().GetCurrentVariant();
+    SCH_SHEET_PATH* sheet = &schematic->CurrentSheet();
+    wxString        variant = schematic->GetCurrentVariant();
     bool            new_state = false;
 
     for( const auto& [item, _] : collectedItems )
@@ -3938,6 +4163,14 @@ int SCH_EDIT_TOOL::SetAttribute( const TOOL_EVENT& aEvent )
 
 wxString SCH_EDIT_TOOL::FixERCErrorMenuText( const std::shared_ptr<RC_ITEM>& aERCItem )
 {
+    // The descriptions below name the action's hotkey, which is read out of the frame's
+    // accelerator table. Without a frame there is no menu to label in the first place.
+    auto runMenuText =
+            [this]( const TOOL_ACTION& aAction ) -> wxString
+            {
+                return m_frame ? m_frame->GetRunMenuCommandDescription( aAction ) : wxString();
+            };
+
     if( aERCItem->GetErrorCode() == ERCE_SIMULATION_MODEL
         || aERCItem->GetErrorCode() == ERCE_FOOTPRINT_FILTERS
         || aERCItem->GetErrorCode() == ERCE_FOOTPRINT_LINK_ISSUES )
@@ -3946,16 +4179,16 @@ wxString SCH_EDIT_TOOL::FixERCErrorMenuText( const std::shared_ptr<RC_ITEM>& aER
     }
     else if( aERCItem->GetErrorCode() == ERCE_LIB_SYMBOL_ISSUES )
     {
-        return m_frame->GetRunMenuCommandDescription( SCH_ACTIONS::showSymbolLibTable );
+        return runMenuText( SCH_ACTIONS::showSymbolLibTable );
     }
     else if( aERCItem->GetErrorCode() == ERCE_LIB_SYMBOL_MISMATCH )
     {
-        return m_frame->GetRunMenuCommandDescription( SCH_ACTIONS::updateSymbol );
+        return runMenuText( SCH_ACTIONS::updateSymbol );
     }
     else if( aERCItem->GetErrorCode() == ERCE_UNANNOTATED
             || aERCItem->GetErrorCode() == ERCE_DUPLICATE_REFERENCE )
     {
-        return m_frame->GetRunMenuCommandDescription( SCH_ACTIONS::annotate );
+        return runMenuText( SCH_ACTIONS::annotate );
     }
     else if( aERCItem->GetErrorCode() == ERCE_UNDEFINED_NETCLASS )
     {
@@ -3972,9 +4205,12 @@ wxString SCH_EDIT_TOOL::FixERCErrorMenuText( const std::shared_ptr<RC_ITEM>& aER
 
 void SCH_EDIT_TOOL::FixERCError( const std::shared_ptr<RC_ITEM>& aERCItem )
 {
-    SCH_EDIT_FRAME* frame = dynamic_cast<SCH_EDIT_FRAME*>( m_frame );
+    // Every fix is either a dialog or an action that opens one. Without a window to parent
+    // them there is nothing this can do.
+    SCH_EDIT_FRAME* frame = m_frame;
 
-    wxCHECK( frame, /* void */ );
+    if( !frame )
+        return;
 
     if( aERCItem->GetErrorCode() == ERCE_SIMULATION_MODEL
         || aERCItem->GetErrorCode() == ERCE_FOOTPRINT_FILTERS
@@ -4080,7 +4316,7 @@ int SCH_EDIT_TOOL::modifyLockSelected( MODIFY_MODE aMode )
                     || schItem->Type() == SCH_SHEET_PIN_T )
                 continue;
 
-            commit.Modify( schItem, m_frame->GetScreen() );
+            commit.Modify( schItem, m_editor->GetScreen() );
             schItem->SetLocked( aMode == ON );
         }
     }
@@ -4092,6 +4328,18 @@ int SCH_EDIT_TOOL::modifyLockSelected( MODIFY_MODE aMode )
     }
 
     return 0;
+}
+
+
+int SCH_EDIT_TOOL::globalEdit( const TOOL_EVENT& aEvent )
+{
+    // ::GlobalEdit is the dialog, and its body lives beside that dialog rather than in this
+    // file, so the guard has to go here. Without a window to parent it there is nothing it
+    // can do.
+    if( !m_frame )
+        return 0;
+
+    return GlobalEdit( aEvent );
 }
 
 
@@ -4150,7 +4398,7 @@ void SCH_EDIT_TOOL::setTransitions()
     Go( &SCH_EDIT_TOOL::Unlock,             SCH_ACTIONS::unlock.MakeEvent() );
 
     Go( &SCH_EDIT_TOOL::CleanupSheetPins,   SCH_ACTIONS::cleanupSheetPins.MakeEvent() );
-    Go( &SCH_EDIT_TOOL::GlobalEdit,         SCH_ACTIONS::editTextAndGraphics.MakeEvent() );
+    Go( &SCH_EDIT_TOOL::globalEdit,         SCH_ACTIONS::editTextAndGraphics.MakeEvent() );
     Go( &SCH_EDIT_TOOL::EditPageNumber,     SCH_ACTIONS::editPageNumber.MakeEvent() );
 
     Go( &SCH_EDIT_TOOL::DdAppendFile,       SCH_ACTIONS::ddAppendFile.MakeEvent() );

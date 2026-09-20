@@ -59,7 +59,9 @@ SYMBOL_EDITOR_DRAWING_TOOLS::SYMBOL_EDITOR_DRAWING_TOOLS() :
 
 bool SYMBOL_EDITOR_DRAWING_TOOLS::Init()
 {
-    SCH_TOOL_BASE::Init();
+    // Declines a tool holder that is not this tool's frame; see SCH_TOOL_BASE::Init().
+    if( !SCH_TOOL_BASE::Init() )
+        return false;
 
     auto isDrawingCondition =
             [] ( const SELECTION& aSel )

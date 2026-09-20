@@ -146,9 +146,9 @@ static void sheetBorderPos( const SCH_SHEET* aSheet, long long aArc, VECTOR2I& a
 }
 
 
-static void cloneWireConnection( SCH_LINE* aNewLine, SCH_ITEM* aSource, SCH_EDIT_FRAME* aFrame )
+static void cloneWireConnection( SCH_LINE* aNewLine, SCH_ITEM* aSource, SCHEMATIC_HOLDER* aEditor )
 {
-    if( !aNewLine || !aSource || !aFrame )
+    if( !aNewLine || !aSource || !aEditor || !aEditor->GetSchematic() )
         return;
 
     SCH_LINE* sourceLine = dynamic_cast<SCH_LINE*>( aSource );
@@ -156,7 +156,7 @@ static void cloneWireConnection( SCH_LINE* aNewLine, SCH_ITEM* aSource, SCH_EDIT
     if( !sourceLine )
         return;
 
-    SCH_SHEET_PATH sheetPath = aFrame->GetCurrentSheet();
+    SCH_SHEET_PATH sheetPath = aEditor->GetSchematic()->CurrentSheet();
     SCH_CONNECTION* sourceConnection = sourceLine->Connection( &sheetPath );
 
     if( !sourceConnection )
@@ -181,9 +181,18 @@ SCH_MOVE_TOOL::SCH_MOVE_TOOL() :
 }
 
 
+void SCH_MOVE_TOOL::showHint( const wxString& aMessage )
+{
+    if( m_frame )
+        m_frame->ShowInfoBarMsg( aMessage );
+}
+
+
 bool SCH_MOVE_TOOL::Init()
 {
-    SCH_TOOL_BASE::Init();
+    // Declines a tool holder that is not this tool's frame; see SCH_TOOL_BASE::Init().
+    if( !SCH_TOOL_BASE::Init() )
+        return false;
 
     auto moveCondition =
             []( const SELECTION& aSel )
@@ -197,13 +206,16 @@ bool SCH_MOVE_TOOL::Init()
                 return true;
             };
 
-    // Add move actions to the selection tool menu
-    //
-    CONDITIONAL_MENU& selToolMenu = m_selectionTool->GetToolMenu().GetMenu();
+    // Add move actions to the selection tool menu. TOOL_INTERACTIVE only builds a
+    // TOOL_MENU when Pgm().IsGUI(), so in a console-mode process there is none to add to.
+    if( m_selectionTool && m_selectionTool->HasToolMenu() )
+    {
+        CONDITIONAL_MENU& selToolMenu = m_selectionTool->GetToolMenu().GetMenu();
 
-    selToolMenu.AddItem( SCH_ACTIONS::move, moveCondition, 150 );
-    selToolMenu.AddItem( SCH_ACTIONS::drag, moveCondition, 150 );
-    selToolMenu.AddItem( SCH_ACTIONS::alignToGrid, moveCondition, 150 );
+        selToolMenu.AddItem( SCH_ACTIONS::move, moveCondition, 150 );
+        selToolMenu.AddItem( SCH_ACTIONS::drag, moveCondition, 150 );
+        selToolMenu.AddItem( SCH_ACTIONS::alignToGrid, moveCondition, 150 );
+    }
 
     return true;
 }
@@ -340,8 +352,8 @@ void SCH_MOVE_TOOL::orthoLineDrag( SCH_COMMIT* aCommit, SCH_LINE* line, const VE
             foundLine = new SCH_LINE( unselectedEnd, line->GetLayer() );
             foundLine->SetFlags( IS_NEW );
             foundLine->SetLastResolvedState( line );
-            cloneWireConnection( foundLine, line, m_frame );
-            m_frame->AddToScreen( foundLine, m_frame->GetScreen() );
+            cloneWireConnection( foundLine, line, m_editor );
+            m_editor->AddToScreen( foundLine, m_editor->GetScreen() );
             m_newDragLines.insert( foundLine );
 
             // We just broke off of the existing items, so replace all of them with our new
@@ -367,7 +379,7 @@ void SCH_MOVE_TOOL::orthoLineDrag( SCH_COMMIT* aCommit, SCH_LINE* line, const VE
 
             if( !foundLine->HasFlag( IS_CHANGED ) && !foundLine->HasFlag( IS_NEW ) )
             {
-                aCommit->Modify( (SCH_ITEM*) foundLine, m_frame->GetScreen() );
+                aCommit->Modify( (SCH_ITEM*) foundLine, m_editor->GetScreen() );
 
                 if( !foundLine->IsSelected() )
                     m_changedDragLines.insert( foundLine );
@@ -420,8 +432,8 @@ void SCH_MOVE_TOOL::orthoLineDrag( SCH_COMMIT* aCommit, SCH_LINE* line, const VE
                 m_lineConnectionCache[bendLine].clear();
                 m_lineConnectionCache[foundLine].clear();
 
-                m_frame->RemoveFromScreen( bendLine, m_frame->GetScreen() );
-                m_frame->RemoveFromScreen( foundLine, m_frame->GetScreen() );
+                m_editor->RemoveFromScreen( bendLine, m_editor->GetScreen() );
+                m_editor->RemoveFromScreen( foundLine, m_editor->GetScreen() );
 
                 m_newDragLines.erase( bendLine );
                 m_newDragLines.erase( foundLine );
@@ -473,8 +485,8 @@ void SCH_MOVE_TOOL::orthoLineDrag( SCH_COMMIT* aCommit, SCH_LINE* line, const VE
             a->SetFlags( IS_NEW );
             a->SetConnectivityDirty( true );
             a->SetLastResolvedState( line );
-            cloneWireConnection( a, line, m_frame );
-            m_frame->AddToScreen( a, m_frame->GetScreen() );
+            cloneWireConnection( a, line, m_editor );
+            m_editor->AddToScreen( a, m_editor->GetScreen() );
             m_newDragLines.insert( a );
 
             SCH_LINE* b = new SCH_LINE( a->GetStartPoint(), line->GetLayer() );
@@ -482,8 +494,8 @@ void SCH_MOVE_TOOL::orthoLineDrag( SCH_COMMIT* aCommit, SCH_LINE* line, const VE
             b->SetFlags( IS_NEW | STARTPOINT );
             b->SetConnectivityDirty( true );
             b->SetLastResolvedState( line );
-            cloneWireConnection( b, line, m_frame );
-            m_frame->AddToScreen( b, m_frame->GetScreen() );
+            cloneWireConnection( b, line, m_editor );
+            m_editor->AddToScreen( b, m_editor->GetScreen() );
             m_newDragLines.insert( b );
 
             xBendCount += yMoveBit;
@@ -561,6 +573,10 @@ int SCH_MOVE_TOOL::Main( const TOOL_EVENT& aEvent )
             aEvent.SynchronousState()->store( STS_FINISHED );
         else
             aEvent.SynchronousState()->store( STS_CANCELLED );
+
+        if( !m_frame )
+            m_toolMgr->PostEvent( TOOL_EVENT( TC_MESSAGE, TA_NONE,
+                                             "eeschema.moveTransactionFinished" ) );
     }
     else
     {
@@ -625,7 +641,7 @@ void SCH_MOVE_TOOL::preprocessBreakOrSliceSelection( SCH_COMMIT* aCommit, const 
         return;
 
     KIGFX::VIEW_CONTROLS* controls = getViewControls();
-    SCH_SCREEN*           screen = m_frame->GetScreen();
+    SCH_SCREEN*           screen = m_editor->GetScreen();
     VECTOR2I              cursorPos = controls->GetCursorPosition( !aEvent.DisableGridSnapping() );
 
     bool useCursorForSingleLine = false;
@@ -720,7 +736,10 @@ bool SCH_MOVE_TOOL::doMoveSelection( const TOOL_EVENT& aEvent, SCH_COMMIT* aComm
                                 return isGraphicItemForDrop( static_cast<SCH_ITEM*>( item ) );
                             } );
 
-    if( !selection.Empty() && !graphicsOnly )
+    // The net-collision preview reads the frame's colour settings to draw its markers, so
+    // an editor without one goes without it: a drag that would short two nets still drags,
+    // it simply is not warned about. The two uses below are null-checked already.
+    if( !selection.Empty() && !graphicsOnly && m_frame )
     {
         netCollisionMonitor = std::make_unique<SCH_DRAG_NET_COLLISION_MONITOR>( m_frame, m_view );
         netCollisionMonitor->Initialize( selection );
@@ -748,7 +767,7 @@ bool SCH_MOVE_TOOL::doMoveSelection( const TOOL_EVENT& aEvent, SCH_COMMIT* aComm
     // Must be done after Activate() so that it gets set into the correct context
     controls->ShowCursor( true );
 
-    SCOPED_TOOL_PUSHER raii( m_frame, aEvent );
+    SCOPED_TOOL_PUSHER raii( m_toolMgr->GetToolHolder(), aEvent );
 
     // Note that it's important to go through push/pop even when the selection is empty.
     // This keeps other tools from having to special-case an empty move.
@@ -778,7 +797,7 @@ bool SCH_MOVE_TOOL::doMoveSelection( const TOOL_EVENT& aEvent, SCH_COMMIT* aComm
                     evt->Category() == TC_COMMAND ? "COMMAND" : "OTHER",
                     evt->Format().c_str() );
 
-        m_frame->GetCanvas()->SetCurrentCursor( currentCursor );
+        m_editor->SetCurrentCursor( currentCursor );
         grid.SetSnap( !evt->Modifier( MD_SHIFT ) );
 
         bool ctrlDown = evt->Modifier( MD_CTRL );
@@ -891,7 +910,7 @@ bool SCH_MOVE_TOOL::doMoveSelection( const TOOL_EVENT& aEvent, SCH_COMMIT* aComm
                 if( hoverSheet )
                 {
                     hoverSheet->ClearFlags( BRIGHTENED );
-                    m_frame->UpdateItem( hoverSheet, false );
+                    m_editor->UpdateItem( hoverSheet, false );
                 }
 
                 hoverSheet = sheet;
@@ -899,7 +918,7 @@ bool SCH_MOVE_TOOL::doMoveSelection( const TOOL_EVENT& aEvent, SCH_COMMIT* aComm
                 if( hoverSheet )
                 {
                     hoverSheet->SetFlags( BRIGHTENED );
-                    m_frame->UpdateItem( hoverSheet, false );
+                    m_editor->UpdateItem( hoverSheet, false );
                 }
             }
 
@@ -930,7 +949,7 @@ bool SCH_MOVE_TOOL::doMoveSelection( const TOOL_EVENT& aEvent, SCH_COMMIT* aComm
                 previewItems.push_back( line );
 
             std::vector<SCH_JUNCTION*> previewJunctions =
-                    JUNCTION_HELPERS::PreviewJunctions( m_frame->GetScreen(), previewItems );
+                    JUNCTION_HELPERS::PreviewJunctions( m_editor->GetScreen(), previewItems );
 
             if( netCollisionMonitor )
                 netCollisionMonitor->Update( previewJunctions, selection );
@@ -950,7 +969,8 @@ bool SCH_MOVE_TOOL::doMoveSelection( const TOOL_EVENT& aEvent, SCH_COMMIT* aComm
         {
             if( evt->IsCancelInteractive() )
             {
-                m_frame->GetInfoBar()->Dismiss();
+                if( m_frame )
+                    m_frame->GetInfoBar()->Dismiss();
 
                 // When breaking, the user can cancel after multiple breaks to keep all but the last
                 // break, so exit normally if we have done at least one break
@@ -967,10 +987,12 @@ bool SCH_MOVE_TOOL::doMoveSelection( const TOOL_EVENT& aEvent, SCH_COMMIT* aComm
 
                     switch( m_mode )
                     {
-                    case MOVE:  m_frame->ShowInfoBarMsg( _( "Press <ESC> to cancel move." ) );  break;
-                    case DRAG:  m_frame->ShowInfoBarMsg( _( "Press <ESC> to cancel drag." ) );  break;
-                    case BREAK: m_frame->ShowInfoBarMsg( _( "Press <ESC> to cancel break." ) ); break;
-                    case SLICE: m_frame->ShowInfoBarMsg( _( "Press <ESC> to cancel slice." ) ); break;
+                    // An info bar is a window. An editor without one loses the hint and
+                    // not the gesture; Escape still cancels.
+                    case MOVE:  showHint( _( "Press <ESC> to cancel move." ) );  break;
+                    case DRAG:  showHint( _( "Press <ESC> to cancel drag." ) );  break;
+                    case BREAK: showHint( _( "Press <ESC> to cancel break." ) ); break;
+                    case SLICE: showHint( _( "Press <ESC> to cancel slice." ) ); break;
                     }
 
                     evt->SetPassEvent( false );
@@ -1010,7 +1032,11 @@ bool SCH_MOVE_TOOL::doMoveSelection( const TOOL_EVENT& aEvent, SCH_COMMIT* aComm
         //
         else if( evt->IsClick( BUT_RIGHT ) )
         {
-            m_menu->ShowContextMenu( m_selectionTool->GetSelection() );
+            // TOOL_INTERACTIVE only builds a TOOL_MENU when Pgm().IsGUI(), so a holder
+            // with no window has none. Right-clicking is then simply not a gesture that
+            // opens anything, rather than a null dereference.
+            if( m_menu )
+                m_menu->ShowContextMenu( m_selectionTool->GetSelection() );
         }
         //------------------------------------------------------------------------
         // Handle drop
@@ -1081,7 +1107,7 @@ bool SCH_MOVE_TOOL::doMoveSelection( const TOOL_EVENT& aEvent, SCH_COMMIT* aComm
     if( hoverSheet )
     {
         hoverSheet->ClearFlags( BRIGHTENED );
-        m_frame->UpdateItem( hoverSheet, false );
+        m_editor->UpdateItem( hoverSheet, false );
     }
 
     if( restore_state )
@@ -1326,7 +1352,7 @@ void SCH_MOVE_TOOL::initializeMoveOperation( const TOOL_EVENT& aEvent, SCH_SELEC
     aInternalPoints.clear();
     clearNewDragLines();
 
-    for( SCH_ITEM* it : m_frame->GetScreen()->Items() )
+    for( SCH_ITEM* it : m_editor->GetScreen()->Items() )
     {
         it->ClearFlags( SELECTED_BY_DRAG );
 
@@ -1356,7 +1382,7 @@ void SCH_MOVE_TOOL::initializeMoveOperation( const TOOL_EVENT& aEvent, SCH_SELEC
             {
                 if( schItem->IsGroupableType() && !schItem->GetParentGroup() )
                 {
-                    aCommit->Modify( enteredGroup, m_frame->GetScreen(), RECURSE_MODE::NO_RECURSE );
+                    aCommit->Modify( enteredGroup, m_editor->GetScreen(), RECURSE_MODE::NO_RECURSE );
                     enteredGroup->AddItem( schItem );
                 }
             }
@@ -1367,7 +1393,7 @@ void SCH_MOVE_TOOL::initializeMoveOperation( const TOOL_EVENT& aEvent, SCH_SELEC
         }
         else
         {
-            aCommit->Modify( schItem, m_frame->GetScreen(), RECURSE_MODE::RECURSE );
+            aCommit->Modify( schItem, m_editor->GetScreen(), RECURSE_MODE::RECURSE );
         }
 
         schItem->SetFlags( IS_MOVING );
@@ -1450,7 +1476,7 @@ void SCH_MOVE_TOOL::initializeMoveOperation( const TOOL_EVENT& aEvent, SCH_SELEC
     }
     else
     {
-        if( m_frame->GetMoveWarpsCursor() )
+        if( m_toolMgr->GetToolHolder()->GetMoveWarpsCursor() )
         {
             // User wants to warp the mouse
             m_cursor = grid.BestDragOrigin( m_cursor, aSnapLayer, aSelection );
@@ -1480,7 +1506,7 @@ SCH_SHEET* SCH_MOVE_TOOL::findTargetSheet( const SCH_SELECTION& aSelection, cons
     }
 
     // Determine potential target sheet
-    SCH_SHEET* sheet = dynamic_cast<SCH_SHEET*>( m_frame->GetScreen()->GetItem( aCursorPos, 0, SCH_SHEET_T ) );
+    SCH_SHEET* sheet = dynamic_cast<SCH_SHEET*>( m_editor->GetScreen()->GetItem( aCursorPos, 0, SCH_SHEET_T ) );
 
     if( sheet && ( sheet->IsSelected() || sheet->HasFlag( IS_MOVING ) ) )
         sheet = nullptr;  // Never target a selected sheet
@@ -1503,7 +1529,7 @@ SCH_SHEET* SCH_MOVE_TOOL::findTargetSheet( const SCH_SELECTION& aSelection, cons
 
             // Find first non-selected sheet whose body fully contains the selection or at
             // least contains its center point
-            for( SCH_ITEM* it : m_frame->GetScreen()->Items().OfType( SCH_SHEET_T ) )
+            for( SCH_ITEM* it : m_editor->GetScreen()->Items().OfType( SCH_SHEET_T ) )
             {
                 SCH_SHEET* candidate = static_cast<SCH_SHEET*>( it );
 
@@ -1577,7 +1603,7 @@ bool SCH_MOVE_TOOL::dropWouldRecurse( const SCH_SELECTION& aSelection, const SCH
     if( movedSheets.empty() )
         return false;
 
-    SCH_SHEET_LIST hierarchy = m_frame->Schematic().Hierarchy();
+    SCH_SHEET_LIST hierarchy = m_editor->GetSchematic()->Hierarchy();
 
     for( SCH_SHEET* movedSheet : movedSheets )
     {
@@ -1922,7 +1948,10 @@ bool SCH_MOVE_TOOL::handleMoveToolActions( const TOOL_EVENT* aEvent, SCH_COMMIT*
 
             if( symbol )
             {
-                m_frame->SelectUnit( symbol, unit, aCommit );
+                // Reached only from a context menu, which is a window's; the guard is
+                // belt and braces, and SelectUnit itself opens a modal dialog.
+                if( m_frame )
+                    m_frame->SelectUnit( symbol, unit, aCommit );
                 m_toolMgr->PostAction( ACTIONS::refreshPreview );
             }
         }
@@ -1934,7 +1963,7 @@ bool SCH_MOVE_TOOL::handleMoveToolActions( const TOOL_EVENT* aEvent, SCH_COMMIT*
 
             if( symbol && symbol->GetBodyStyle() != bodyStyle )
             {
-                m_frame->SelectBodyStyle( symbol, bodyStyle, aCommit );
+                m_editor->SelectBodyStyle( m_toolMgr, symbol, bodyStyle, aCommit );
                 m_toolMgr->PostAction( ACTIONS::refreshPreview );
             }
         }
@@ -2021,7 +2050,7 @@ void SCH_MOVE_TOOL::recordRedundantJunctions( SCH_SELECTION& aSelection )
 
         for( const VECTOR2I& pt : line->GetConnectionPoints() )
         {
-            SCH_JUNCTION* jct = static_cast<SCH_JUNCTION*>( m_frame->GetScreen()->GetItem( pt, 0, SCH_JUNCTION_T ) );
+            SCH_JUNCTION* jct = static_cast<SCH_JUNCTION*>( m_editor->GetScreen()->GetItem( pt, 0, SCH_JUNCTION_T ) );
 
             if( jct && !jct->IsSelected()
                 && std::none_of( m_hiddenJunctions.begin(), m_hiddenJunctions.end(),
@@ -2031,7 +2060,7 @@ void SCH_MOVE_TOOL::recordRedundantJunctions( SCH_SELECTION& aSelection )
                                  } ) )
             {
                 JUNCTION_HELPERS::POINT_INFO info =
-                        JUNCTION_HELPERS::AnalyzePoint( m_frame->GetScreen()->Items(), pt, false );
+                        JUNCTION_HELPERS::AnalyzePoint( m_editor->GetScreen()->Items(), pt, false );
 
                 if( !info.isJunction )
                 {
@@ -2049,13 +2078,13 @@ void SCH_MOVE_TOOL::recordRedundantJunctions( SCH_SELECTION& aSelection )
 
 void SCH_MOVE_TOOL::migrateHiddenJunctions( SCH_COMMIT* aCommit )
 {
-    SCH_SCREEN* screen = m_frame->GetScreen();
+    SCH_SCREEN* screen = m_editor->GetScreen();
 
     for( const HIDDEN_JUNCTION& hidden : m_hiddenJunctions )
     {
         m_view->Hide( hidden.m_junction, false );
 
-        SCH_LINE* line = dynamic_cast<SCH_LINE*>( m_frame->Schematic().ResolveItem( hidden.m_lineId, nullptr, true ) );
+        SCH_LINE* line = dynamic_cast<SCH_LINE*>( m_editor->GetSchematic()->ResolveItem( hidden.m_lineId, nullptr, true ) );
 
         if( !line )
             continue;
@@ -2068,7 +2097,7 @@ void SCH_MOVE_TOOL::migrateHiddenJunctions( SCH_COMMIT* aCommit )
         {
             aCommit->Modify( hidden.m_junction, screen );
             hidden.m_junction->SetPosition( newPos );
-            m_frame->UpdateItem( hidden.m_junction, false, true );
+            m_editor->UpdateItem( hidden.m_junction, false, true );
         }
     }
 }
@@ -2085,7 +2114,7 @@ void SCH_MOVE_TOOL::finalizeMoveOperation( SCH_SELECTION& aSelection, SCH_COMMIT
     for( SCH_LINE* newLine : m_newDragLines )
     {
         newLine->ClearEditFlags();
-        aCommit->Added( newLine, m_frame->GetScreen() );
+        aCommit->Added( newLine, m_editor->GetScreen() );
     }
 
     // These lines have been changed, but aren't selected. We need to manually clear these
@@ -2110,7 +2139,7 @@ void SCH_MOVE_TOOL::finalizeMoveOperation( SCH_SELECTION& aSelection, SCH_COMMIT
     }
 
     if( aSelection.GetSize() == 1 && aSelection.Front()->IsNew() )
-        m_frame->SaveCopyForRepeatItem( static_cast<SCH_ITEM*>( aSelection.Front() ) );
+        m_editor->SaveCopyForRepeatItem( static_cast<SCH_ITEM*>( aSelection.Front() ) );
 
     m_selectionTool->RemoveItemsFromSel( &m_dragAdditions, QUIET_MODE );
 
@@ -2120,8 +2149,8 @@ void SCH_MOVE_TOOL::finalizeMoveOperation( SCH_SELECTION& aSelection, SCH_COMMIT
     // to denote the state
     for( const DANGLING_END_ITEM& it : aInternalPoints )
     {
-        if( m_frame->GetScreen()->IsExplicitJunctionNeeded( it.GetPosition() ) )
-            lwbTool->AddJunction( aCommit, m_frame->GetScreen(), it.GetPosition() );
+        if( m_editor->GetScreen()->IsExplicitJunctionNeeded( it.GetPosition() ) )
+            lwbTool->AddJunction( aCommit, m_editor->GetScreen(), it.GetPosition() );
     }
 
     // Create a selection of original selection, drag selected/changed items, and new bend
@@ -2148,17 +2177,17 @@ void SCH_MOVE_TOOL::finalizeMoveOperation( SCH_SELECTION& aSelection, SCH_COMMIT
 
     // Auto-rotate any moved labels
     for( EDA_ITEM* item : aSelection )
-        m_frame->AutoRotateItem( m_frame->GetScreen(), static_cast<SCH_ITEM*>( item ) );
+        m_editor->AutoRotateItem( m_editor->GetScreen(), static_cast<SCH_ITEM*>( item ) );
 
     // Clear SELECTED_BY_DRAG and other temp flags before CleanUp so that cleanup can properly
     // process all items, including removing zero-length wires and unwanted stubs
-    for( EDA_ITEM* item : m_frame->GetScreen()->Items() )
+    for( EDA_ITEM* item : m_editor->GetScreen()->Items() )
         item->ClearTempFlags();
 
     for( EDA_ITEM* item : selectionCopy )
         item->ClearTempFlags();
 
-    m_frame->Schematic().CleanUp( aCommit );
+    m_editor->GetSchematic()->CleanUp( aCommit );
 
     // Mirror the IS_MOVING flag propagation done at the start of the move so that child items
     // (e.g. label fields, symbol pins/fields) don't keep their edit flags after the move ends.
@@ -2173,7 +2202,7 @@ void SCH_MOVE_TOOL::finalizeMoveOperation( SCH_SELECTION& aSelection, SCH_COMMIT
                         RECURSE_MODE::RECURSE );
             };
 
-    for( EDA_ITEM* item : m_frame->GetScreen()->Items() )
+    for( EDA_ITEM* item : m_editor->GetScreen()->Items() )
     {
         item->ClearEditFlags();
 
@@ -2205,7 +2234,7 @@ void SCH_MOVE_TOOL::moveSelectionToSheet( SCH_SELECTION& aSelection, SCH_SHEET* 
                                           SCH_COMMIT* aCommit )
 {
     SCH_SCREEN* destScreen = aTargetSheet->GetScreen();
-    SCH_SCREEN* srcScreen = m_frame->GetScreen();
+    SCH_SCREEN* srcScreen = m_editor->GetScreen();
 
     BOX2I bbox;
 
@@ -2240,7 +2269,7 @@ void SCH_MOVE_TOOL::moveSelectionToSheet( SCH_SELECTION& aSelection, SCH_SHEET* 
         SCH_ITEM* schItem = static_cast<SCH_ITEM*>( item );
 
         // Remove from current screen and view manually
-        m_frame->RemoveFromScreen( schItem, srcScreen );
+        m_editor->RemoveFromScreen( schItem, srcScreen );
 
         // Move the item
         schItem->Move( offset );
@@ -2258,7 +2287,7 @@ void SCH_MOVE_TOOL::moveSelectionToSheet( SCH_SELECTION& aSelection, SCH_SHEET* 
 void SCH_MOVE_TOOL::trimDanglingLines( SCH_COMMIT* aCommit )
 {
     // Need a local cleanup first to ensure we remove unneeded junctions
-    m_frame->Schematic().CleanUp( aCommit, m_frame->GetScreen() );
+    m_editor->GetSchematic()->CleanUp( aCommit, m_editor->GetScreen() );
 
     std::set<SCH_ITEM*> danglers;
 
@@ -2291,21 +2320,21 @@ void SCH_MOVE_TOOL::trimDanglingLines( SCH_COMMIT* aCommit )
                 }
             };
 
-    m_frame->GetScreen()->TestDanglingEnds( nullptr, &changeHandler );
+    m_editor->GetScreen()->TestDanglingEnds( nullptr, &changeHandler );
 
     for( SCH_ITEM* line : danglers )
     {
         line->SetFlags( STRUCT_DELETED );
-        aCommit->Removed( line, m_frame->GetScreen() );
+        aCommit->Removed( line, m_editor->GetScreen() );
         updateItem( line, false ); // Update any cached visuals before commit processes
-        m_frame->RemoveFromScreen( line, m_frame->GetScreen() );
+        m_editor->RemoveFromScreen( line, m_editor->GetScreen() );
     }
 }
 
 
 void SCH_MOVE_TOOL::getConnectedItems( SCH_ITEM* aOriginalItem, const VECTOR2I& aPoint, EDA_ITEMS& aList )
 {
-    EE_RTREE&         items = m_frame->GetScreen()->Items();
+    EE_RTREE&         items = m_editor->GetScreen()->Items();
     EE_RTREE::EE_TYPE itemsOverlapping = items.Overlapping( aOriginalItem->GetBoundingBox() );
     SCH_ITEM*         foundJunction = nullptr;
     SCH_ITEM*         foundSymbol   = nullptr;
@@ -2439,7 +2468,7 @@ void SCH_MOVE_TOOL::getConnectedItems( SCH_ITEM* aOriginalItem, const VECTOR2I& 
 void SCH_MOVE_TOOL::getConnectedDragItems( SCH_COMMIT* aCommit, SCH_ITEM* aSelectedItem, const VECTOR2I& aPoint,
                                            EDA_ITEMS& aList )
 {
-    EE_RTREE&              items = m_frame->GetScreen()->Items();
+    EE_RTREE&              items = m_editor->GetScreen()->Items();
     std::set<SCH_ITEM*>    connectableCandidates;
     std::vector<SCH_ITEM*> itemsConnectable;
     bool                   ptHasUnselectedJunction = false;
@@ -2489,17 +2518,17 @@ void SCH_MOVE_TOOL::getConnectedDragItems( SCH_COMMIT* aCommit, SCH_ITEM* aSelec
                 if( selectedLine )
                 {
                     newWire->SetLastResolvedState( selected );
-                    cloneWireConnection( newWire, selectedLine, m_frame );
+                    cloneWireConnection( newWire, selectedLine, m_editor );
                 }
                 else if( fixedLine )
                 {
                     newWire->SetLastResolvedState( fixed );
-                    cloneWireConnection( newWire, fixedLine, m_frame );
+                    cloneWireConnection( newWire, fixedLine, m_editor );
                 }
 
                 newWire->SetEndPoint( end );
-                m_frame->AddToScreen( newWire, m_frame->GetScreen() );
-                commit->Added( newWire, m_frame->GetScreen() );
+                m_editor->AddToScreen( newWire, m_editor->GetScreen() );
+                commit->Added( newWire, m_editor->GetScreen() );
 
                 return newWire;
             };
@@ -2515,8 +2544,8 @@ void SCH_MOVE_TOOL::getConnectedDragItems( SCH_COMMIT* aCommit, SCH_ITEM* aSelec
                 if( line->IsBus() )
                     junction->SetLayer( LAYER_BUS_JUNCTION );
 
-                m_frame->AddToScreen( junction, m_frame->GetScreen() );
-                commit->Added( junction, m_frame->GetScreen() );
+                m_editor->AddToScreen( junction, m_editor->GetScreen() );
+                commit->Added( junction, m_editor->GetScreen() );
 
                 return junction;
             };
@@ -2649,7 +2678,7 @@ void SCH_MOVE_TOOL::getConnectedDragItems( SCH_COMMIT* aCommit, SCH_ITEM* aSelec
                         if( aPoint != line->GetStartPoint() && aPoint != line->GetEndPoint() )
                         {
                             // Split line in half
-                            aCommit->Modify( line, m_frame->GetScreen() );
+                            aCommit->Modify( line, m_editor->GetScreen() );
 
                             VECTOR2I oldEnd = line->GetEndPoint();
                             line->SetEndPoint( aPoint );
@@ -2937,7 +2966,7 @@ int SCH_MOVE_TOOL::AlignToGrid( const TOOL_EVENT& aEvent )
     auto doMoveItem =
             [&]( EDA_ITEM* item, const VECTOR2I& delta )
             {
-                commit.Modify( item, m_frame->GetScreen(), RECURSE_MODE::RECURSE );
+                commit.Modify( item, m_editor->GetScreen(), RECURSE_MODE::RECURSE );
 
                 // Ensure only one end is moved when calling moveItem
                 // i.e. we are in drag mode
@@ -2950,7 +2979,7 @@ int SCH_MOVE_TOOL::AlignToGrid( const TOOL_EVENT& aEvent )
                 updateItem( item, true );
             };
 
-    for( SCH_ITEM* it : m_frame->GetScreen()->Items() )
+    for( SCH_ITEM* it : m_editor->GetScreen()->Items() )
     {
         if( !it->IsSelected() )
             it->ClearFlags( STARTPOINT | ENDPOINT );
@@ -2986,7 +3015,7 @@ int SCH_MOVE_TOOL::AlignToGrid( const TOOL_EVENT& aEvent )
     recordRedundantJunctions( selection );
 
     std::vector<EDA_ITEM*> items( selection.begin(), selection.end() );
-    AlignSchematicItemsToGrid( m_frame->GetScreen(), items, grid, selectionGrid, callbacks );
+    AlignSchematicItemsToGrid( m_editor->GetScreen(), items, grid, selectionGrid, callbacks );
 
     SCH_LINE_WIRE_BUS_TOOL* lwbTool = m_toolMgr->GetTool<SCH_LINE_WIRE_BUS_TOOL>();
     lwbTool->TrimOverLappingWires( &commit, &selection );
@@ -2995,7 +3024,7 @@ int SCH_MOVE_TOOL::AlignToGrid( const TOOL_EVENT& aEvent )
 
     m_toolMgr->PostEvent( EVENTS::SelectedItemsMoved );
 
-    m_frame->Schematic().CleanUp( &commit );
+    m_editor->GetSchematic()->CleanUp( &commit );
     commit.Push( _( "Align Items to Grid" ) );
     return 0;
 }
@@ -3006,7 +3035,7 @@ void SCH_MOVE_TOOL::clearNewDragLines()
     // Remove new bend lines added during the drag
     for( SCH_LINE* newLine : m_newDragLines )
     {
-        m_frame->RemoveFromScreen( newLine, m_frame->GetScreen() );
+        m_editor->RemoveFromScreen( newLine, m_editor->GetScreen() );
         delete newLine;
     }
 

@@ -65,6 +65,17 @@ wxString COMMON_CONTROL::m_bugReportTemplate = wxS(
         "```" );
 
 
+bool COMMON_CONTROL::Init()
+{
+    // Checked, because the tool holder is not necessarily a frame: a non-wx host
+    // installs one that is not, and every method below dereferences m_frame. There is
+    // no useful version of this tool without a frame — it opens preferences, shows
+    // help and quits the application — so declining is the whole answer, and
+    // TOOL_MANAGER::InitTools() then unregisters it.
+    return dynamic_cast<EDA_BASE_FRAME*>( m_toolMgr->GetToolHolder() ) != nullptr;
+}
+
+
 void COMMON_CONTROL::Reset( RESET_REASON aReason )
 {
     m_frame = getEditFrame<EDA_BASE_FRAME>();

@@ -25,6 +25,7 @@
 #include <sch_table.h>
 #include <sch_tablecell.h>
 #include <sch_commit.h>
+#include <schematic_holder.h>
 
 
 class SCH_EDIT_FRAME;
@@ -39,6 +40,16 @@ public:
 
     /// @copydoc TOOL_INTERACTIVE::Init()
     bool Init() override;
+
+    /**
+     * Runs on an editing context that is not a wxFrame.
+     *
+     * Adding, removing and merging cells needs only the screen, which is
+     * SCHEMATIC_HOLDER's. The two actions that are dialogs — table properties and the
+     * CSV export — decline when there is no window to parent them, and say so at the
+     * site.
+     */
+    bool runsWithoutAFrame() const override { return true; }
 
     int AddRowAbove( const TOOL_EVENT& aEvent )     { return doAddRowAbove( aEvent ); }
     int AddRowBelow( const TOOL_EVENT& aEvent )     { return doAddRowBelow( aEvent ); }
@@ -59,7 +70,7 @@ private:
 
 private:
     TOOL_MANAGER* getToolMgr() override { return m_toolMgr; }
-    BASE_SCREEN* getScreen() override { return m_frame->GetScreen(); }
+    BASE_SCREEN* getScreen() override { return m_editor->GetScreen(); }
 
     const SELECTION& getTableCellSelection() override;
     void             clearSelection() override { m_toolMgr->RunAction( ACTIONS::selectionClear ); };

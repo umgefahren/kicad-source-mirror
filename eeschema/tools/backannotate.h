@@ -33,6 +33,8 @@
 class REPORTER;
 class SCH_SHEET_LIST;
 class SCH_EDIT_FRAME;
+class SCHEMATIC_HOLDER;
+class TOOL_MANAGER;
 class SCH_COMMIT;
 
 struct BACKANNOTATE_UNIT_SWAP_CANDIDATE
@@ -126,6 +128,12 @@ public:
                    bool aProcessNetNames, bool aProcessAttributes, bool aProcessOtherFields,
                    bool aPreferUnitSwaps, bool aPreferPinSwaps, bool aDryRun );
 
+    /// Native editor context; backannotation does not require a wx window.
+    BACK_ANNOTATE( SCHEMATIC_HOLDER* aEditor, TOOL_MANAGER* aTools, REPORTER& aReporter,
+                   bool aRelinkFootprints, bool aProcessFootprints, bool aProcessValues,
+                   bool aProcessReferences, bool aProcessNetNames, bool aProcessAttributes,
+                   bool aProcessOtherFields, bool aPreferUnitSwaps, bool aPreferPinSwaps, bool aDryRun );
+
     ~BACK_ANNOTATE() = default;
 
     /**
@@ -198,6 +206,8 @@ private:
     SCH_MULTI_UNIT_REFERENCE_MAP m_multiUnitsRefs;
     std::deque<CHANGELIST_ITEM>  m_changelist;
     SCH_EDIT_FRAME*              m_frame;
+    SCHEMATIC_HOLDER*            m_editor;
+    TOOL_MANAGER*               m_tools;
 
     int                          m_changesCount;    // Number of user-level changes
 };

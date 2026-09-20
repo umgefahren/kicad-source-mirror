@@ -641,7 +641,14 @@ wxString KIwxExpandEnvVars( const wxString& str, const PROJECT* aProject, std::s
             bool     expanded = false;
             wxString tmp = strVarName;
 
-            if( aProject && aProject->TextVarResolver( &tmp ) )
+            // A headless document may not be the process-wide active project.
+            // Resolve its project directory before consulting the global environment.
+            if( aProject && strVarName == wxT( "KIPRJMOD" ) )
+            {
+                strResult += aProject->GetProjectDirectory();
+                expanded = true;
+            }
+            else if( aProject && aProject->TextVarResolver( &tmp ) )
             {
                 strResult += tmp;
                 expanded = true;

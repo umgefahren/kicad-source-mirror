@@ -60,7 +60,11 @@ find_path( NGSPICE_INCLUDE_DIR ngspice/sharedspice.h
         share/ngspice/include/ngspice
 )
 
-if( UNIX )
+if( APPLE )
+    # macOS is UNIX but its shared libraries are not .so: the versioned name is
+    # libngspice.0.dylib. Let find_library apply the platform's own naming.
+    set( NGSPICE_LIB_NAME ngspice CACHE STRING "Optionally versioned name of the shared library" )
+elseif( UNIX )
     set( NGSPICE_LIB_NAME libngspice.so.0 CACHE STRING "Optionally versioned name of the shared library" )
 else()
     set( NGSPICE_LIB_NAME ngspice CACHE STRING "Optionally versioned name of the shared library" )

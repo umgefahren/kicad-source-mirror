@@ -42,7 +42,9 @@ SYMBOL_EDITOR_MOVE_TOOL::SYMBOL_EDITOR_MOVE_TOOL() :
 
 bool SYMBOL_EDITOR_MOVE_TOOL::Init()
 {
-    SCH_TOOL_BASE::Init();
+    // Declines a tool holder that is not this tool's frame; see SCH_TOOL_BASE::Init().
+    if( !SCH_TOOL_BASE::Init() )
+        return false;
 
     //
     // Add move actions to the selection tool menu

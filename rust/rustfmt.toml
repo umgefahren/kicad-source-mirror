@@ -1,0 +1,4 @@
+# Match the surrounding Rust ecosystem defaults; KiCad's C++ style does not
+# apply here and fighting rustfmt helps nobody.
+edition = "2021"
+max_width = 100

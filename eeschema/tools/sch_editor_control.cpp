@@ -87,6 +87,9 @@
 #include <sch_tablecell.h>
 #include <sch_label.h>
 #include <sch_commit.h>
+#include <schematic.h>
+#include <schematic_holder.h>
+#include <schematic_undo_redo.h>
 #include <sim/simulator_frame.h>
 #include <symbol_library_manager.h>
 #include <symbol_viewer_frame.h>
@@ -375,6 +378,11 @@ wxImage renderSelectionToImageForClipboard( SCH_EDIT_FRAME* aFrame, const SCH_SE
 
 int SCH_EDITOR_CONTROL::New( const TOOL_EVENT& aEvent )
 {
+    // This action is the frame's new-project flow, file dialogs and all. Without a window
+    // to parent them there is nothing it can do.
+    if( !m_frame )
+        return 0;
+
     m_frame->NewProject();
     return 0;
 }
@@ -382,6 +390,10 @@ int SCH_EDITOR_CONTROL::New( const TOOL_EVENT& aEvent )
 
 int SCH_EDITOR_CONTROL::Open( const TOOL_EVENT& aEvent )
 {
+    // This action is the frame's open-project flow, file dialogs and all.
+    if( !m_frame )
+        return 0;
+
     m_frame->LoadProject();
     return 0;
 }
@@ -389,6 +401,10 @@ int SCH_EDITOR_CONTROL::Open( const TOOL_EVENT& aEvent )
 
 int SCH_EDITOR_CONTROL::Save( const TOOL_EVENT& aEvent )
 {
+    // Saving is the frame's file handling, up to and including the "where?" dialog.
+    if( !m_frame )
+        return 0;
+
     m_frame->SaveProject();
     return 0;
 }
@@ -396,6 +412,10 @@ int SCH_EDITOR_CONTROL::Save( const TOOL_EVENT& aEvent )
 
 int SCH_EDITOR_CONTROL::SaveAs( const TOOL_EVENT& aEvent )
 {
+    // Saving is the frame's file handling, up to and including the "where?" dialog.
+    if( !m_frame )
+        return 0;
+
     m_frame->SaveProject( true );
     return 0;
 }
@@ -403,6 +423,11 @@ int SCH_EDITOR_CONTROL::SaveAs( const TOOL_EVENT& aEvent )
 
 int SCH_EDITOR_CONTROL::SaveCurrSheetCopyAs( const TOOL_EVENT& aEvent )
 {
+    // This action is the Save As file dialog. Without a window to parent it there is
+    // nothing it can do.
+    if( !m_frame )
+        return 0;
+
     SCH_SHEET*   curr_sheet = m_frame->GetCurrentSheet().Last();
     wxFileName   curr_fn = curr_sheet->GetFileName();
     wxFileDialog dlg( m_frame, _( "Schematic Files" ), curr_fn.GetPath(), curr_fn.GetFullName(),
@@ -422,6 +447,11 @@ int SCH_EDITOR_CONTROL::SaveCurrSheetCopyAs( const TOOL_EVENT& aEvent )
 
 int SCH_EDITOR_CONTROL::Revert( const TOOL_EVENT& aEvent )
 {
+    // Reverting asks the user to confirm and then reopens the project through the frame's
+    // file handling. Neither exists without a window.
+    if( !m_frame )
+        return 0;
+
     SCHEMATIC& schematic = m_frame->Schematic();
     SCH_SHEET& root = schematic.Root();
 
@@ -471,6 +501,10 @@ int SCH_EDITOR_CONTROL::Revert( const TOOL_EVENT& aEvent )
 
 int SCH_EDITOR_CONTROL::ShowSchematicSetup( const TOOL_EVENT& aEvent )
 {
+    // This action is the Schematic Setup dialog.
+    if( !m_frame )
+        return 0;
+
     m_frame->ShowSchematicSetupDialog();
     return 0;
 }
@@ -478,6 +512,11 @@ int SCH_EDITOR_CONTROL::ShowSchematicSetup( const TOOL_EVENT& aEvent )
 
 int SCH_EDITOR_CONTROL::PageSetup( const TOOL_EVENT& aEvent )
 {
+    // This action is the Page Settings dialog, and the undo item it records takes an
+    // EDA_DRAW_FRAME to read the drawing sheet from. Without a window there is neither.
+    if( !m_frame )
+        return 0;
+
     PICKED_ITEMS_LIST   undoCmd;
     DS_PROXY_UNDO_ITEM* undoItem = new DS_PROXY_UNDO_ITEM( m_frame );
     ITEM_PICKER         wrapper( m_frame->GetScreen(), undoItem, UNDO_REDO::PAGESETTINGS );
@@ -510,6 +549,10 @@ int SCH_EDITOR_CONTROL::PageSetup( const TOOL_EVENT& aEvent )
 
 int SCH_EDITOR_CONTROL::RescueSymbols( const TOOL_EVENT& aEvent )
 {
+    // Rescue is a sequence of dialogs; see ::RescueLegacyProject below.
+    if( !m_frame )
+        return 0;
+
     SCH_SCREENS schematic( m_frame->Schematic().Root() );
 
     if( schematic.HasNoFullyDefinedLibIds() )
@@ -523,6 +566,11 @@ int SCH_EDITOR_CONTROL::RescueSymbols( const TOOL_EVENT& aEvent )
 
 bool SCH_EDITOR_CONTROL::RescueLegacyProject( bool aRunningOnDemand )
 {
+    // Rescue is a sequence of dialogs, and the rescuer is handed the canvas backend so it
+    // can draw symbol previews with the same one. Neither exists without a window.
+    if( !m_frame )
+        return false;
+
     LEGACY_RESCUER rescuer( m_frame->Prj(), &m_frame->Schematic(), &m_frame->GetCurrentSheet(),
                             m_frame->GetCanvas()->GetBackend() );
 
@@ -532,6 +580,11 @@ bool SCH_EDITOR_CONTROL::RescueLegacyProject( bool aRunningOnDemand )
 
 bool SCH_EDITOR_CONTROL::RescueSymbolLibTableProject( bool aRunningOnDemand )
 {
+    // Rescue is a sequence of dialogs, and the rescuer is handed the canvas backend so it
+    // can draw symbol previews with the same one. Neither exists without a window.
+    if( !m_frame )
+        return false;
+
     SYMBOL_LIB_TABLE_RESCUER rescuer( m_frame->Prj(), &m_frame->Schematic(), &m_frame->GetCurrentSheet(),
                                       m_frame->GetCanvas()->GetBackend() );
 
@@ -571,6 +624,10 @@ bool SCH_EDITOR_CONTROL::rescueProject( RESCUER& aRescuer, bool aRunningOnDemand
 
 int SCH_EDITOR_CONTROL::RemapSymbols( const TOOL_EVENT& aEvent )
 {
+    // This action is the Remap Symbols dialog.
+    if( !m_frame )
+        return 0;
+
     DIALOG_SYMBOL_REMAP dlgRemap( m_frame );
 
     dlgRemap.ShowQuasiModal();
@@ -583,6 +640,10 @@ int SCH_EDITOR_CONTROL::RemapSymbols( const TOOL_EVENT& aEvent )
 
 int SCH_EDITOR_CONTROL::Print( const TOOL_EVENT& aEvent )
 {
+    // This action is the Print dialog.
+    if( !m_frame )
+        return 0;
+
     DIALOG_PRINT dlg( m_frame );
 
     dlg.ShowModal();
@@ -593,6 +654,10 @@ int SCH_EDITOR_CONTROL::Print( const TOOL_EVENT& aEvent )
 
 int SCH_EDITOR_CONTROL::Plot( const TOOL_EVENT& aEvent )
 {
+    // This action is the Plot dialog.
+    if( !m_frame )
+        return 0;
+
     DIALOG_PLOT_SCHEMATIC dlg( m_frame );
 
     dlg.ShowModal();
@@ -603,7 +668,12 @@ int SCH_EDITOR_CONTROL::Plot( const TOOL_EVENT& aEvent )
 
 int SCH_EDITOR_CONTROL::CrossProbeToPcb( const TOOL_EVENT& aEvent )
 {
-    m_frame->Schematic().OnSchSelectionChanged();
+    // Bound to the selection events, so this runs on every selection change whether or not
+    // there is a frame. Telling the document is the schematic's own business; telling
+    // pcbnew is ::doCrossProbeSchToPcb's, and it declines without a window.
+    if( SCHEMATIC* schematic = m_editor->GetSchematic() )
+        schematic->OnSchSelectionChanged();
+
     doCrossProbeSchToPcb( aEvent, false );
     return 0;
 }
@@ -618,6 +688,11 @@ int SCH_EDITOR_CONTROL::ExplicitCrossProbeToPcb( const TOOL_EVENT& aEvent )
 
 void SCH_EDITOR_CONTROL::doCrossProbeSchToPcb( const TOOL_EVENT& aEvent, bool aForce )
 {
+    // Cross probing is Kiway traffic between two program windows. Without a frame there is
+    // no pcbnew to tell, and the selection change is simply not mirrored.
+    if( !m_frame )
+        return;
+
     // Don't get in an infinite loop SCH -> PCB -> SCH -> PCB -> SCH -> ...
     if( m_probingPcbToSch || m_frame->IsSyncingSelection() )
         return;
@@ -631,6 +706,11 @@ void SCH_EDITOR_CONTROL::doCrossProbeSchToPcb( const TOOL_EVENT& aEvent, bool aF
 
 int SCH_EDITOR_CONTROL::ExportSymbolsToLibrary( const TOOL_EVENT& aEvent )
 {
+    // The action opens with the Select Library dialog, and the library manager it uses is
+    // built from the frame. Without a window there is nothing to ask and nowhere to ask it.
+    if( !m_frame )
+        return 0;
+
     bool                   savePowerSymbols = false;
     bool                   map = false;
     SYMBOL_LIBRARY_MANAGER mgr( *m_frame );
@@ -751,6 +831,11 @@ int SCH_EDITOR_CONTROL::SimProbe( const TOOL_EVENT& aEvent )
         SCH_ITEM_LOCATE_WIRE_T, SCH_JUNCTION_T, SCH_LABEL_T,
         SCH_GLOBAL_LABEL_T, SCH_HIER_LABEL_T, SCH_SHEET_PIN_T
     };
+
+    // Probing hands traces to the simulator frame, which is reached through Kiway() — a
+    // window's. Without one there is nothing to probe into.
+    if( !m_frame )
+        return 0;
 
     PICKER_TOOL*     picker = m_toolMgr->GetTool<PICKER_TOOL>();
     KIWAY_PLAYER*    sim_player = m_frame->Kiway().Player( FRAME_SIMULATOR, false );
@@ -945,6 +1030,11 @@ int SCH_EDITOR_CONTROL::SimProbe( const TOOL_EVENT& aEvent )
 
 int SCH_EDITOR_CONTROL::SimTune( const TOOL_EVENT& aEvent )
 {
+    // Tuning adds a tuner to the simulator frame, which is reached through Kiway() — a
+    // window's. Without one there is nothing to tune into.
+    if( !m_frame )
+        return 0;
+
     PICKER_TOOL* picker = m_toolMgr->GetTool<PICKER_TOOL>();
 
     // Deactivate other tools; particularly important if another PICKER is currently running
@@ -1062,12 +1152,18 @@ static bool highlightNet( TOOL_MANAGER* aToolMgr, const VECTOR2D& aPosition )
 {
     wxLogTrace( "KICAD_SCH_HIGHLIGHT", "highlightNet: pos=(%f,%f) clear=%d", aPosition.x, aPosition.y,
                 ( aPosition == CLEAR ) );
-    SCH_EDIT_FRAME*     editFrame     = static_cast<SCH_EDIT_FRAME*>( aToolMgr->GetToolHolder() );
+    SCH_EDIT_FRAME*     editFrame     = dynamic_cast<SCH_EDIT_FRAME*>( aToolMgr->GetToolHolder() );
     SCH_SELECTION_TOOL* selTool       = aToolMgr->GetTool<SCH_SELECTION_TOOL>();
     SCH_EDITOR_CONTROL* editorControl = aToolMgr->GetTool<SCH_EDITOR_CONTROL>();
     std::optional<wxString> connName;
     SCH_ITEM*           item          = nullptr;
     bool                retVal        = true;
+
+    // Net highlighting is a frame-side affair from end to end — status text, cross
+    // probing, the net navigator — so there is nothing to do without one, and everything
+    // below dereferences all three of these.
+    if( !editFrame || !selTool || !editorControl )
+        return false;
 
     if( aPosition != CLEAR )
     {
@@ -1174,6 +1270,11 @@ int SCH_EDITOR_CONTROL::HighlightNet( const TOOL_EVENT& aEvent )
 
 int SCH_EDITOR_CONTROL::HighlightNetChain( const TOOL_EVENT& aEvent )
 {
+    // Which chain is highlighted is frame state (::SetHighlightedNetChain), it is reported
+    // in the frame's status bar, and it cross probes to pcbnew. All three are a window's.
+    if( !m_frame )
+        return 0;
+
     KIGFX::VIEW_CONTROLS* controls = getViewControls();
     const VECTOR2D cursorPos = controls->GetCursorPosition( !aEvent.DisableGridSnapping() );
     SCH_SELECTION_TOOL* selTool = m_toolMgr->GetTool<SCH_SELECTION_TOOL>();
@@ -1217,7 +1318,7 @@ int SCH_EDITOR_CONTROL::HighlightNetChain( const TOOL_EVENT& aEvent )
 
 int SCH_EDITOR_CONTROL::RemoveFromNetChain( const TOOL_EVENT& aEvent )
 {
-    SCH_EDIT_FRAME*       editFrame = static_cast<SCH_EDIT_FRAME*>( m_toolMgr->GetToolHolder() );
+    SCH_EDIT_FRAME*       editFrame = dynamic_cast<SCH_EDIT_FRAME*>( m_toolMgr->GetToolHolder() );
     if( !editFrame )
         return 0;
 
@@ -1270,6 +1371,11 @@ int SCH_EDITOR_CONTROL::ClearHighlight( const TOOL_EVENT& aEvent )
 
 int SCH_EDITOR_CONTROL::AssignNetclass( const TOOL_EVENT& aEvent )
 {
+    // This action is the Assign Netclass dialog, and it reports refusals in the info bar.
+    // Without a window to parent either there is nothing it can do.
+    if( !m_frame )
+        return 0;
+
     SCH_SELECTION_TOOL* selectionTool = m_toolMgr->GetTool<SCH_SELECTION_TOOL>();
     SCHEMATIC&          schematic = m_frame->Schematic();
     const SCH_SHEET_PATH path = m_frame->GetCurrentSheet();
@@ -1430,6 +1536,11 @@ int SCH_EDITOR_CONTROL::AssignNetclass( const TOOL_EVENT& aEvent )
 
 int SCH_EDITOR_CONTROL::FindNetInInspector( const TOOL_EVENT& aEvent )
 {
+    // The net inspector is a frame pane, and "no connected net selected" goes to the info
+    // bar. Both are a window's.
+    if( !m_frame )
+        return 0;
+
     SCH_SELECTION_TOOL* selectionTool = m_toolMgr->GetTool<SCH_SELECTION_TOOL>();
 
     if( !selectionTool )
@@ -1482,7 +1593,11 @@ int SCH_EDITOR_CONTROL::FindNetInInspector( const TOOL_EVENT& aEvent )
 
 int SCH_EDITOR_CONTROL::UpdateNetHighlighting( const TOOL_EVENT& aEvent )
 {
-    wxCHECK( m_frame, 0 );
+    // Which net and which chain are highlighted is frame state, so without one there is
+    // nothing for the view to be brought into line with. This is bound to the selection
+    // events and so runs constantly; wxCHECK would assert on every one of them.
+    if( !m_frame )
+        return 0;
 
     const SCH_SHEET_PATH& sheetPath = m_frame->GetCurrentSheet();
     SCH_SCREEN* screen = sheetPath.LastScreen();
@@ -1573,7 +1688,10 @@ int SCH_EDITOR_CONTROL::HighlightNetCursor( const TOOL_EVENT& aEvent )
 
 int SCH_EDITOR_CONTROL::ReplaceTerminalPin( const TOOL_EVENT& aEvent )
 {
-    SCH_EDIT_FRAME* editFrame = static_cast<SCH_EDIT_FRAME*>( m_toolMgr->GetToolHolder() );
+    SCH_EDIT_FRAME* editFrame = dynamic_cast<SCH_EDIT_FRAME*>( m_toolMgr->GetToolHolder() );
+
+    wxCHECK( editFrame, 0 );
+
     const auto change = aEvent.Parameter<SCH_CONNECTIVITY::NETCHAIN_MANAGER::TERMINAL_CHANGE>();
 
     if( editFrame->Schematic().NetChains().ReplaceNetChainTerminalPin( change ) )
@@ -1599,7 +1717,10 @@ int SCH_EDITOR_CONTROL::NameNetChain( const TOOL_EVENT& aEvent )
     if( !pin )
         return 0;
 
-    SCH_EDIT_FRAME* editFrame = static_cast<SCH_EDIT_FRAME*>( m_toolMgr->GetToolHolder() );
+    SCH_EDIT_FRAME* editFrame = dynamic_cast<SCH_EDIT_FRAME*>( m_toolMgr->GetToolHolder() );
+
+    wxCHECK( editFrame, 0 );
+
     auto& chains = editFrame->Schematic().NetChains();
     const auto netName = pin->GetConnectionName( &editFrame->GetCurrentSheet() );
 
@@ -1651,7 +1772,10 @@ int SCH_EDITOR_CONTROL::CreateNetChainBetweenPins( const TOOL_EVENT& aEvent )
     if( !pinA || !pinB )
         return 0;
 
-    SCH_EDIT_FRAME* editFrame = static_cast<SCH_EDIT_FRAME*>( m_toolMgr->GetToolHolder() );
+    SCH_EDIT_FRAME* editFrame = dynamic_cast<SCH_EDIT_FRAME*>( m_toolMgr->GetToolHolder() );
+
+    wxCHECK( editFrame, 0 );
+
     auto& chains = editFrame->Schematic().NetChains();
     const SCH_SHEET_PATH& path = editFrame->GetCurrentSheet();
 
@@ -1768,7 +1892,9 @@ int SCH_EDITOR_CONTROL::CreateNetChainBetweenPins( const TOOL_EVENT& aEvent )
 
 int SCH_EDITOR_CONTROL::ShowCreateNetChain( const TOOL_EVENT& aEvent )
 {
-    SCH_EDIT_FRAME* editFrame = static_cast<SCH_EDIT_FRAME*>( m_toolMgr->GetToolHolder() );
+    SCH_EDIT_FRAME* editFrame = dynamic_cast<SCH_EDIT_FRAME*>( m_toolMgr->GetToolHolder() );
+
+    wxCHECK( editFrame, 0 );
 
     editFrame->RecalculateConnections( nullptr, NO_CLEANUP );
 
@@ -1814,29 +1940,11 @@ int SCH_EDITOR_CONTROL::ShowCreateNetChain( const TOOL_EVENT& aEvent )
 
 int SCH_EDITOR_CONTROL::Undo( const TOOL_EVENT& aEvent )
 {
-    wxCHECK( m_frame, 0 );
-
-    if( m_frame->GetUndoCommandCount() <= 0 )
-        return 0;
-
-    // Inform tools that undo command was issued
-    m_toolMgr->ProcessEvent( { TC_MESSAGE, TA_UNDO_REDO_PRE, AS_GLOBAL } );
-
-    // Get the old list
-    PICKED_ITEMS_LIST* undo_list = m_frame->PopCommandFromUndoList();
-
-    wxCHECK( undo_list, 0 );
-
-    m_frame->PutDataInPreviousState( undo_list );
-
-    // Now push the old command to the RedoList
-    undo_list->ReversePickersListOrder();
-    m_frame->PushCommandToRedoList( undo_list );
-
-    m_toolMgr->GetTool<SCH_SELECTION_TOOL>()->RebuildSelection();
-
-    m_frame->GetCanvas()->Refresh();
-    m_frame->OnModify();
+    // SCH_EDIT_FRAME's undo methods forward to these free functions over SCHEMATIC_HOLDER,
+    // so this is the same code the frame ran — the count check, the TA_UNDO_REDO_PRE
+    // event, the stack shuffle, the selection rebuild, the canvas refresh and OnModify —
+    // asked of the editor instead.
+    SCH_UNDO_REDO::Undo( *m_editor );
 
     return 0;
 }
@@ -1844,30 +1952,8 @@ int SCH_EDITOR_CONTROL::Undo( const TOOL_EVENT& aEvent )
 
 int SCH_EDITOR_CONTROL::Redo( const TOOL_EVENT& aEvent )
 {
-    wxCHECK( m_frame, 0 );
-
-    if( m_frame->GetRedoCommandCount() == 0 )
-        return 0;
-
-    // Inform tools that undo command was issued
-    m_toolMgr->ProcessEvent( { TC_MESSAGE, TA_UNDO_REDO_PRE, AS_GLOBAL } );
-
-    /* Get the old list */
-    PICKED_ITEMS_LIST* list = m_frame->PopCommandFromRedoList();
-
-    wxCHECK( list, 0 );
-
-    /* Redo the command: */
-    m_frame->PutDataInPreviousState( list );
-
-    /* Put the old list in UndoList */
-    list->ReversePickersListOrder();
-    m_frame->PushCommandToUndoList( list );
-
-    m_toolMgr->GetTool<SCH_SELECTION_TOOL>()->RebuildSelection();
-
-    m_frame->GetCanvas()->Refresh();
-    m_frame->OnModify();
+    // The mirror of ::Undo, and the same shared implementation; see the note there.
+    SCH_UNDO_REDO::Redo( *m_editor );
 
     return 0;
 }
@@ -1877,15 +1963,15 @@ bool SCH_EDITOR_CONTROL::doCopy( bool aUseDuplicateClipboard )
 {
     SCH_SELECTION_TOOL* selTool = m_toolMgr->GetTool<SCH_SELECTION_TOOL>();
     SCH_SELECTION&      selection = selTool->RequestSelection();
-    SCHEMATIC&          schematic = m_frame->Schematic();
+    SCHEMATIC*          schematic = m_editor->GetSchematic();
 
-    if( selection.Empty() )
+    if( !schematic || selection.Empty() )
         return false;
 
     if( aUseDuplicateClipboard )
         m_duplicateIsHoverSelection = selection.IsHover();
 
-    selection.SetScreen( m_frame->GetScreen() );
+    selection.SetScreen( m_editor->GetScreen() );
     m_supplementaryClipboard.clear();
 
     for( EDA_ITEM* item : selection.GetItems() )
@@ -1921,9 +2007,9 @@ bool SCH_EDITOR_CONTROL::doCopy( bool aUseDuplicateClipboard )
     bool               result = true;
     STRING_FORMATTER   formatter;
     SCH_IO_KICAD_SEXPR plugin;
-    SCH_SHEET_PATH     selPath = m_frame->GetCurrentSheet();
+    SCH_SHEET_PATH     selPath = schematic->CurrentSheet();
 
-    plugin.Format( &selection, &selPath, schematic, &formatter, true );
+    plugin.Format( &selection, &selPath, *schematic, &formatter, true );
 
     std::string prettyData = formatter.GetString();
     KICAD_FORMAT::Prettify( prettyData, KICAD_FORMAT::FORMAT_MODE::COMPACT_TEXT_PROPERTIES );
@@ -1945,7 +2031,11 @@ bool SCH_EDITOR_CONTROL::doCopy( bool aUseDuplicateClipboard )
 
             BOX2I selectionBox = expandedSelectionBox( selection );
 
-            if( selectionBox.GetWidth() > 0 && selectionBox.GetHeight() > 0 )
+            // The bitmap, HTML and SVG flavours are rendered through the frame's colour
+            // settings, screen description and page setup. Without a window the clipboard
+            // still gets the KiCad s-expression and the plain text, which is what pasting
+            // back into a schematic uses; what is lost is pasting a picture elsewhere.
+            if( m_frame && selectionBox.GetWidth() > 0 && selectionBox.GetHeight() > 0 )
             {
                 // Add bitmap data (encoded once, used for both PNG clipboard and HTML)
                 wxImage image = renderSelectionToImageForClipboard( m_frame, selection, selectionBox, true, false );
@@ -2081,7 +2171,7 @@ int SCH_EDITOR_CONTROL::CopyAsText( const TOOL_EVENT& aEvent )
 void SCH_EDITOR_CONTROL::updatePastedSymbol( SCH_SYMBOL* aSymbol, const SCH_SHEET_PATH& aPastePath,
                                              const KIID_PATH& aClipPath, bool aForceKeepAnnotations )
 {
-    wxCHECK( m_frame && aSymbol, /* void */ );
+    wxCHECK( aSymbol, /* void */ );
 
     SCH_SYMBOL_INSTANCE newInstance;
     bool                instanceFound = false;
@@ -2130,7 +2220,9 @@ void SCH_EDITOR_CONTROL::updatePastedSymbol( SCH_SYMBOL* aSymbol, const SCH_SHEE
     }
 
     newInstance.m_Path = aPastePath.Path();
-    newInstance.m_ProjectName = m_frame->Prj().GetProjectName();
+    // Prj() is a window's (KIWAY_HOLDER's); without one the instance carries no project
+    // name, and whatever the clipboard said is discarded exactly as it is with a frame.
+    newInstance.m_ProjectName = m_frame ? m_frame->Prj().GetProjectName() : wxString();
 
     aSymbol->AddHierarchicalReference( newInstance );
 
@@ -2249,13 +2341,15 @@ void SCH_EDITOR_CONTROL::setPastedSymbolInstances( const SCH_SCREEN* aScreen )
 
 void SCH_EDITOR_CONTROL::prunePastedSymbolInstances()
 {
-    wxCHECK( m_frame, /* void */ );
+    SCHEMATIC* schematic = m_editor->GetSchematic();
+
+    wxCHECK( schematic, /* void */ );
 
     for( SCH_SYMBOL* symbol : m_pastedSymbols )
     {
         wxCHECK2( symbol, continue );
 
-        PrunePastedSymbolInstances( symbol, m_frame->Schematic() );
+        PrunePastedSymbolInstances( symbol, *schematic );
     }
 }
 
@@ -2300,8 +2394,13 @@ int SCH_EDITOR_CONTROL::Paste( const TOOL_EVENT& aEvent )
     }
 
     SCH_SELECTION_TOOL* selTool = m_toolMgr->GetTool<SCH_SELECTION_TOOL>();
+    SCHEMATIC*          schematic = m_editor->GetSchematic();
     std::string         content;
     VECTOR2I            eventPos;
+
+    // Pasting needs a document to paste into. A frame always has one.
+    if( !schematic )
+        return 0;
 
     SCH_SHEET tempSheet;
 
@@ -2337,7 +2436,7 @@ int SCH_EDITOR_CONTROL::Paste( const TOOL_EVENT& aEvent )
     SCH_IO_KICAD_SEXPR plugin;
 
     // Screen object on heap is owned by the sheet.
-    SCH_SCREEN* tempScreen = new SCH_SCREEN( &m_frame->Schematic() );
+    SCH_SCREEN* tempScreen = new SCH_SCREEN( schematic );
     tempSheet.SetScreen( tempScreen );
 
     try
@@ -2348,7 +2447,9 @@ int SCH_EDITOR_CONTROL::Paste( const TOOL_EVENT& aEvent )
     {
         // If it wasn't schematic content, paste as a text object
         {
-            if( content.size() > static_cast<size_t>( ADVANCED_CFG::GetCfg().m_MaxPastedTextLength ) )
+            // A window: without one there is nobody to ask, and the long paste goes ahead.
+            if( m_frame
+                && content.size() > static_cast<size_t>( ADVANCED_CFG::GetCfg().m_MaxPastedTextLength ) )
             {
                 int result = IsOK( m_frame, _( "Pasting a long text text string may be very slow.  "
                                                "Do you want to continue?" ) );
@@ -2397,7 +2498,11 @@ int SCH_EDITOR_CONTROL::Paste( const TOOL_EVENT& aEvent )
 
                 if( !tableEditTool->validatePasteIntoSelection( currentSelection, errorMsg ) )
                 {
-                    DisplayError( m_frame, errorMsg );
+                    // A window: without one there is no dialog to report this in. The
+                    // paste is refused either way.
+                    if( m_frame )
+                        DisplayError( m_frame, errorMsg );
+
                     return 0;
                 }
 
@@ -2410,7 +2515,11 @@ int SCH_EDITOR_CONTROL::Paste( const TOOL_EVENT& aEvent )
                 }
                 else
                 {
-                    DisplayError( m_frame, _( "Failed to paste cells" ) );
+                    // A window: without one there is no dialog to report this in. The
+                    // paste has failed either way.
+                    if( m_frame )
+                        DisplayError( m_frame, _( "Failed to paste cells" ) );
+
                     return 0;
                 }
             }
@@ -2425,14 +2534,17 @@ int SCH_EDITOR_CONTROL::Paste( const TOOL_EVENT& aEvent )
 
     tempScreen->MigrateSimModels();
 
-    bool                annotateAutomatic = m_frame->eeconfig()->m_AnnotatePanel.automatic;
-    SCHEMATIC_SETTINGS& schematicSettings = m_frame->Schematic().Settings();
+    bool                annotateAutomatic = m_editor->eeconfig()->m_AnnotatePanel.automatic;
+    SCHEMATIC_SETTINGS& schematicSettings = schematic->Settings();
     int                 annotateStartNum = schematicSettings.m_AnnotateStartNum;
 
     PASTE_MODE pasteMode = annotateAutomatic ? PASTE_MODE::UNIQUE_ANNOTATIONS : PASTE_MODE::REMOVE_ANNOTATIONS;
     bool       forceRemoveAnnotations = false;
 
-    if( aEvent.IsAction( &ACTIONS::pasteSpecial ) )
+    // The Paste Special dialog is where a different mode would come from. Without a window
+    // to parent it the paste uses the mode the auto-annotate setting implies, as a plain
+    // paste does.
+    if( m_frame && aEvent.IsAction( &ACTIONS::pasteSpecial ) )
     {
         PASTE_MODE           defaultPasteMode = pasteMode;
         DIALOG_PASTE_SPECIAL dlg( m_frame, &pasteMode );
@@ -2452,11 +2564,13 @@ int SCH_EDITOR_CONTROL::Paste( const TOOL_EVENT& aEvent )
     EDA_ITEMS              loadedItems;
     std::vector<SCH_ITEM*> sortedLoadedItems;
     bool                   sheetsPasted = false;
-    SCH_SHEET_LIST         hierarchy = m_frame->Schematic().Hierarchy();
-    SCH_SHEET_PATH&        pasteRoot = m_frame->GetCurrentSheet();
+    SCH_SHEET_LIST         hierarchy = schematic->Hierarchy();
+    SCH_SHEET_PATH&        pasteRoot = schematic->CurrentSheet();
     wxFileName             destFn = pasteRoot.Last()->GetFileName();
 
-    if( destFn.IsRelative() )
+    // Prj() is a window's (KIWAY_HOLDER's). Without one a relative sheet filename stays
+    // relative, so the recursion test below compares it as written rather than resolved.
+    if( destFn.IsRelative() && m_frame )
         destFn.MakeAbsolute( m_frame->Prj().GetProjectPath() );
 
     // List of paths in the hierarchy that refer to the destination sheet of the paste
@@ -2519,7 +2633,8 @@ int SCH_EDITOR_CONTROL::Paste( const TOOL_EVENT& aEvent )
             SCH_SHEET* sheet = static_cast<SCH_SHEET*>( item );
             wxFileName srcFn = sheet->GetFileName();
 
-            if( srcFn.IsRelative() )
+            // Prj() is a window's; see the note on destFn above.
+            if( srcFn.IsRelative() && m_frame )
                 srcFn.MakeAbsolute( m_frame->Prj().GetProjectPath() );
 
             SCH_SHEET_LIST sheetHierarchy( sheet );
@@ -2530,7 +2645,11 @@ int SCH_EDITOR_CONTROL::Paste( const TOOL_EVENT& aEvent )
                                                 "was dropped because the destination already has "
                                                 "the sheet or one of its subsheets as a parent." ),
                                              sheet->GetFileName() );
-                DisplayError( m_frame, msg );
+                // A window: without one there is no dialog to explain the drop in. The
+                // sheet is dropped either way.
+                if( m_frame )
+                    DisplayError( m_frame, msg );
+
                 loadedItems.pop_back();
             }
         }
@@ -2557,7 +2676,7 @@ int SCH_EDITOR_CONTROL::Paste( const TOOL_EVENT& aEvent )
         {
             SCH_SYMBOL* symbol = static_cast<SCH_SYMBOL*>( item );
 
-            SCH_SCREEN* currentScreen = m_frame->GetScreen();
+            SCH_SCREEN* currentScreen = m_editor->GetScreen();
 
             wxCHECK2( currentScreen, continue );
 
@@ -2636,7 +2755,7 @@ int SCH_EDITOR_CONTROL::Paste( const TOOL_EVENT& aEvent )
 
             // Update hierarchy to include any other sheets we already added, avoiding
             // duplicate sheet names
-            hierarchy = m_frame->Schematic().Hierarchy();
+            hierarchy = schematic->Hierarchy();
 
             int uniquifier = std::max( 0, wxAtoi( number ) ) + 1;
 
@@ -2659,7 +2778,7 @@ int SCH_EDITOR_CONTROL::Paste( const TOOL_EVENT& aEvent )
             }
 
             // Try to find the screen for the pasted sheet by several means
-            if( !m_frame->Schematic().Root().SearchHierarchy( fn.GetFullPath( wxPATH_UNIX ), &existingScreen ) )
+            if( !schematic->Root().SearchHierarchy( fn.GetFullPath( wxPATH_UNIX ), &existingScreen ) )
             {
                 if( loadedScreens.count( sheet->GetFileName() ) > 0 )
                     existingScreen = loadedScreens.at( sheet->GetFileName() );
@@ -2673,7 +2792,10 @@ int SCH_EDITOR_CONTROL::Paste( const TOOL_EVENT& aEvent )
             }
             else
             {
-                if( !m_frame->LoadSheetFromFile( sheet, &pasteRoot, fn.GetFullPath() ) )
+                // Reading a subsheet in from disk, and making a blank one when that fails,
+                // are the frame's file handling. Without a window the pasted sheet keeps
+                // no screen, so its contents do not come with it.
+                if( m_frame && !m_frame->LoadSheetFromFile( sheet, &pasteRoot, fn.GetFullPath() ) )
                     m_frame->InitSheet( sheet, sheet->GetFileName() );
             }
 
@@ -2724,7 +2846,7 @@ int SCH_EDITOR_CONTROL::Paste( const TOOL_EVENT& aEvent )
                 SCH_GROUP* group = static_cast<SCH_GROUP*>( item );
 
                 if( !group->GetName().IsEmpty() )
-                    group->SetName( UniqueGroupName( m_frame->GetScreen(), group->GetName() ) );
+                    group->SetName( UniqueGroupName( m_editor->GetScreen(), group->GetName() ) );
             }
         }
 
@@ -2734,10 +2856,10 @@ int SCH_EDITOR_CONTROL::Paste( const TOOL_EVENT& aEvent )
 
         item->SetFlags( IS_NEW | IS_PASTED | IS_MOVING );
 
-        if( !m_frame->GetScreen()->CheckIfOnDrawList( (SCH_ITEM*) item ) )  // don't want a loop!
-            m_frame->AddToScreen( item, m_frame->GetScreen() );
+        if( !m_editor->GetScreen()->CheckIfOnDrawList( (SCH_ITEM*) item ) )  // don't want a loop!
+            m_editor->AddToScreen( item, m_editor->GetScreen() );
 
-        commit.Added( (SCH_ITEM*) item, m_frame->GetScreen() );
+        commit.Added( (SCH_ITEM*) item, m_editor->GetScreen() );
 
         // Start out hidden so the pasted items aren't "ghosted" in their original location
         // before being moved to the current location.
@@ -2747,7 +2869,7 @@ int SCH_EDITOR_CONTROL::Paste( const TOOL_EVENT& aEvent )
     if( sheetsPasted )
     {
         // The full schematic hierarchy need to be update before assigning new annotation and page numbers.
-        m_frame->Schematic().RefreshHierarchy();
+        schematic->RefreshHierarchy();
 
         // Update sheet instance page and virtual page numbers to ensure annotation works correctly.
         for( SCH_SHEET_PATH& sheetPath : sheetPathsForScreen )
@@ -2777,7 +2899,9 @@ int SCH_EDITOR_CONTROL::Paste( const TOOL_EVENT& aEvent )
                 // Don't include the actual sheet in the instance path.
                 sheetInstance.m_Path.pop_back();
                 sheetInstance.m_PageNumber = pageNum;
-                sheetInstance.m_ProjectName = m_frame->Prj().GetProjectName();
+                // Prj() is a window's; without one the instance carries no project name.
+                sheetInstance.m_ProjectName = m_frame ? m_frame->Prj().GetProjectName()
+                                                      : wxString();
 
                 SCH_SHEET* sheet = pastedSheet.Last();
 
@@ -2814,11 +2938,12 @@ int SCH_EDITOR_CONTROL::Paste( const TOOL_EVENT& aEvent )
             }
         }
 
-        m_frame->SetSheetNumberAndCount();
+        // SCH_EDIT_FRAME::SetSheetNumberAndCount() is a one-line forward to this.
+        schematic->SetSheetNumberAndCount();
 
         // Get a version with correct sheet numbers since we've pasted sheets,
         // we'll need this when annotating next
-        hierarchy = m_frame->Schematic().Hierarchy();
+        hierarchy = schematic->Hierarchy();
     }
 
     std::map<SCH_SHEET_PATH, SCH_REFERENCE_LIST> annotatedSymbols;
@@ -2893,18 +3018,23 @@ int SCH_EDITOR_CONTROL::Paste( const TOOL_EVENT& aEvent )
         }
     }
 
-    m_frame->GetCurrentSheet().UpdateAllScreenReferences();
+    schematic->CurrentSheet().UpdateAllScreenReferences();
 
     // The copy operation creates instance paths that are not valid for the current project or
     // saved as part of another project.  Prune them now so they do not accumulate in the saved
     // schematic file.
     prunePastedSymbolInstances();
 
-    SCH_SHEET_LIST sheets = m_frame->Schematic().Hierarchy();
-    SCH_SCREENS    allScreens( m_frame->Schematic().Root() );
+    SCH_SHEET_LIST sheets = schematic->Hierarchy();
+    SCH_SCREENS    allScreens( schematic->Root() );
 
-    allScreens.PruneOrphanedSymbolInstances( m_frame->Prj().GetProjectName(), sheets );
-    allScreens.PruneOrphanedSheetInstances( m_frame->Prj().GetProjectName(), sheets );
+    // Pruning is keyed by the project name, and Prj() is a window's. Without one the copied
+    // instance paths are left alone rather than pruned against a project we cannot name.
+    if( m_frame )
+    {
+        allScreens.PruneOrphanedSymbolInstances( m_frame->Prj().GetProjectName(), sheets );
+        allScreens.PruneOrphanedSheetInstances( m_frame->Prj().GetProjectName(), sheets );
+    }
 
     // Now clear the previous selection, select the pasted items, and fire up the "move" tool.
     m_toolMgr->RunAction( ACTIONS::selectionClear );
@@ -3058,12 +3188,13 @@ int SCH_EDITOR_CONTROL::Paste( const TOOL_EVENT& aEvent )
             selection.SetReferencePoint( item->GetPosition() );
         }
 
-        if( m_toolMgr->RunSynchronousAction( SCH_ACTIONS::move, &commit ) )
+        if( MoveWithCommit( &commit ) )
         {
             // Pushing the commit will update the connectivity.
             commit.Push( _( "Paste" ) );
 
-            if( !sheetsPasted && !ADVANCED_CFG::GetCfg().m_ConnectivityEngine )
+            // The net navigator is a frame pane; there is none to refresh without one.
+            if( m_frame && !sheetsPasted && !ADVANCED_CFG::GetCfg().m_ConnectivityEngine )
                 m_frame->RefreshNetNavigator();
         }
         else
@@ -3106,9 +3237,19 @@ int SCH_EDITOR_CONTROL::EditWithSymbolEditor( const TOOL_EVENT& aEvent )
 
     if( symbol->IsMissingLibSymbol() )
     {
-        m_frame->ShowInfoBarError( _( "Symbols with broken library symbol links cannot be edited." ) );
+        // A window: without one there is no info bar to say so in. Either way the symbol
+        // is not opened for editing.
+        if( m_frame )
+            m_frame->ShowInfoBarError( _( "Symbols with broken library symbol links cannot be edited." ) );
+
         return 0;
     }
+
+    // Raising the symbol editor is Kiway traffic between two program windows. Without a
+    // frame there is none to raise; the hover selection has still been cleared above, and
+    // the Edit Table fallback earlier in this handler still runs.
+    if( !m_frame )
+        return 0;
 
     m_toolMgr->RunAction( ACTIONS::showSymbolEditor );
     symbolEditor = (SYMBOL_EDIT_FRAME*) m_frame->Kiway().Player( FRAME_SCH_SYMBOL_EDITOR, false );
@@ -3137,6 +3278,10 @@ int SCH_EDITOR_CONTROL::EditWithSymbolEditor( const TOOL_EVENT& aEvent )
 
 int SCH_EDITOR_CONTROL::Annotate( const TOOL_EVENT& aEvent )
 {
+    // This action is the Annotate dialog.
+    if( !m_frame )
+        return 0;
+
     m_frame->OnAnnotate();
     return 0;
 }
@@ -3144,6 +3289,11 @@ int SCH_EDITOR_CONTROL::Annotate( const TOOL_EVENT& aEvent )
 
 int SCH_EDITOR_CONTROL::IncrementAnnotations( const TOOL_EVENT& aEvent )
 {
+    // This action is the Increment Annotations dialog; everything it does is driven by the
+    // values the user types into it.
+    if( !m_frame )
+        return 0;
+
     DIALOG_INCREMENT_ANNOTATIONS_BASE dlg( m_frame );
     dlg.m_FirstRefDes->SetValidator( wxTextValidator( wxFILTER_EMPTY ) );
 
@@ -3202,6 +3352,10 @@ int SCH_EDITOR_CONTROL::IncrementAnnotations( const TOOL_EVENT& aEvent )
 
 int SCH_EDITOR_CONTROL::ShowCvpcb( const TOOL_EVENT& aEvent )
 {
+    // Launching cvpcb is Kiway traffic between two program windows.
+    if( !m_frame )
+        return 0;
+
     m_frame->OnOpenCvpcb();
     return 0;
 }
@@ -3209,6 +3363,10 @@ int SCH_EDITOR_CONTROL::ShowCvpcb( const TOOL_EVENT& aEvent )
 
 int SCH_EDITOR_CONTROL::ImportNonKicadSchematic( const TOOL_EVENT& aEvent )
 {
+    // This action is the import file dialog and the importers' own dialogs.
+    if( !m_frame )
+        return 0;
+
     m_frame->OnImportProject();
     return 0;
 }
@@ -3216,6 +3374,10 @@ int SCH_EDITOR_CONTROL::ImportNonKicadSchematic( const TOOL_EVENT& aEvent )
 
 int SCH_EDITOR_CONTROL::EditSymbolFields( const TOOL_EVENT& aEvent )
 {
+    // This action is the Symbol Fields Table dialog, which the frame owns.
+    if( !m_frame )
+        return 0;
+
     DIALOG_SYMBOL_FIELDS_TABLE* dlg = m_frame->GetSymbolFieldsTableDialog();
 
     if( !dlg )
@@ -3235,6 +3397,10 @@ int SCH_EDITOR_CONTROL::EditSymbolFields( const TOOL_EVENT& aEvent )
 
 int SCH_EDITOR_CONTROL::EditSymbolLibraryLinks( const TOOL_EVENT& aEvent )
 {
+    // This action is the Edit Symbol Library Links dialog.
+    if( !m_frame )
+        return 0;
+
     if( !m_frame->Schematic().GetCurrentVariant().IsEmpty() )
     {
         DisplayInfoMessage( m_frame,
@@ -3252,6 +3418,10 @@ int SCH_EDITOR_CONTROL::EditSymbolLibraryLinks( const TOOL_EVENT& aEvent )
 
 int SCH_EDITOR_CONTROL::ShowPcbNew( const TOOL_EVENT& aEvent )
 {
+    // Launching pcbnew is Kiway traffic between two program windows.
+    if( !m_frame )
+        return 0;
+
     m_frame->OnOpenPcbnew();
     return 0;
 }
@@ -3259,6 +3429,10 @@ int SCH_EDITOR_CONTROL::ShowPcbNew( const TOOL_EVENT& aEvent )
 
 int SCH_EDITOR_CONTROL::UpdatePCB( const TOOL_EVENT& aEvent )
 {
+    // This action is the Update PCB from Schematic dialog, in pcbnew's window.
+    if( !m_frame )
+        return 0;
+
     m_frame->OnUpdatePCB();
     return 0;
 }
@@ -3266,6 +3440,10 @@ int SCH_EDITOR_CONTROL::UpdatePCB( const TOOL_EVENT& aEvent )
 
 int SCH_EDITOR_CONTROL::UpdateFromPCB( const TOOL_EVENT& aEvent )
 {
+    // This action is the Update Schematic from PCB dialog.
+    if( !m_frame )
+        return 0;
+
     DIALOG_UPDATE_FROM_PCB dlg( m_frame );
     dlg.ShowModal();
     return 0;
@@ -3274,6 +3452,11 @@ int SCH_EDITOR_CONTROL::UpdateFromPCB( const TOOL_EVENT& aEvent )
 
 int SCH_EDITOR_CONTROL::ExportNetlist( const TOOL_EVENT& aEvent )
 {
+    // This action is the Export Netlist dialog, which is where the format, the options and
+    // the destination filename all come from.
+    if( !m_frame )
+        return 0;
+
     int result = NET_PLUGIN_CHANGE;
 
     // If a plugin is removed or added, rebuild and reopen the new dialog
@@ -3286,6 +3469,10 @@ int SCH_EDITOR_CONTROL::ExportNetlist( const TOOL_EVENT& aEvent )
 
 int SCH_EDITOR_CONTROL::GenerateBOM( const TOOL_EVENT& aEvent )
 {
+    // The BOM is generated from the Symbol Fields Table dialog, which the frame owns.
+    if( !m_frame )
+        return 0;
+
     DIALOG_SYMBOL_FIELDS_TABLE* dlg = m_frame->GetSymbolFieldsTableDialog();
 
     if( !dlg )
@@ -3305,6 +3492,10 @@ int SCH_EDITOR_CONTROL::GenerateBOM( const TOOL_EVENT& aEvent )
 
 int SCH_EDITOR_CONTROL::GenerateBOMLegacy( const TOOL_EVENT& aEvent )
 {
+    // This action is the legacy Create BOM dialog.
+    if( !m_frame )
+        return 0;
+
     InvokeDialogCreateBOM( m_frame );
     return 0;
 }
@@ -3312,6 +3503,12 @@ int SCH_EDITOR_CONTROL::GenerateBOMLegacy( const TOOL_EVENT& aEvent )
 
 int SCH_EDITOR_CONTROL::DrawSheetOnClipboard( const TOOL_EVENT& aEvent )
 {
+    // The sheet image is rendered through the frame's colour settings, screen description
+    // and page setup, and goes onto the system clipboard as a bitmap for pasting into some
+    // other program. Neither end of that means anything without a window.
+    if( !m_frame )
+        return 0;
+
     m_frame->RecalculateConnections( nullptr, LOCAL_CLEANUP );
 
     // Create a selection with all items from the current sheet
@@ -3355,53 +3552,78 @@ int SCH_EDITOR_CONTROL::DrawSheetOnClipboard( const TOOL_EVENT& aEvent )
 
 int SCH_EDITOR_CONTROL::ShowSearch( const TOOL_EVENT& aEvent )
 {
-    getEditFrame<SCH_EDIT_FRAME>()->ToggleSearch();
+    // The search pane is a window's. getEditFrame<>() is an unchecked static_cast, so this
+    // asks m_frame instead and declines when there is none.
+    if( !m_frame )
+        return 0;
+
+    m_frame->ToggleSearch();
     return 0;
 }
 
 
 int SCH_EDITOR_CONTROL::ShowHierarchy( const TOOL_EVENT& aEvent )
 {
-    getEditFrame<SCH_EDIT_FRAME>()->ToggleSchematicHierarchy();
+    // The hierarchy navigator is a pane; there is none without a window.
+    if( !m_frame )
+        return 0;
+
+    m_frame->ToggleSchematicHierarchy();
     return 0;
 }
 
 
 int SCH_EDITOR_CONTROL::ShowNetNavigator( const TOOL_EVENT& aEvent )
 {
-    getEditFrame<SCH_EDIT_FRAME>()->ToggleNetNavigator();
+    // The net navigator is a pane; there is none without a window.
+    if( !m_frame )
+        return 0;
+
+    m_frame->ToggleNetNavigator();
     return 0;
 }
 
 
 int SCH_EDITOR_CONTROL::ToggleProperties( const TOOL_EVENT& aEvent )
 {
-    getEditFrame<SCH_EDIT_FRAME>()->ToggleProperties();
+    // The properties panel is a pane; there is none without a window.
+    if( !m_frame )
+        return 0;
+
+    m_frame->ToggleProperties();
     return 0;
 }
 
 
 int SCH_EDITOR_CONTROL::ToggleLibraryTree( const TOOL_EVENT& aEvent )
 {
-    getEditFrame<SCH_EDIT_FRAME>()->ToggleLibraryTree();
+    // The design block / library tree is a pane; there is none without a window.
+    if( !m_frame )
+        return 0;
+
+    m_frame->ToggleLibraryTree();
     return 0;
 }
 
 
 int SCH_EDITOR_CONTROL::ToggleRemoteSymbolPanel( const TOOL_EVENT& aEvent )
 {
-    getEditFrame<SCH_EDIT_FRAME>()->ToggleRemoteSymbolPanel();
+    // The remote symbol panel is a pane; there is none without a window.
+    if( !m_frame )
+        return 0;
+
+    m_frame->ToggleRemoteSymbolPanel();
     return 0;
 }
 
 
 int SCH_EDITOR_CONTROL::ToggleHiddenPins( const TOOL_EVENT& aEvent )
 {
-    EESCHEMA_SETTINGS* cfg = m_frame->eeconfig();
+    EESCHEMA_SETTINGS* cfg = m_editor->eeconfig();
     cfg->m_Appearance.show_hidden_pins = !cfg->m_Appearance.show_hidden_pins;
 
     getView()->UpdateAllItems( KIGFX::REPAINT );
-    m_frame->GetCanvas()->Refresh();
+    m_toolMgr->GetToolHolder()->RefreshCanvas();
 
     return 0;
 }
@@ -3409,13 +3631,13 @@ int SCH_EDITOR_CONTROL::ToggleHiddenPins( const TOOL_EVENT& aEvent )
 
 int SCH_EDITOR_CONTROL::ToggleHiddenFields( const TOOL_EVENT& aEvent )
 {
-    EESCHEMA_SETTINGS* cfg = m_frame->eeconfig();
+    EESCHEMA_SETTINGS* cfg = m_editor->eeconfig();
     cfg->m_Appearance.show_hidden_fields = !cfg->m_Appearance.show_hidden_fields;
 
-    m_frame->GetRenderSettings()->m_ShowHiddenFields = cfg->m_Appearance.show_hidden_fields;
+    m_editor->GetRenderSettings()->m_ShowHiddenFields = cfg->m_Appearance.show_hidden_fields;
 
     getView()->UpdateAllItems( KIGFX::REPAINT );
-    m_frame->GetCanvas()->Refresh();
+    m_toolMgr->GetToolHolder()->RefreshCanvas();
 
     return 0;
 }
@@ -3423,11 +3645,11 @@ int SCH_EDITOR_CONTROL::ToggleHiddenFields( const TOOL_EVENT& aEvent )
 
 int SCH_EDITOR_CONTROL::ToggleDirectiveLabels( const TOOL_EVENT& aEvent )
 {
-    EESCHEMA_SETTINGS* cfg = m_frame->eeconfig();
+    EESCHEMA_SETTINGS* cfg = m_editor->eeconfig();
     cfg->m_Appearance.show_directive_labels = !cfg->m_Appearance.show_directive_labels;
 
     getView()->UpdateAllItems( KIGFX::REPAINT );
-    m_frame->GetCanvas()->Refresh();
+    m_toolMgr->GetToolHolder()->RefreshCanvas();
 
     return 0;
 }
@@ -3435,11 +3657,11 @@ int SCH_EDITOR_CONTROL::ToggleDirectiveLabels( const TOOL_EVENT& aEvent )
 
 int SCH_EDITOR_CONTROL::ToggleERCWarnings( const TOOL_EVENT& aEvent )
 {
-    EESCHEMA_SETTINGS* cfg = m_frame->eeconfig();
+    EESCHEMA_SETTINGS* cfg = m_editor->eeconfig();
     cfg->m_Appearance.show_erc_warnings = !cfg->m_Appearance.show_erc_warnings;
 
     getView()->SetLayerVisible( LAYER_ERC_WARN, cfg->m_Appearance.show_erc_warnings );
-    m_frame->GetCanvas()->Refresh();
+    m_toolMgr->GetToolHolder()->RefreshCanvas();
 
     return 0;
 }
@@ -3447,11 +3669,11 @@ int SCH_EDITOR_CONTROL::ToggleERCWarnings( const TOOL_EVENT& aEvent )
 
 int SCH_EDITOR_CONTROL::ToggleERCErrors( const TOOL_EVENT& aEvent )
 {
-    EESCHEMA_SETTINGS* cfg = m_frame->eeconfig();
+    EESCHEMA_SETTINGS* cfg = m_editor->eeconfig();
     cfg->m_Appearance.show_erc_errors = !cfg->m_Appearance.show_erc_errors;
 
     getView()->SetLayerVisible( LAYER_ERC_ERR, cfg->m_Appearance.show_erc_errors );
-    m_frame->GetCanvas()->Refresh();
+    m_toolMgr->GetToolHolder()->RefreshCanvas();
 
     return 0;
 }
@@ -3459,10 +3681,10 @@ int SCH_EDITOR_CONTROL::ToggleERCErrors( const TOOL_EVENT& aEvent )
 
 int SCH_EDITOR_CONTROL::ToggleERCExclusions( const TOOL_EVENT& aEvent )
 {
-    EESCHEMA_SETTINGS* cfg = m_frame->eeconfig();
+    EESCHEMA_SETTINGS* cfg = m_editor->eeconfig();
     cfg->m_Appearance.show_erc_exclusions = !cfg->m_Appearance.show_erc_exclusions;
 
-    m_frame->GetCanvas()->Refresh();
+    m_toolMgr->GetToolHolder()->RefreshCanvas();
 
     return 0;
 }
@@ -3470,12 +3692,17 @@ int SCH_EDITOR_CONTROL::ToggleERCExclusions( const TOOL_EVENT& aEvent )
 
 int SCH_EDITOR_CONTROL::MarkSimExclusions( const TOOL_EVENT& aEvent )
 {
-    SCH_SHEET_PATH*    sheetPath = &m_frame->GetCurrentSheet();
-    wxString           variant = m_frame->Schematic().GetCurrentVariant();
-    EESCHEMA_SETTINGS* cfg = m_frame->eeconfig();
+    SCHEMATIC* schematic = m_editor->GetSchematic();
+
+    if( !schematic )
+        return 0;
+
+    SCH_SHEET_PATH*    sheetPath = &schematic->CurrentSheet();
+    wxString           variant = schematic->GetCurrentVariant();
+    EESCHEMA_SETTINGS* cfg = m_editor->eeconfig();
     cfg->m_Appearance.mark_sim_exclusions = !cfg->m_Appearance.mark_sim_exclusions;
 
-    m_frame->GetCanvas()->GetView()->UpdateAllItemsConditionally(
+    getView()->UpdateAllItemsConditionally(
             [&]( KIGFX::VIEW_ITEM* aItem ) -> int
             {
                 int flags = 0;
@@ -3511,7 +3738,7 @@ int SCH_EDITOR_CONTROL::MarkSimExclusions( const TOOL_EVENT& aEvent )
                 return flags;
             } );
 
-    m_frame->GetCanvas()->Refresh();
+    m_toolMgr->GetToolHolder()->RefreshCanvas();
 
     return 0;
 }
@@ -3519,12 +3746,17 @@ int SCH_EDITOR_CONTROL::MarkSimExclusions( const TOOL_EVENT& aEvent )
 
 int SCH_EDITOR_CONTROL::ToggleOPVoltages( const TOOL_EVENT& aEvent )
 {
-    EESCHEMA_SETTINGS* cfg = m_frame->eeconfig();
+    EESCHEMA_SETTINGS* cfg = m_editor->eeconfig();
     cfg->m_Appearance.show_op_voltages = !cfg->m_Appearance.show_op_voltages;
 
     getView()->SetLayerVisible( LAYER_OP_VOLTAGES, cfg->m_Appearance.show_op_voltages );
-    m_frame->RefreshOperatingPointDisplay();
-    m_frame->GetCanvas()->Refresh();
+
+    // The operating-point values come from the simulator frame, over Kiway(). Without a
+    // window there are none to re-read; the layer is still switched.
+    if( m_frame )
+        m_frame->RefreshOperatingPointDisplay();
+
+    m_toolMgr->GetToolHolder()->RefreshCanvas();
 
     return 0;
 }
@@ -3532,12 +3764,17 @@ int SCH_EDITOR_CONTROL::ToggleOPVoltages( const TOOL_EVENT& aEvent )
 
 int SCH_EDITOR_CONTROL::ToggleOPCurrents( const TOOL_EVENT& aEvent )
 {
-    EESCHEMA_SETTINGS* cfg = m_frame->eeconfig();
+    EESCHEMA_SETTINGS* cfg = m_editor->eeconfig();
     cfg->m_Appearance.show_op_currents = !cfg->m_Appearance.show_op_currents;
 
     getView()->SetLayerVisible( LAYER_OP_CURRENTS, cfg->m_Appearance.show_op_currents );
-    m_frame->RefreshOperatingPointDisplay();
-    m_frame->GetCanvas()->Refresh();
+
+    // The operating-point values come from the simulator frame, over Kiway(). Without a
+    // window there are none to re-read; the layer is still switched.
+    if( m_frame )
+        m_frame->RefreshOperatingPointDisplay();
+
+    m_toolMgr->GetToolHolder()->RefreshCanvas();
 
     return 0;
 }
@@ -3545,13 +3782,13 @@ int SCH_EDITOR_CONTROL::ToggleOPCurrents( const TOOL_EVENT& aEvent )
 
 int SCH_EDITOR_CONTROL::TogglePinAltIcons( const TOOL_EVENT& aEvent )
 {
-    EESCHEMA_SETTINGS* cfg = m_frame->eeconfig();
+    EESCHEMA_SETTINGS* cfg = m_editor->eeconfig();
     cfg->m_Appearance.show_pin_alt_icons = !cfg->m_Appearance.show_pin_alt_icons;
 
-    m_frame->GetRenderSettings()->m_ShowPinAltIcons = cfg->m_Appearance.show_pin_alt_icons;
+    m_editor->GetRenderSettings()->m_ShowPinAltIcons = cfg->m_Appearance.show_pin_alt_icons;
 
     getView()->UpdateAllItems( KIGFX::REPAINT );
-    m_frame->GetCanvas()->Refresh();
+    m_toolMgr->GetToolHolder()->RefreshCanvas();
 
     return 0;
 }
@@ -3559,7 +3796,7 @@ int SCH_EDITOR_CONTROL::TogglePinAltIcons( const TOOL_EVENT& aEvent )
 
 int SCH_EDITOR_CONTROL::ChangeLineMode( const TOOL_EVENT& aEvent )
 {
-    m_frame->eeconfig()->m_Drawing.line_mode = aEvent.Parameter<LINE_MODE>();
+    m_editor->eeconfig()->m_Drawing.line_mode = aEvent.Parameter<LINE_MODE>();
     m_toolMgr->PostAction( ACTIONS::refreshPreview );
     // Notify toolbar to update selection
     m_toolMgr->RunAction( SCH_ACTIONS::angleSnapModeChanged );
@@ -3569,8 +3806,8 @@ int SCH_EDITOR_CONTROL::ChangeLineMode( const TOOL_EVENT& aEvent )
 
 int SCH_EDITOR_CONTROL::NextLineMode( const TOOL_EVENT& aEvent )
 {
-    m_frame->eeconfig()->m_Drawing.line_mode++;
-    m_frame->eeconfig()->m_Drawing.line_mode %= LINE_MODE::LINE_MODE_COUNT;
+    m_editor->eeconfig()->m_Drawing.line_mode++;
+    m_editor->eeconfig()->m_Drawing.line_mode %= LINE_MODE::LINE_MODE_COUNT;
     m_toolMgr->PostAction( ACTIONS::refreshPreview );
     // Notify toolbar to update selection
     m_toolMgr->RunAction( SCH_ACTIONS::angleSnapModeChanged );
@@ -3580,7 +3817,7 @@ int SCH_EDITOR_CONTROL::NextLineMode( const TOOL_EVENT& aEvent )
 
 int SCH_EDITOR_CONTROL::ToggleAnnotateAuto( const TOOL_EVENT& aEvent )
 {
-    EESCHEMA_SETTINGS* cfg = m_frame->eeconfig();
+    EESCHEMA_SETTINGS* cfg = m_editor->eeconfig();
     cfg->m_AnnotatePanel.automatic = !cfg->m_AnnotatePanel.automatic;
     return 0;
 }
@@ -3588,6 +3825,11 @@ int SCH_EDITOR_CONTROL::ToggleAnnotateAuto( const TOOL_EVENT& aEvent )
 
 int SCH_EDITOR_CONTROL::OnAngleSnapModeChanged( const TOOL_EVENT& aEvent )
 {
+    // The whole of this is the left toolbar, which is a window's; the mode itself was
+    // already changed by whoever posted this event.
+    if( !m_frame )
+        return 0;
+
     // Update the left toolbar Line modes group icon to match current mode
     switch( static_cast<LINE_MODE>( m_frame->eeconfig()->m_Drawing.line_mode ) )
     {
@@ -3603,6 +3845,11 @@ int SCH_EDITOR_CONTROL::OnAngleSnapModeChanged( const TOOL_EVENT& aEvent )
 
 int SCH_EDITOR_CONTROL::GridFeedback( const TOOL_EVENT& aEvent )
 {
+    // This action is the hotkey popup: a window that tells the user which grid they just
+    // cycled to, and whose labels are formatted in the frame's display units.
+    if( !m_frame )
+        return 0;
+
     if( !Pgm().GetCommonSettings()->m_Input.hotkey_feedback )
         return 0;
 
@@ -3766,7 +4013,11 @@ void SCH_EDITOR_CONTROL::setTransitions()
 {
     Go( &SCH_EDITOR_CONTROL::New,                     ACTIONS::doNew.MakeEvent() );
     Go( &SCH_EDITOR_CONTROL::Open,                    ACTIONS::open.MakeEvent() );
-    Go( &SCH_EDITOR_CONTROL::Save,                    ACTIONS::save.MakeEvent() );
+    // Only one tool may claim Save: a frameless host supplies SCH_HOST_CONTROL.
+    // A no-op frame handler would consume the action before the host can save,
+    // depending on the tool pointer ordering in TOOL_MANAGER's transition map.
+    if( m_frame )
+        Go( &SCH_EDITOR_CONTROL::Save,                ACTIONS::save.MakeEvent() );
     Go( &SCH_EDITOR_CONTROL::SaveAs,                  ACTIONS::saveAs.MakeEvent() );
     Go( &SCH_EDITOR_CONTROL::SaveCurrSheetCopyAs,     SCH_ACTIONS::saveCurrSheetCopyAs.MakeEvent() );
     Go( &SCH_EDITOR_CONTROL::Revert,                  ACTIONS::revert.MakeEvent() );

@@ -19,6 +19,7 @@
  */
 
 #include <tool/actions.h>
+#include <tool/tool_manager.h>
 #include <tool/picker_tool.h>
 #include <view/view_controls.h>
 #include <eda_draw_frame.h>
@@ -55,7 +56,14 @@ PICKER_TOOL::PICKER_TOOL() :
 
 bool PICKER_TOOL::Init()
 {
-    m_frame = getEditFrame<EDA_DRAW_FRAME>();
+    // Checked, because the tool holder is not necessarily a frame: a non-wx host
+    // installs one that is not, and every use of m_frame below and in Main() would be
+    // through a pointer adjusted by an offset that does not exist. A picker needs the
+    // canvas it picks on, so declining is the answer.
+    m_frame = dynamic_cast<EDA_DRAW_FRAME*>( m_toolMgr->GetToolHolder() );
+
+    if( !m_frame )
+        return false;
 
     auto& ctxMenu = m_menu->GetMenu();
 

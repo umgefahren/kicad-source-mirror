@@ -36,6 +36,25 @@ public:
     /// @copydoc TOOL_INTERACTIVE::Init()
     bool Init() override;
 
+    /**
+     * Runs on an editing context that is not a wxFrame.
+     *
+     * The split is between the edits that move an item and the edits that ask the user
+     * what an item should say. The geometric half — rotate, mirror, swap, repeat, delete,
+     * autoplace, justify, lock and the label/text type conversion — needs only the screen,
+     * the undo stack, the repeat-item list and the connection rebuild, all of which are
+     * SCHEMATIC_HOLDER's, and runs unchanged here. The property half *is* a dialog:
+     * ::Properties, ::EditProperties, ::EditField, ::ChangeSymbols, ::SetVariantSymbol,
+     * ::SwapPins, ::CleanupSheetPins, ::EditPageNumber, ::GlobalEdit and ::FixERCError all
+     * decline when there is no window to parent them, and say so at the site.
+     *
+     * What the geometric half itself loses without a frame is the right-click menus, the
+     * info-bar messages and the hierarchy navigator refresh. Junction cleanup and
+     * body-style changes use shared SCHEMATIC_HOLDER services in both frontends;
+     * repeated-symbol annotation uses the native reference allocator.
+     */
+    bool runsWithoutAFrame() const override { return true; }
+
     int Rotate( const TOOL_EVENT& aEvent );
     int Mirror( const TOOL_EVENT& aEvent );
     int Swap( const TOOL_EVENT& aEvent );
@@ -94,6 +113,24 @@ public:
 
 private:
     void editFieldText( SCH_FIELD* aField );
+
+    /**
+     * The guard ::GlobalEdit cannot carry itself.
+     *
+     * That method's body lives beside the dialog it opens, in
+     * dialogs/dialog_global_edit_text_and_graphics.cpp, so the "this action is the dialog"
+     * early return goes here, at the only place that dispatches to it.
+     */
+    int globalEdit( const TOOL_EVENT& aEvent );
+
+    ///< EDA_DRAW_FRAME::GetNearestGridPosition, asked of the view rather than of a canvas.
+    VECTOR2I getNearestGridPosition( const VECTOR2I& aPosition ) const;
+
+    ///< EDA_DRAW_FRAME::GetNearestHalfGridPosition, asked of the view rather than of a canvas.
+    VECTOR2I getNearestHalfGridPosition( const VECTOR2I& aPosition ) const;
+
+    ///< SCH_EDIT_FRAME::TestDanglingEnds, asked of the screen and the view.
+    void testDanglingEnds();
 
     void collectUnits( const SCH_SELECTION& aSelection,
                        std::set<std::pair<SCH_SYMBOL*, SCH_SCREEN*>>& aCollectedUnits );

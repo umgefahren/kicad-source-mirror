@@ -21,7 +21,12 @@
 #include <sch_actions.h>
 #include <advanced_config.h>
 #include <sch_edit_frame.h>
+#include <schematic_holder.h>
+#include <schematic_undo_redo.h>
+#include <sch_page_settings_undo.h>
 #include <tool/tool_manager.h>
+#include <tool/tools_holder.h>
+#include <undo_redo_holder.h>
 #include <schematic.h>
 #include <sch_bus_entry.h>
 #include <sch_commit.h>
@@ -78,14 +83,40 @@
  *  handled by its destructor.
  */
 
-void SCH_EDIT_FRAME::SaveCopyInUndoList( SCH_SCREEN* aScreen, SCH_ITEM* aItem, UNDO_REDO aCommandType,
-                                         bool aAppend )
+namespace
 {
+
+/// The stacks, which every editing context with undo also is. Null for one without.
+UNDO_REDO_HOLDER* stacks( SCHEMATIC_HOLDER& aEditor )
+{
+    return dynamic_cast<UNDO_REDO_HOLDER*>( &aEditor );
+}
+
+
+/// The tool manager, which every editing context has, for the events undo has to post.
+TOOL_MANAGER* toolManager( SCHEMATIC_HOLDER& aEditor )
+{
+    TOOLS_HOLDER* holder = dynamic_cast<TOOLS_HOLDER*>( &aEditor );
+
+    return holder ? holder->GetToolManager() : nullptr;
+}
+
+} // namespace
+
+
+void SCH_UNDO_REDO::SaveCopyInUndoList( SCHEMATIC_HOLDER& aEditor, SCH_SCREEN* aScreen,
+                                        SCH_ITEM* aItem, UNDO_REDO aCommandType, bool aAppend )
+{
+    UNDO_REDO_HOLDER* undo = stacks( aEditor );
+
+    if( !undo )
+        return;
+
     PICKED_ITEMS_LIST* commandToUndo = nullptr;
 
     wxCHECK( aItem, /* void */ );
 
-    PICKED_ITEMS_LIST* lastUndo = PopCommandFromUndoList();
+    PICKED_ITEMS_LIST* lastUndo = undo->PopCommandFromUndoList();
 
     // If the last stack was empty, use that one instead of creating a new stack
     if( lastUndo )
@@ -93,7 +124,7 @@ void SCH_EDIT_FRAME::SaveCopyInUndoList( SCH_SCREEN* aScreen, SCH_ITEM* aItem, U
         if( aAppend || !lastUndo->GetCount() )
             commandToUndo = lastUndo;
         else
-            PushCommandToUndoList( lastUndo );
+            undo->PushCommandToUndoList( lastUndo );
     }
 
     if( !commandToUndo )
@@ -124,10 +155,10 @@ void SCH_EDIT_FRAME::SaveCopyInUndoList( SCH_SCREEN* aScreen, SCH_ITEM* aItem, U
     if( commandToUndo->GetCount() )
     {
         /* Save the copy in undo list */
-        PushCommandToUndoList( commandToUndo );
+        undo->PushCommandToUndoList( commandToUndo );
 
         /* Clear redo list, because after new save there is no redo to do */
-        ClearUndoORRedoList( REDO_LIST );
+        undo->ClearUndoORRedoList( UNDO_REDO_HOLDER::REDO_LIST );
     }
     else
     {
@@ -136,15 +167,21 @@ void SCH_EDIT_FRAME::SaveCopyInUndoList( SCH_SCREEN* aScreen, SCH_ITEM* aItem, U
 }
 
 
-void SCH_EDIT_FRAME::SaveCopyInUndoList( const PICKED_ITEMS_LIST& aItemsList, UNDO_REDO aTypeCommand,
-                                         bool aAppend )
+void SCH_UNDO_REDO::SaveCopyInUndoList( SCHEMATIC_HOLDER& aEditor,
+                                       const PICKED_ITEMS_LIST& aItemsList,
+                                       UNDO_REDO aTypeCommand, bool aAppend )
 {
+    UNDO_REDO_HOLDER* undo = stacks( aEditor );
+
+    if( !undo )
+        return;
+
     PICKED_ITEMS_LIST* commandToUndo = nullptr;
 
     if( !aItemsList.GetCount() )
         return;
 
-    PICKED_ITEMS_LIST* lastUndo = PopCommandFromUndoList();
+    PICKED_ITEMS_LIST* lastUndo = undo->PopCommandFromUndoList();
 
     // If the last stack was empty, use that one instead of creating a new stack
     if( lastUndo )
@@ -152,7 +189,7 @@ void SCH_EDIT_FRAME::SaveCopyInUndoList( const PICKED_ITEMS_LIST& aItemsList, UN
         if( aAppend || !lastUndo->GetCount() )
             commandToUndo = lastUndo;
         else
-            PushCommandToUndoList( lastUndo );
+            undo->PushCommandToUndoList( lastUndo );
     }
 
     if( !commandToUndo )
@@ -166,7 +203,7 @@ void SCH_EDIT_FRAME::SaveCopyInUndoList( const PICKED_ITEMS_LIST& aItemsList, UN
     {
         commandToUndo->CopyList( aItemsList );
 
-        for( const std::unique_ptr<SCH_ITEM>& item : GetRepeatItems() )
+        for( const std::unique_ptr<SCH_ITEM>& item : aEditor.GetRepeatItems() )
         {
             EDA_ITEM* repeatItemClone = item->Clone();
             repeatItemClone->SetFlags( UR_TRANSIENT );
@@ -228,10 +265,10 @@ void SCH_EDIT_FRAME::SaveCopyInUndoList( const PICKED_ITEMS_LIST& aItemsList, UN
     if( commandToUndo->GetCount() )
     {
         /* Save the copy in undo list */
-        PushCommandToUndoList( commandToUndo );
+        undo->PushCommandToUndoList( commandToUndo );
 
         /* Clear redo list, because after new save there is no redo to do */
-        ClearUndoORRedoList( REDO_LIST );
+        undo->ClearUndoORRedoList( UNDO_REDO_HOLDER::REDO_LIST );
     }
     else    // Should not occur
     {
@@ -240,8 +277,22 @@ void SCH_EDIT_FRAME::SaveCopyInUndoList( const PICKED_ITEMS_LIST& aItemsList, UN
 }
 
 
-void SCH_EDIT_FRAME::PutDataInPreviousState( PICKED_ITEMS_LIST* aList )
+void SCH_UNDO_REDO::PutDataInPreviousState( SCHEMATIC_HOLDER& aEditor, PICKED_ITEMS_LIST* aList )
 {
+    SCHEMATIC* schematic = aEditor.GetSchematic();
+
+    wxCHECK( schematic, /* void */ );
+
+    // Every editing context has a tool manager — both SCH_EDIT_FRAME and SCH_HOST own one —
+    // and this needs it for the events undo posts and for the view.
+    TOOL_MANAGER* toolMgr = toolManager( aEditor );
+
+    wxCHECK( toolMgr, /* void */ );
+
+    // The parts of this that are inherently a window. Each use below is guarded, and says
+    // what a non-wx editor loses by not having one.
+    SCH_EDIT_FRAME* frame = dynamic_cast<SCH_EDIT_FRAME*>( &aEditor );
+
     std::vector<SCH_ITEM*> bulkAddedItems;
     std::vector<SCH_ITEM*> bulkRemovedItems;
     std::vector<SCH_ITEM*> bulkChangedItems;
@@ -251,7 +302,7 @@ void SCH_EDIT_FRAME::PutDataInPreviousState( PICKED_ITEMS_LIST* aList )
     bool                   rebuildHierarchyNavigator = false;
     bool                   refreshHierarchy = false;
     SCH_CLEANUP_FLAGS      connectivityCleanUp = NO_CLEANUP;
-    SCH_SHEET_LIST         sheets= m_schematic->Hierarchy();
+    SCH_SHEET_LIST         sheets = schematic->Hierarchy();
     bool                   clearedRepeatItems = false;
 
     // Undo in the reverse order of list creation: (this can allow stacked changes like the
@@ -291,8 +342,10 @@ void SCH_EDIT_FRAME::PutDataInPreviousState( PICKED_ITEMS_LIST* aList )
                                 pin->SetConnectivityDirty();
                         }
 
-                        if( !ADVANCED_CFG::GetCfg().m_ConnectivityEngine )
-                            m_highlightedConnChanged = true;
+                        // The net-highlight bookkeeping is the frame's: the pane that
+                        // shows it is one.
+                        if( frame && !ADVANCED_CFG::GetCfg().m_ConnectivityEngine )
+                            frame->DirtyHighlightedConnection();
                         dirtyConnectivity = true;
 
                         // Do a local clean up if there are any connectable objects in the commit
@@ -321,11 +374,11 @@ void SCH_EDIT_FRAME::PutDataInPreviousState( PICKED_ITEMS_LIST* aList )
                 rebuildHierarchyNavigator = true;
                 refreshHierarchy = true;
 
-                if( static_cast<SCH_SHEET*>( eda_item )->GetScreen() == GetScreen() )
-                    GetToolManager()->PostAction( SCH_ACTIONS::leaveSheet );
+                if( static_cast<SCH_SHEET*>( eda_item )->GetScreen() == aEditor.GetScreen() )
+                    toolMgr->PostAction( SCH_ACTIONS::leaveSheet );
             }
 
-            RemoveFromScreen( eda_item, screen );
+            aEditor.RemoveFromScreen( eda_item, screen );
             aList->SetPickedItemStatus( UNDO_REDO::DELETED, ii );
 
             bulkRemovedItems.emplace_back( schItem );
@@ -342,37 +395,48 @@ void SCH_EDIT_FRAME::PutDataInPreviousState( PICKED_ITEMS_LIST* aList )
                 propagateConnectivityDamage( schItem );
 
             // deleted items are re-inserted on undo
-            AddToScreen( eda_item, screen );
+            aEditor.AddToScreen( eda_item, screen );
             aList->SetPickedItemStatus( UNDO_REDO::NEWITEM, ii );
 
             bulkAddedItems.emplace_back( schItem );
         }
         else if( status == UNDO_REDO::PAGESETTINGS )
         {
-            if( GetCurrentSheet() != undoSheet )
+            if( auto* nativePage = dynamic_cast<SCH_PAGE_SETTINGS_UNDO_ITEM*>( eda_item ) )
             {
-                SetCurrentSheet( undoSheet );
-                DisplayCurrentSheet();
+                nativePage->Swap( *aEditor.GetSchematic() );
+                if( auto* view = toolMgr->GetView() ) view->UpdateAllItems( KIGFX::ALL );
+                continue;
+            }
+            // The legacy drawing sheet proxy reads and
+            // writes the drawing sheet through an EDA_DRAW_FRAME. An editor without one
+            // also has no page-settings dialog, so it cannot have recorded this.
+            wxCHECK2( frame, continue );
+
+            if( frame->GetCurrentSheet() != undoSheet )
+            {
+                frame->SetCurrentSheet( undoSheet );
+                frame->DisplayCurrentSheet();
             }
 
             // swap current settings with stored settings
-            DS_PROXY_UNDO_ITEM  alt_item( this );
+            DS_PROXY_UNDO_ITEM  alt_item( frame );
             DS_PROXY_UNDO_ITEM* item = static_cast<DS_PROXY_UNDO_ITEM*>( eda_item );
-            item->Restore( this );
+            item->Restore( frame );
             *item = std::move( alt_item );
         }
         else if( status == UNDO_REDO::REPEAT_ITEM )
         {
             if( !clearedRepeatItems )
             {
-                ClearRepeatItemsList();
+                aEditor.ClearRepeatItemsList();
                 clearedRepeatItems = true;
             }
 
             if( schItem )
             {
                 propagateConnectivityDamage( schItem );
-                AddCopyForRepeatItem( schItem );
+                aEditor.AddCopyForRepeatItem( schItem );
 
                 if( schItem->Type() == SCH_SHEET_T )
                 {
@@ -397,18 +461,18 @@ void SCH_EDIT_FRAME::PutDataInPreviousState( PICKED_ITEMS_LIST* aList )
                 rebuildHierarchyNavigator |= hierarchyChanged;
                 refreshHierarchy |= hierarchyChanged;
                 // Local undo cleanup only visits the displayed screen
-                fullSheetUpdate = !ADVANCED_CFG::GetCfg().m_ConnectivityEngine || screen != GetScreen()
+                fullSheetUpdate = !ADVANCED_CFG::GetCfg().m_ConnectivityEngine || screen != aEditor.GetScreen()
                                   || hierarchyChanged
                                   || originalSheet->HasPinIdentityChanges( *modifiedSheet );
             }
 
-            if( schItem->HasConnectivityChanges( itemCopy, &GetCurrentSheet() ) )
+            if( schItem->HasConnectivityChanges( itemCopy, &schematic->CurrentSheet() ) )
                 propagateConnectivityDamage( schItem, fullSheetUpdate );
 
             // The root sheet is a pseudo object that owns the root screen object but is not on
             // the root screen so do not attempt to remove it from the screen it owns.
-            if( schItem != &Schematic().Root() )
-                RemoveFromScreen( schItem, screen );
+            if( schItem != &schematic->Root() )
+                aEditor.RemoveFromScreen( schItem, screen );
 
             switch( status )
             {
@@ -431,7 +495,7 @@ void SCH_EDIT_FRAME::PutDataInPreviousState( PICKED_ITEMS_LIST* aList )
                     {
                         // Lazy eval of sheet list; this is expensive even when unsorted
                         if( sheets.empty() )
-                            sheets = m_schematic->Hierarchy();
+                            sheets = schematic->Hierarchy();
 
                         SCH_SHEET_PATH sheet = sheets.FindSheetForScreen( screen );
                         symbol->SetRef( &sheet, field->GetText() );
@@ -453,8 +517,8 @@ void SCH_EDIT_FRAME::PutDataInPreviousState( PICKED_ITEMS_LIST* aList )
                 sym->UpdatePins();
             }
 
-            if( schItem != &Schematic().Root() )
-                AddToScreen( schItem, screen );
+            if( schItem != &schematic->Root() )
+                aEditor.AddToScreen( schItem, screen );
         }
     }
 
@@ -470,7 +534,7 @@ void SCH_EDIT_FRAME::PutDataInPreviousState( PICKED_ITEMS_LIST* aList )
         if( wrapper.GetStatus() == UNDO_REDO::DELETED )
             continue;
 
-        SCH_ITEM* parentGroup = Schematic().ResolveItem( wrapper.GetGroupId(), nullptr, true );
+        SCH_ITEM* parentGroup = schematic->ResolveItem( wrapper.GetGroupId(), nullptr, true );
         wrapper.GetItem()->SetParentGroup( dynamic_cast<SCH_GROUP*>( parentGroup ) );
     }
 
@@ -489,7 +553,7 @@ void SCH_EDIT_FRAME::PutDataInPreviousState( PICKED_ITEMS_LIST* aList )
 
             for( const KIID& member : wrapper.GetGroupMembers() )
             {
-                if( SCH_ITEM* memberItem = Schematic().ResolveItem( member, nullptr, true ) )
+                if( SCH_ITEM* memberItem = schematic->ResolveItem( member, nullptr, true ) )
                     group->AddItem( memberItem );
             }
         }
@@ -499,37 +563,40 @@ void SCH_EDIT_FRAME::PutDataInPreviousState( PICKED_ITEMS_LIST* aList )
             wrapper.SetLink( item );
     }
 
-    GetCanvas()->GetView()->ClearHiddenFlags();
+    // Null in a TOOL_MANAGER standing over a document with no canvas at all, which the CLI
+    // does; this is reached only through Undo/Redo/Rollback, but the guard is a line.
+    if( KIGFX::VIEW* view = toolMgr->GetView() )
+        static_cast<KIGFX::SCH_VIEW*>( view )->ClearHiddenFlags();
 
     // Notify our listeners
     if( bulkAddedItems.size() > 0 )
-        Schematic().OnItemsAdded( bulkAddedItems );
+        schematic->OnItemsAdded( bulkAddedItems );
 
     if( bulkRemovedItems.size() > 0 )
-        Schematic().OnItemsRemoved( bulkRemovedItems );
+        schematic->OnItemsRemoved( bulkRemovedItems );
 
     if( bulkChangedItems.size() > 0 )
-        Schematic().OnItemsChanged( bulkChangedItems );
+        schematic->OnItemsChanged( bulkChangedItems );
 
     if( refreshHierarchy )
-        Schematic().RefreshHierarchy();
+        schematic->RefreshHierarchy();
 
     if( dirtyConnectivity )
     {
         wxLogTrace( wxS( "CONN_PROFILE" ), wxS( "Undo/redo %s clean up connectivity rebuild." ),
                     connectivityCleanUp == LOCAL_CLEANUP ? wxS( "local" ) : wxS( "global" ) );
 
-        SCH_COMMIT localCommit( m_toolManager );
+        SCH_COMMIT localCommit( toolMgr );
 
-        RecalculateConnections( &localCommit, connectivityCleanUp );
+        aEditor.RecalculateConnections( &localCommit, connectivityCleanUp );
 
         if( connectivityCleanUp == GLOBAL_CLEANUP )
-            SetSheetNumberAndCount();
+            schematic->SetSheetNumberAndCount();
 
         // Restore hop over shapes of wires, if any
-        if( m_schematic->Settings().GetHopOverScale() > 0.0 )
+        if( schematic->Settings().GetHopOverScale() > 0.0 )
         {
-            for( SCH_ITEM* item : GetScreen()->Items() )
+            for( SCH_ITEM* item : aEditor.GetScreen()->Items() )
             {
                 if( item->Type() != SCH_LINE_T )
                     continue;
@@ -537,37 +604,45 @@ void SCH_EDIT_FRAME::PutDataInPreviousState( PICKED_ITEMS_LIST* aList )
                 SCH_LINE* line = static_cast<SCH_LINE*>( item );
 
                 if( line->IsWire() || line->IsBus() )
-                    UpdateHopOveredWires( line );
+                    aEditor.UpdateHopOveredWires( line );
             }
         }
     }
 
     // Update the hierarchy navigator when there are sheet changes.
-    if( rebuildHierarchyNavigator )
-        UpdateHierarchyNavigator();
+    // Both of these are panes, so they are the frame's and a non-wx editor skips them.
+    if( rebuildHierarchyNavigator && frame )
+        frame->UpdateHierarchyNavigator();
 
-    if( updateVariantCtrl && m_schematic )
+    if( updateVariantCtrl )
     {
-        m_schematic->LoadVariants();
-        UpdateVariantSelectionCtrl( m_schematic->GetVariantNamesForUI() );
+        schematic->LoadVariants();
+
+        if( frame )
+            frame->UpdateVariantSelectionCtrl( schematic->GetVariantNamesForUI() );
     }
 }
 
 
-void SCH_EDIT_FRAME::RollbackSchematicFromUndo()
+void SCH_UNDO_REDO::Rollback( SCHEMATIC_HOLDER& aEditor )
 {
-    PICKED_ITEMS_LIST* undo = PopCommandFromUndoList();
+    UNDO_REDO_HOLDER* undoStacks = stacks( aEditor );
+
+    if( !undoStacks )
+        return;
+
+    PICKED_ITEMS_LIST* undo = undoStacks->PopCommandFromUndoList();
 
     // Skip empty frames
     while( undo && !undo->GetCount() )
     {
         delete undo;
-        undo = PopCommandFromUndoList();
+        undo = undoStacks->PopCommandFromUndoList();
     }
 
     if( undo )
     {
-        PutDataInPreviousState( undo );
+        PutDataInPreviousState( aEditor, undo );
         undo->ClearListAndDeleteItems( []( EDA_ITEM* aItem )
                                        {
                                            delete aItem;
@@ -575,10 +650,70 @@ void SCH_EDIT_FRAME::RollbackSchematicFromUndo()
 
         delete undo;
 
-        m_toolManager->GetTool<SCH_SELECTION_TOOL>()->RebuildSelection();
+        if( SCH_SELECTION_TOOL* selTool = aEditor.GetSelectionTool() )
+            selTool->RebuildSelection();
     }
 
-    GetCanvas()->Refresh();
+    if( TOOLS_HOLDER* holder = dynamic_cast<TOOLS_HOLDER*>( &aEditor ) )
+        holder->RefreshCanvas();
+}
+
+
+/**
+ * Undo and redo are one operation: ::PutDataInPreviousState rewrites the command it is
+ * given to describe the state it replaced, so applying it again is the inverse. All that
+ * differs is which stack it comes off and which it goes onto.
+ */
+static bool applyFromStack( SCHEMATIC_HOLDER& aEditor, bool aUndo )
+{
+    UNDO_REDO_HOLDER* undoStacks = stacks( aEditor );
+    TOOL_MANAGER*     toolMgr = toolManager( aEditor );
+
+    if( !undoStacks )
+        return false;
+
+    if( aUndo ? undoStacks->GetUndoCommandCount() <= 0 : undoStacks->GetRedoCommandCount() <= 0 )
+        return false;
+
+    // Tools holding item pointers have to let go before the items are swapped under them.
+    if( toolMgr )
+        toolMgr->ProcessEvent( { TC_MESSAGE, TA_UNDO_REDO_PRE, AS_GLOBAL } );
+
+    PICKED_ITEMS_LIST* list = aUndo ? undoStacks->PopCommandFromUndoList()
+                                    : undoStacks->PopCommandFromRedoList();
+
+    wxCHECK( list, false );
+
+    SCH_UNDO_REDO::PutDataInPreviousState( aEditor, list );
+
+    list->ReversePickersListOrder();
+
+    if( aUndo )
+        undoStacks->PushCommandToRedoList( list );
+    else
+        undoStacks->PushCommandToUndoList( list );
+
+    if( SCH_SELECTION_TOOL* selTool = aEditor.GetSelectionTool() )
+        selTool->RebuildSelection();
+
+    if( TOOLS_HOLDER* holder = dynamic_cast<TOOLS_HOLDER*>( &aEditor ) )
+        holder->RefreshCanvas();
+
+    aEditor.OnModify();
+
+    return true;
+}
+
+
+bool SCH_UNDO_REDO::Undo( SCHEMATIC_HOLDER& aEditor )
+{
+    return applyFromStack( aEditor, true );
+}
+
+
+bool SCH_UNDO_REDO::Redo( SCHEMATIC_HOLDER& aEditor )
+{
+    return applyFromStack( aEditor, false );
 }
 
 
@@ -610,4 +745,36 @@ void SCH_EDIT_FRAME::ClearUndoORRedoList( UNDO_REDO_LIST whichList, int aItemCou
             delete curr_cmd;    // Delete command
         }
     }
+}
+
+
+// ---------------------------------------------------------------------------------------
+// SCH_EDIT_FRAME's undo API, which is now these functions with the frame as the editor.
+// They stay because roughly forty call sites across eeschema use them, and because a frame
+// *is* a schematic editing context — it is simply not the only one.
+// ---------------------------------------------------------------------------------------
+
+void SCH_EDIT_FRAME::SaveCopyInUndoList( SCH_SCREEN* aScreen, SCH_ITEM* aItem,
+                                         UNDO_REDO aCommandType, bool aAppend )
+{
+    SCH_UNDO_REDO::SaveCopyInUndoList( *this, aScreen, aItem, aCommandType, aAppend );
+}
+
+
+void SCH_EDIT_FRAME::SaveCopyInUndoList( const PICKED_ITEMS_LIST& aItemsList,
+                                         UNDO_REDO aTypeCommand, bool aAppend )
+{
+    SCH_UNDO_REDO::SaveCopyInUndoList( *this, aItemsList, aTypeCommand, aAppend );
+}
+
+
+void SCH_EDIT_FRAME::PutDataInPreviousState( PICKED_ITEMS_LIST* aList )
+{
+    SCH_UNDO_REDO::PutDataInPreviousState( *this, aList );
+}
+
+
+void SCH_EDIT_FRAME::RollbackSchematicFromUndo()
+{
+    SCH_UNDO_REDO::Rollback( *this );
 }

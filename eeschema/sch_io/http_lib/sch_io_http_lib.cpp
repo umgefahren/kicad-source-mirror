@@ -76,7 +76,17 @@ SCH_IO_HTTP_LIB::SCH_IO_HTTP_LIB() :
 
 void SCH_IO_HTTP_LIB::stopBackgroundRefresh()
 {
-    m_refreshRunning = false;
+    {
+        // The flag has to change under the same mutex the worker waits on, even
+        // though it is atomic. Without the lock there is a window between the
+        // worker evaluating the predicate and actually blocking, and a
+        // notify_all() that lands in it is lost -- after which the worker sleeps
+        // out its full refresh interval (the larger of the two configured
+        // timeouts, which is minutes to hours) and the join below waits for it.
+        std::lock_guard<std::mutex> lock( m_refreshMutex );
+        m_refreshRunning = false;
+    }
+
     m_refreshCV.notify_all();
 
     if( m_refreshThread.joinable() )

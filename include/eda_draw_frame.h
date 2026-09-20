@@ -32,6 +32,7 @@
 #include <kiid.h>
 #include <hotkeys_basic.h>
 #include <lib_id.h>
+#include <tool/canvas_holder.h>
 
 struct EDA_SEARCH_DATA;
 struct PLUGIN_ACTION;
@@ -78,7 +79,7 @@ using KIGFX::RENDER_SETTINGS;
  * The Eeschema, Pcbnew and GerbView main windows are just a few examples of classes
  * derived from EDA_DRAW_FRAME.
  */
-class EDA_DRAW_FRAME : public KIWAY_PLAYER
+class EDA_DRAW_FRAME : public KIWAY_PLAYER, public CANVAS_HOLDER
 {
 public:
     EDA_DRAW_FRAME( KIWAY* aKiway, wxWindow* aParent, FRAME_T aFrameType, const wxString& aTitle,
@@ -120,6 +121,10 @@ public:
     bool GetShowPolarCoords() const { return m_polarCoords; }
     void SetShowPolarCoords( bool aShow ) { m_polarCoords = aShow; }
 
+    /// CANVAS_HOLDER spells these differently because the frame's own pair is not virtual.
+    bool PolarCoords() const override { return GetShowPolarCoords(); }
+    void SetPolarCoords( bool aShow ) override { SetShowPolarCoords( aShow ); }
+
     void ToggleUserUnits() override;
 
     /**
@@ -130,16 +135,24 @@ public:
      */
     void GetUnitPair( EDA_UNITS& aPrimaryUnit, EDA_UNITS& aSecondaryUnits ) override;
 
+    /// A frame is its own units provider; see CANVAS_HOLDER::GetUnitsProvider() for why the
+    /// provider is handed out whole rather than forwarded one non-virtual accessor at a time.
+    UNITS_PROVIDER* GetUnitsProvider() override { return this; }
+
+    /// Not `ChangeUserUnits()`: EDA_BASE_FRAME's is not virtual, so re-using the name here
+    /// would make every existing call of it ambiguous.
+    void SwitchUserUnits( EDA_UNITS aUnits ) override { ChangeUserUnits( aUnits ); }
+
     /**
      * Return the absolute coordinates of the origin of the snap grid.
      *
      * This is treated as a relative offset and snapping will occur at multiples of the grid
      * size relative to this point.
      */
-    virtual const VECTOR2I& GetGridOrigin() const = 0;
-    virtual void            SetGridOrigin( const VECTOR2I& aPosition ) = 0;
+    const VECTOR2I& GetGridOrigin() const override = 0;
+    void            SetGridOrigin( const VECTOR2I& aPosition ) override = 0;
 
-    virtual std::unique_ptr<GRID_HELPER> MakeGridHelper();
+    std::unique_ptr<GRID_HELPER> MakeGridHelper() override;
 
     /**
      * Return the nearest \a aGridSize location to \a aPosition.
@@ -212,10 +225,26 @@ public:
      * These parameters are saved in KiCad config for each main frame.
      */
     bool IsGridVisible();
-    virtual void SetGridVisibility( bool aVisible );
+    void SetGridVisibility( bool aVisible ) override;
 
     bool         IsGridOverridden();
-    virtual void SetGridOverrides( bool aOverride );
+    void         SetGridOverrides( bool aOverride ) override;
+
+    /*
+     * CANVAS_HOLDER asks these two as const, which the frame's own spellings are not: they
+     * read the window settings, and EDA_BASE_FRAME hands those out from a non-const getter.
+     * Reading the flag does not change the frame, so the cast is honest and the rename keeps
+     * IsGridVisible()/IsGridOverridden() unambiguous for every existing caller.
+     */
+    bool GridVisible() const override
+    {
+        return const_cast<EDA_DRAW_FRAME*>( this )->IsGridVisible();
+    }
+
+    bool GridOverridden() const override
+    {
+        return const_cast<EDA_DRAW_FRAME*>( this )->IsGridOverridden();
+    }
 
     virtual COLOR4D GetGridColor() { return m_gridColor; }
     virtual void SetGridColor( const COLOR4D& aColor ) { m_gridColor = aColor; }
@@ -241,6 +270,14 @@ public:
      * Update the checked item in the grid wxchoice.
      */
     void OnUpdateSelectGrid( wxUpdateUIEvent& aEvent );
+
+    /**
+     * Refresh the toolbar's grid picker.
+     *
+     * This is the body of ::OnUpdateSelectGrid, which cannot be called without a
+     * wxUpdateUIEvent even though it never looks at one.
+     */
+    void OnGridSelectionChanged() override;
 
     /**
      * Update the checked item in the zoom wxchoice.
@@ -277,7 +314,7 @@ public:
     /**
      * Rebuild the GAL and redraws the screen.  Call when something went wrong.
      */
-    virtual void HardRedraw();
+    void HardRedraw() override;
 
     /**
      * Redraw the screen with best zoom level and the best centering that shows all the
@@ -367,6 +404,14 @@ public:
     void LoadSettings( APP_SETTINGS_BASE* aCfg ) override;
     void SaveSettings( APP_SETTINGS_BASE* aCfg ) override;
 
+    /*
+     * EDA_BASE_FRAME and CANVAS_HOLDER each declare these, identically. One declaration here
+     * overrides both, which is what keeps the name unambiguous in the frame; the frame's
+     * answer is still the base frame's.
+     */
+    APP_SETTINGS_BASE* config() const override;
+    WINDOW_SETTINGS*   GetWindowSettings( APP_SETTINGS_BASE* aCfg ) override;
+
     /**
      * Append a message to the message panel.
      *
@@ -455,18 +500,41 @@ public:
     virtual EDA_DRAW_PANEL_GAL* GetCanvas() const { return m_canvas; }
     void SetCanvas( EDA_DRAW_PANEL_GAL* aPanel ) { m_canvas = aPanel; }
 
+    /// Not `GetCanvas()`: that one is not virtual on CANVAS_HOLDER's side of the frame.
+    EDA_DRAW_PANEL_GAL* GetCanvasPanel() const override { return GetCanvas(); }
+
     wxWindow* GetToolCanvas() const override { return GetCanvas(); }
 
     void ClearToolbarControl( int aId ) override;
 
     /**
      * Return a reference to the gal rendering options used by GAL for rendering.
+     *
+     * Virtual because the covariant return over CANVAS_HOLDER's KIGFX::GAL_DISPLAY_OPTIONS&
+     * is only a legal override if both are.
      */
-    GAL_DISPLAY_OPTIONS_IMPL& GetGalDisplayOptions() { return m_galDisplayOptions; }
+    GAL_DISPLAY_OPTIONS_IMPL& GetGalDisplayOptions() override { return m_galDisplayOptions; }
 
     void RefreshCanvas() override
     {
-        GetCanvas()->Refresh();
+        // Null between construction and createCanvas(), and again during teardown. Callers
+        // used to guard this themselves; one guard here is both fewer and harder to forget.
+        if( GetCanvas() )
+            GetCanvas()->Refresh();
+    }
+
+    /// Repaint now rather than posting a paint event; same null canvas window as above.
+    void ForceRefreshCanvas() override
+    {
+        if( GetCanvas() )
+            GetCanvas()->ForceRefresh();
+    }
+
+    /// Not `SetCurrentCursor()`, which is the canvas's own spelling.
+    void SetCanvasCursor( KICURSOR aCursor ) override
+    {
+        if( GetCanvas() )
+            GetCanvas()->SetCurrentCursor( aCursor );
     }
 
     /**
@@ -481,7 +549,13 @@ public:
      *                           false to ignore some visible items (program dependent).
      * @return Bounding box of the document (ignoring some items as requested).
      */
-    virtual const BOX2I GetDocumentExtents( bool aIncludeAllVisible = true ) const;
+    const BOX2I GetDocumentExtents( bool aIncludeAllVisible = true ) const override;
+
+    /// A frame with a canvas answers the canvas's page box; see CANVAS_HOLDER.
+    BOX2I GetDefaultViewBBox() const override
+    {
+        return GetCanvas() ? GetCanvas()->GetDefaultViewBBox() : BOX2I();
+    }
 
     /**
      * Redraw the menus and what not in current language.
@@ -580,8 +654,6 @@ protected:
     COLOR4D              m_gridColor;         // Grid color
     COLOR4D              m_drawBgColor;       // The background color of the draw canvas; BLACK for
                                               // Pcbnew, BLACK or WHITE for Eeschema
-    int                  m_undoRedoCountMax;  // Default Undo/Redo command Max depth, to be handed
-                                              // to screens
     bool                 m_polarCoords;       // For those frames that support polar coordinates
 
     // Show the drawing sheet (border & title block).

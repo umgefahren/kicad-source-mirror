@@ -48,6 +48,7 @@
 #include <widgets/ui_common.h>
 #include <widgets/wx_infobar_message_type.h>
 #include <undo_redo_container.h>
+#include <undo_redo_holder.h>
 #include <units_provider.h>
 #include <origin_transforms.h>
 #include <ui_events.h>
@@ -96,7 +97,7 @@ class WX_INFOBAR;
 
 using ACTION_TOOLBAR_CONTROL_FACTORY = std::function<void( ACTION_TOOLBAR* )>;
 
-#define DEFAULT_MAX_UNDO_ITEMS 0
+// DEFAULT_MAX_UNDO_ITEMS is in undo_redo_holder.h, with the stacks it bounds.
 #define ABS_MAX_UNDO_ITEMS (INT_MAX / 2)
 
 /// This is the handler functor for the update UI events
@@ -113,18 +114,9 @@ typedef std::function< void( wxUpdateUIEvent& ) > UIUpdateHandler;
  * because #KICAD_MANAGER_FRAME is derived from it and that class is not a player.
  */
 class EDA_BASE_FRAME : public wxFrame, public TOOLS_HOLDER, public KIWAY_HOLDER,
-                       public UNITS_PROVIDER
+                       public UNITS_PROVIDER, public UNDO_REDO_HOLDER
 {
 public:
-    /**
-     * Specify whether we are interacting with the undo or redo stacks.
-     */
-    enum UNDO_REDO_LIST
-    {
-        UNDO_LIST,
-        REDO_LIST
-    };
-
     EDA_BASE_FRAME( wxWindow* aParent, FRAME_T aFrameType, const wxString& aTitle,
                     const wxPoint& aPos, const wxSize& aSize, long aStyle,
                     const wxString& aFrameName, KIWAY* aKiway, const EDA_IU_SCALE& aIuScale );
@@ -559,60 +551,6 @@ public:
     wxSize GetWindowSize();
 
     /**
-     * Remove the \a aItemCount of old commands from \a aList and delete commands, pickers
-     * and picked items if needed.
-     *
-     * Because picked items must be deleted only if they are not in use, this is a virtual
-     * pure function that must be created for #SCH_SCREEN and #PCB_SCREEN.  Commands are
-     * deleted from the older to the last.
-     *
-     * @param aList = the #UNDO_REDO_CONTAINER of commands.
-     * @param aItemCount number of old commands to delete. -1 to remove all old commands
-     *                   this will empty the list of commands.
-     */
-    virtual void ClearUndoORRedoList( UNDO_REDO_LIST aList, int aItemCount = -1 )
-    { }
-
-    /**
-     * Clear the undo and redo list using #ClearUndoORRedoList()
-     *
-     * Picked items are deleted by ClearUndoORRedoList() according to their status.
-     */
-    virtual void ClearUndoRedoList();
-
-    /**
-     * Add a command to undo in the undo list.
-     *
-     * Delete the very old commands when the max count of undo commands is reached.
-     */
-    virtual void PushCommandToUndoList( PICKED_ITEMS_LIST* aItem );
-
-    /**
-     * Add a command to redo in the redo list.
-     *
-     * Delete the very old commands when the max count of redo commands is reached.
-     */
-    virtual void PushCommandToRedoList( PICKED_ITEMS_LIST* aItem );
-
-    /**
-     * Return the last command to undo and remove it from list, nothing is deleted.
-     */
-    virtual PICKED_ITEMS_LIST* PopCommandFromUndoList();
-
-    /**
-     * Return the last command to undo and remove it from list, nothing is deleted.
-     */
-    virtual PICKED_ITEMS_LIST* PopCommandFromRedoList();
-
-    virtual int GetUndoCommandCount() const { return m_undoList.m_CommandsList.size(); }
-    virtual int GetRedoCommandCount() const { return m_redoList.m_CommandsList.size(); }
-
-    virtual wxString GetUndoActionDescription() const;
-    virtual wxString GetRedoActionDescription() const;
-
-    int GetMaxUndoItems() const { return m_undoRedoCountMax; }
-
-    /**
      * Must be called after a model change in order to set the "modify" flag and do other
      * frame-specific processing.
      */
@@ -850,11 +788,6 @@ private:
     // deferral is outstanding.  Used to bound how long an interactive operation may starve the
     // snapshot so a long routing session can't leave the document unsnapshotted forever.
     wxDateTime              m_autoSaveDeferredSince;
-
-    int                     m_undoRedoCountMax;  // undo/Redo command Max depth
-
-    UNDO_REDO_CONTAINER     m_undoList;          // Objects list for the undo command (old data)
-    UNDO_REDO_CONTAINER     m_redoList;          // Objects list for the redo command (old data)
 
     wxString                m_mruPath;           // Most recently used path.
 

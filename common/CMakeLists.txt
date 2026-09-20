@@ -864,6 +864,7 @@ set( COMMON_SRCS
     table_io.cpp
     textentry_tricks.cpp
     undo_redo_container.cpp
+    undo_redo_holder.cpp
     validators.cpp
     drawing_sheet/ds_painter.cpp
     view/wx_view_controls.cpp
@@ -894,6 +895,7 @@ set( COMMON_SRCS
     tool/grid_helper.cpp
     tool/grid_menu.cpp
     tool/group_tool.cpp
+    tool/host_tool_dispatcher.cpp
     tool/library_editor_control.cpp
     tool/picker_tool.cpp
     tool/point_editor_behavior.cpp

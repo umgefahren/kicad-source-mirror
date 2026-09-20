@@ -29,6 +29,7 @@
 #include <wxstream_helper.h>
 
 #include <fstream>
+#include <filesystem>
 #include <thread>
 #include <unordered_set>
 #include <wx/dir.h>
@@ -72,7 +73,7 @@ PCM_TASK_MANAGER::STATUS PCM_TASK_MANAGER::DownloadAndInstall( const PCM_PACKAGE
 
         if( find_pkgver == aPackage.versions.end() )
         {
-            m_reporter->PCMReport( wxString::Format( _( "Version %s of package %s not found!" ),
+            reportMessage( wxString::Format( _( "Version %s of package %s not found!" ),
                                                      aVersion, aPackage.identifier ),
                                    RPT_SEVERITY_ERROR );
             return PCM_TASK_MANAGER::STATUS::FAILED;
@@ -81,7 +82,7 @@ PCM_TASK_MANAGER::STATUS PCM_TASK_MANAGER::DownloadAndInstall( const PCM_PACKAGE
         if( !wxDirExists( file_path.GetPath() )
             && !wxFileName::Mkdir( file_path.GetPath(), wxS_DIR_DEFAULT, wxPATH_MKDIR_FULL ) )
         {
-            m_reporter->PCMReport( _( "Unable to create download directory!" ),
+            reportMessage( _( "Unable to create download directory!" ),
                                    RPT_SEVERITY_ERROR );
             return PCM_TASK_MANAGER::STATUS::FAILED;
         }
@@ -130,7 +131,7 @@ int PCM_TASK_MANAGER::downloadFile( const wxString& aFilePath, const wxString& u
     curl.SetFollowRedirects( true );
     curl.SetTransferCallback( callback, 250000L );
 
-    m_reporter->PCMReport( wxString::Format( _( "Downloading package url: '%s'" ), url ),
+    reportMessage( wxString::Format( _( "Downloading package url: '%s'" ), url ),
                            RPT_SEVERITY_INFO );
 
     int code = curl.Perform();
@@ -144,7 +145,7 @@ int PCM_TASK_MANAGER::downloadFile( const wxString& aFilePath, const wxString& u
 
     if( code != CURLE_OK && code != CURLE_ABORTED_BY_CALLBACK )
     {
-        m_reporter->PCMReport( wxString::Format( _( "Failed to download url %s\n%s" ), url,
+        reportMessage( wxString::Format( _( "Failed to download url %s\n%s" ), url,
                                                  curl.GetErrorText( code ) ),
                                RPT_SEVERITY_ERROR );
     }
@@ -166,7 +167,7 @@ PCM_TASK_MANAGER::STATUS PCM_TASK_MANAGER::installDownloadedPackage( const PCM_P
 
     if( pkgver == aPackage.versions.end() )
     {
-        m_reporter->PCMReport( wxString::Format( _( "Version %s of package %s not found!" ),
+        reportMessage( wxString::Format( _( "Version %s of package %s not found!" ),
                                                  aVersion, aPackage.identifier ),
                                RPT_SEVERITY_ERROR );
         return PCM_TASK_MANAGER::STATUS::FAILED;
@@ -189,7 +190,7 @@ PCM_TASK_MANAGER::STATUS PCM_TASK_MANAGER::installDownloadedPackage( const PCM_P
 
     if( !hash_match )
     {
-        m_reporter->PCMReport( wxString::Format( _( "Downloaded archive hash for package "
+        reportMessage( wxString::Format( _( "Downloaded archive hash for package "
                                                     "%s does not match repository entry. "
                                                     "This may indicate a problem with the "
                                                     "package, if the issue persists "
@@ -203,7 +204,7 @@ PCM_TASK_MANAGER::STATUS PCM_TASK_MANAGER::installDownloadedPackage( const PCM_P
     {
         if( isUpdate )
         {
-            m_reporter->PCMReport(
+            reportMessage(
                     wxString::Format( _( "Removing previous version of package '%s'." ),
                                       aPackage.name ),
                     RPT_SEVERITY_INFO );
@@ -211,7 +212,7 @@ PCM_TASK_MANAGER::STATUS PCM_TASK_MANAGER::installDownloadedPackage( const PCM_P
             deletePackageDirectories( aPackage.identifier, keep_on_update );
         }
 
-        m_reporter->PCMReport(
+        reportMessage(
                 wxString::Format( _( "Installing package '%s'." ), aPackage.name ),
                 RPT_SEVERITY_INFO );
 
@@ -249,7 +250,7 @@ bool PCM_TASK_MANAGER::extract( const wxString& aFilePath, const wxString& aPack
 
     if( !zip.IsOk() )
     {
-        m_reporter->PCMReport( _( "Error extracting file!" ), RPT_SEVERITY_ERROR );
+        reportMessage( _( "Error extracting file!" ), RPT_SEVERITY_ERROR );
         return false;
     }
 
@@ -259,11 +260,12 @@ bool PCM_TASK_MANAGER::extract( const wxString& aFilePath, const wxString& aPack
 
     for( ; entry; entry = zip.GetNextEntry() )
     {
+        std::unique_ptr<wxArchiveEntry> ownedEntry( entry );
         wxArrayString path_parts;
 
         if( !WX_FILENAME::SplitArchiveEntryName( entry->GetName(), path_parts ) )
         {
-            m_reporter->PCMReport( wxString::Format( _( "Package archive entry '%s' would be extracted outside "
+            reportMessage( wxString::Format( _( "Package archive entry '%s' would be extracted outside "
                                                         "of the package directory." ),
                                                      entry->GetName() ),
                                    RPT_SEVERITY_ERROR );
@@ -289,7 +291,7 @@ bool PCM_TASK_MANAGER::extract( const wxString& aFilePath, const wxString& aPack
         if( !WX_FILENAME::ResolveArchiveEntryPath( m_pcm->Get3rdPartyPath(), wxJoin( path_parts, '/', (wxChar) 0 ),
                                                    target ) )
         {
-            m_reporter->PCMReport( wxString::Format( _( "Package archive entry '%s' would be extracted outside "
+            reportMessage( wxString::Format( _( "Package archive entry '%s' would be extracted outside "
                                                         "of the package directory." ),
                                                      entry->GetName() ),
                                    RPT_SEVERITY_ERROR );
@@ -310,7 +312,7 @@ bool PCM_TASK_MANAGER::extract( const wxString& aFilePath, const wxString& aPack
 
         if( !( CopyStreamData( zip, out, entry->GetSize() ) && out.Commit() ) )
         {
-            m_reporter->PCMReport( _( "Error extracting file!" ), RPT_SEVERITY_ERROR );
+            reportMessage( _( "Error extracting file!" ), RPT_SEVERITY_ERROR );
             return false;
         }
 
@@ -327,24 +329,24 @@ bool PCM_TASK_MANAGER::extract( const wxString& aFilePath, const wxString& aPack
 #endif
 
         extracted++;
-        m_reporter->SetPackageProgress( extracted, entries );
+        if( m_reporter ) m_reporter->SetPackageProgress( extracted, entries );
 
-        if( !isMultiThreaded )
+        if( m_reporter && !isMultiThreaded )
             m_reporter->KeepRefreshing( false );
 
-        if( m_reporter->IsCancelled() )
+        if( m_reporter && m_reporter->IsCancelled() )
             break;
     }
 
     zip.CloseEntry();
 
-    if( m_reporter->IsCancelled() )
+    if( m_reporter && m_reporter->IsCancelled() )
     {
-        m_reporter->PCMReport( _( "Aborting package installation." ), RPT_SEVERITY_INFO );
+        reportMessage( _( "Aborting package installation." ), RPT_SEVERITY_INFO );
         return false;
     }
 
-    m_reporter->SetPackageProgress( entries, entries );
+    if( m_reporter ) m_reporter->SetPackageProgress( entries, entries );
 
     return true;
 }
@@ -454,7 +456,7 @@ PCM_TASK_MANAGER::STATUS PCM_TASK_MANAGER::InstallFromFile( wxWindow*       aPar
 
     if( isUpdate )
     {
-        m_reporter->PCMReport( wxString::Format( _( "Removing previous version of package '%s'." ),
+        reportMessage( wxString::Format( _( "Removing previous version of package '%s'." ),
                                                  package.name ),
                                RPT_SEVERITY_INFO );
 
@@ -542,14 +544,14 @@ void PCM_TASK_MANAGER::deletePackageDirectories( const wxString&                
         if( !d.DirExists() )
             continue;
 
-        m_reporter->PCMReport( wxString::Format( _( "Removing directory %s" ), d.GetPath() ),
+        reportMessage( wxString::Format( _( "Removing directory %s" ), d.GetPath() ),
                                RPT_SEVERITY_INFO );
 
         if( aKeep.empty() )
         {
             if( !d.Rmdir( wxPATH_RMDIR_RECURSIVE ) )
             {
-                m_reporter->PCMReport(
+                reportMessage(
                         wxString::Format( _( "Failed to remove directory %s" ), d.GetPath() ),
                         RPT_SEVERITY_ERROR );
             }
@@ -610,7 +612,7 @@ PCM_TASK_MANAGER::STATUS PCM_TASK_MANAGER::Uninstall( const PCM_PACKAGE& aPackag
         std::unique_lock lock( m_changed_package_types_guard );
         m_changed_package_types.insert( aPackage.type );
 
-        m_reporter->PCMReport(
+        reportMessage(
                 wxString::Format( _( "Package %s uninstalled" ), aPackage.name ),
                 RPT_SEVERITY_INFO );
         return PCM_TASK_MANAGER::STATUS::SUCCESS;
@@ -706,7 +708,7 @@ void PCM_TASK_MANAGER::RunQueue( wxWindow* aParent )
 
                 if( count_failed_tasks != 0 )
                 {
-                    m_reporter->PCMReport(
+                    reportMessage(
                             wxString::Format( _( "%d out of %d operations failed." ), count_failed_tasks, count_tasks ),
                             RPT_SEVERITY_INFO );
                 }
@@ -714,11 +716,11 @@ void PCM_TASK_MANAGER::RunQueue( wxWindow* aParent )
                 {
                     if( count_success_tasks == count_tasks )
                     {
-                        m_reporter->PCMReport( _( "All operations completed successfully." ), RPT_SEVERITY_INFO );
+                        reportMessage( _( "All operations completed successfully." ), RPT_SEVERITY_INFO );
                     }
                     else
                     {
-                        m_reporter->PCMReport(
+                        reportMessage(
                                 wxString::Format( _( "%d out of %d operations were initialized but not successful." ),
                                                     count_tasks - count_success_tasks, count_tasks ),
                                 RPT_SEVERITY_INFO );
@@ -742,4 +744,138 @@ void PCM_TASK_MANAGER::RunQueue( wxWindow* aParent )
     m_reporter.reset();
 
     aParent->Raise();
+}
+
+
+void PCM_TASK_MANAGER::reportMessage( const wxString& message, SEVERITY severity )
+{
+    if( m_nativeReporter ) m_nativeReporter->Report( message, severity );
+    else if( m_reporter ) m_reporter->PCMReport( message, severity );
+}
+
+PCM_TASK_MANAGER::STATUS PCM_TASK_MANAGER::InstallDataSourceFromFile(
+        const wxString& path, bool replace, REPORTER& reporter )
+{
+    m_nativeReporter=&reporter;
+    struct CLEAR { REPORTER*& reporter; ~CLEAR(){reporter=nullptr;} } clear{m_nativeReporter};
+    auto fail=[&](const wxString& message){reportMessage(message,RPT_SEVERITY_ERROR);return STATUS::FAILED;};
+    wxFFileInputStream stream(path);
+    if(!stream.IsOk())return fail("Could not open the package archive");
+    wxFileName schema( PATHS::GetStockDataPath( true ), "pcm.v2.schema.json" );
+    schema.AppendDir( "schemas" );
+    if( !schema.FileExists() ) return fail( "Package validation schema is missing: " + schema.GetFullPath() );
+    wxZipInputStream zip(stream);
+    if(!zip.IsOk())return fail("Invalid ZIP archive");
+    nlohmann::json metadata;
+    try
+    {
+        for(wxArchiveEntry* entry=zip.GetNextEntry();entry;entry=zip.GetNextEntry())
+        {
+            std::unique_ptr<wxArchiveEntry> ownedEntry( entry );
+            if(entry->GetName()!="metadata.json")continue;
+            wxStringOutputStream text;
+            if(!CopyStreamData(zip,text,entry->GetSize()))return fail("Cannot read package metadata");
+            metadata=nlohmann::json::parse(text.GetString().utf8_string());
+            m_pcm->ValidateJson(metadata);break;
+        }
+        if(metadata.empty())return fail("Archive has no valid metadata.json");
+        PCM_PACKAGE package=metadata.get<PCM_PACKAGE>();
+        PLUGIN_CONTENT_MANAGER::PreparePackage(package);
+        if(package.type!=PT_DATASOURCE)return fail("Select a schematic data-source package");
+        if(package.versions.size()!=1 || !package.versions[0].compatible)
+            return fail("Archive must contain one compatible package version");
+        const auto installed=m_pcm->GetInstalledPackages();
+        const bool exists=std::any_of(installed.begin(),installed.end(),[&](const auto& item){return item.package.identifier==package.identifier;});
+        if(exists && !replace)return fail("This data source is installed; enable Replace existing to update it");
+        // Keep the old package recoverable until extraction and registration succeed.
+        // A corrupt archive or an I/O failure must not destroy an installed data source.
+        namespace fs = std::filesystem;
+        const wxString temporary = wxFileName::CreateTempFileName( "kicad-pcm-backup-" );
+        if( temporary.empty() ) return fail( "Cannot create a package backup" );
+        struct BACKUP
+        {
+            fs::path directory, marker;
+            std::vector<std::pair<fs::path, fs::path>> paths;
+            REPORTER& reporter;
+            bool changed = false, committed = false;
+            ~BACKUP()
+            {
+                std::error_code error;
+                bool restored = true;
+                if( changed && !committed )
+                    for( const auto& [original, saved] : paths )
+                    {
+                        fs::remove_all( original, error );
+                        if( error ) { restored = false; continue; }
+                        if( fs::exists( saved, error ) )
+                        {
+                            fs::create_directories( original.parent_path(), error );
+                            fs::copy( saved, original, fs::copy_options::recursive
+                                      | fs::copy_options::copy_symlinks, error );
+                            if( error ) restored = false;
+                        }
+                    }
+                if( restored ) fs::remove_all( directory, error );
+                else reporter.Report( "Package rollback needs manual recovery from "
+                                      + wxString::FromUTF8( directory.string() ), RPT_SEVERITY_ERROR );
+                fs::remove( marker, error );
+            }
+        } backup{ fs::u8path( temporary.utf8_string() + "-files" ),
+                  fs::u8path( temporary.utf8_string() ), {}, reporter };
+        fs::create_directory( backup.directory );
+        wxString id = package.identifier;
+        id.Replace( '.', '_' );
+        for( const auto& directory : PCM_PACKAGE_DIRECTORIES )
+        {
+            const auto relative = fs::u8path( directory.utf8_string() ) / fs::u8path( id.utf8_string() );
+            const auto original = fs::u8path( m_pcm->Get3rdPartyPath().utf8_string() ) / relative;
+            const auto saved = backup.directory / relative;
+            backup.paths.emplace_back( original, saved );
+            if( fs::exists( original ) )
+            {
+                fs::create_directories( saved.parent_path() );
+                fs::copy( original, saved, fs::copy_options::recursive | fs::copy_options::copy_symlinks );
+            }
+        }
+        backup.changed = true;
+        if(exists)
+        {
+            std::forward_list<wxRegEx> keep;
+            compile_keep_on_update_regex(package,package.versions[0],keep);
+            deletePackageDirectories(package.identifier,keep);
+        }
+        if(!extract(path,package.identifier,false))
+            return fail("Could not extract data-source package; restoring previous files");
+        m_pcm->MarkInstalled(package,package.versions[0].version,"");
+        if( !m_pcm->SaveInstalledPackages() )
+            return fail("Could not save installed package registry; restoring previous files");
+        backup.committed = true;
+        m_changed_package_types.insert(package.type);
+        reportMessage("Installed "+package.name+" "+package.versions[0].version,RPT_SEVERITY_INFO);
+        return STATUS::SUCCESS;
+    }
+    catch(const std::exception& error){return fail(wxString::FromUTF8(error.what()));}
+}
+
+PCM_TASK_MANAGER::STATUS PCM_TASK_MANAGER::UninstallDataSource(
+        const PCM_PACKAGE& package, REPORTER& reporter )
+{
+    m_nativeReporter=&reporter;
+    struct CLEAR { REPORTER*& reporter; ~CLEAR(){reporter=nullptr;} } clear{m_nativeReporter};
+    if(package.type!=PT_DATASOURCE)
+    {reportMessage("This package is not a data source",RPT_SEVERITY_ERROR);return STATUS::FAILED;}
+    deletePackageDirectories(package.identifier);
+    wxString id=package.identifier;id.Replace('.', '_');
+    for(const auto& directory:PCM_PACKAGE_DIRECTORIES)
+    {
+        wxFileName remaining(m_pcm->Get3rdPartyPath(),"");remaining.AppendDir(directory);remaining.AppendDir(id);
+        if(remaining.DirExists())
+        { reportMessage("Could not remove installed data-source directory: "+remaining.GetPath(),RPT_SEVERITY_ERROR); return STATUS::FAILED; }
+    }
+    m_pcm->MarkUninstalled(package);
+    if( !m_pcm->SaveInstalledPackages() )
+    { reportMessage("Removed data-source files but could not save installed package registry",RPT_SEVERITY_ERROR); return STATUS::FAILED; }
+    m_changed_package_types.insert(package.type);
+    reportMessage("Uninstalled "+package.name,RPT_SEVERITY_INFO);
+    return STATUS::SUCCESS;
 }

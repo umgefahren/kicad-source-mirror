@@ -22,6 +22,7 @@
 #define SCH_SELECTION_TOOL_H
 
 #include <project/sch_project_settings.h>
+#include <schematic_holder.h>
 #include <tool/selection_tool.h>
 #include <tool/action_menu.h>
 #include <tool/tool_menu.h>
@@ -389,9 +390,25 @@ private:
     ///< Set up handlers for various events.
     void setTransitions() override;
 
+    /**
+     * Build the right-click menu.
+     *
+     * Separate from Init() only because it has to be skipped when there is no menu to
+     * build: `TOOL_INTERACTIVE` constructs a `TOOL_MENU` — and therefore a `wxMenu` —
+     * only when `Pgm().IsGUI()`, so `m_menu` is null in a console-mode process such as
+     * the headless schematic host.
+     */
+    void buildContextMenu();
+
 private:
-    SCH_BASE_FRAME* m_frame;     // Pointer to the parent frame
-    SCH_SELECTION   m_selection; // Current state of selection
+    /**
+     * Whatever is editing the schematic. **Not necessarily a frame**: SCH_HOST
+     * implements the same interface with no window at all, which is why this is a
+     * SCHEMATIC_HOLDER and not a SCH_BASE_FRAME. Anything genuinely window-shaped is
+     * reached by downcasting this and doing nothing when the answer is null.
+     */
+    SCHEMATIC_HOLDER* m_editor;
+    SCH_SELECTION     m_selection; // Current state of selection
 
     KICURSOR m_nonModifiedCursor; // Cursor in the absence of shift/ctrl/alt
 

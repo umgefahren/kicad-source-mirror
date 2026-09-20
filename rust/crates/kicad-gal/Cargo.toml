@@ -1,0 +1,19 @@
+# The Rust half of the draw-stream contract: raw ABI mirrors, a validating
+# decoder, a typed command iterator, the on-disk format and a builder.
+#
+# Deliberately dependency-light and free of any C toolchain requirement: the
+# `#[repr(C)]` mirrors are hand written rather than generated, so this crate
+# builds anywhere cargo does.
+
+[package]
+name = "kicad-gal"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Decoder and safe bindings for the KiCad GAL draw stream (KGDS)"
+
+[dependencies]
+
+[dev-dependencies]

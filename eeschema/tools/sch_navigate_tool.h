@@ -38,6 +38,20 @@ public:
 
     ~SCH_NAVIGATE_TOOL() { }
 
+    /**
+     * Runs on an editing context that is not a wxFrame.
+     *
+     * Everything it asks the editor for is SCHEMATIC_HOLDER's: the document and its sheet
+     * hierarchy to decide where it could go, and ::DisplaySheet to go there. That last one
+     * was added for this tool, because changing sheet is the one thing it does and doing
+     * only the document half would leave the editor showing the sheet it had left.
+     *
+     * What it loses without a frame is hypertext navigation, which is a window from end
+     * to end — the click that raises it, the project its hrefs resolve against, its popup
+     * menu and its info bar — and clearing keyboard focus, which there is none of.
+     */
+    bool runsWithoutAFrame() const override { return true; }
+
     ///< Reset navigation history. Must be done when schematic changes
     void ResetHistory();
     ///< Remove deleted pages from history. Must be done when schematic

@@ -22,9 +22,12 @@
 #include <sch_edit_frame.h>
 #include <tool/tool_manager.h>
 #include <schematic.h>
+#include <schematic_holder.h>
+#include <sch_screen.h>
 #include <eeschema_id.h>
 #include <tools/sch_actions.h>
 #include <tools/sch_navigate_tool.h>
+#include <view/view.h>
 #include <common.h>
 #include "eda_doc.h"
 
@@ -35,16 +38,23 @@ wxString SCH_NAVIGATE_TOOL::g_BackLink = wxT( "HYPERTEXT_BACK" );
 void SCH_NAVIGATE_TOOL::ResetHistory()
 {
     m_navHistory.clear();
-    m_navHistory.push_back( m_frame->GetCurrentSheet() );
+
+    // The current sheet is the document's, not the editor's, so this works with or
+    // without a frame. With nothing loaded there is no sheet to seed the history with.
+    if( SCHEMATIC* schematic = m_editor->GetSchematic() )
+        m_navHistory.push_back( schematic->CurrentSheet() );
+
     m_navIndex = m_navHistory.begin();
 }
 
 
 void SCH_NAVIGATE_TOOL::CleanHistory()
 {
-    wxCHECK( m_frame, /* void */ );
+    SCHEMATIC* schematic = m_editor->GetSchematic();
 
-    SCH_SHEET_LIST sheets = m_frame->Schematic().Hierarchy();
+    wxCHECK( schematic, /* void */ );
+
+    SCH_SHEET_LIST sheets = schematic->Hierarchy();
 
     wxCHECK( !sheets.empty(), /* void */ );
 
@@ -76,6 +86,14 @@ void SCH_NAVIGATE_TOOL::CleanHistory()
 
 void SCH_NAVIGATE_TOOL::HypertextCommand( const wxString& aHref )
 {
+    // Hypertext navigation is a window's affordance from end to end: the href arrives
+    // from a click on text drawn in a window, the environment-variable substitution
+    // below is the frame's project, and the two branches that are not a page jump are a
+    // popup menu and an info bar. Without a window nothing can ask for this, so there is
+    // nothing to do rather than something to degrade.
+    if( !m_frame )
+        return;
+
     wxString destPage;
     wxString href = ResolveUriByEnvVars( aHref, &m_frame->Prj() );
 
@@ -123,8 +141,8 @@ int SCH_NAVIGATE_TOOL::Forward( const TOOL_EVENT& aEvent )
     {
         m_navIndex++;
 
-        m_frame->GetToolManager()->RunAction( ACTIONS::cancelInteractive );
-        m_frame->GetToolManager()->RunAction( ACTIONS::selectionClear );
+        m_toolMgr->RunAction( ACTIONS::cancelInteractive );
+        m_toolMgr->RunAction( ACTIONS::selectionClear );
 
         m_frame->SetCurrentSheet( *m_navIndex );
         m_frame->DisplayCurrentSheet();
@@ -144,8 +162,8 @@ int SCH_NAVIGATE_TOOL::Back( const TOOL_EVENT& aEvent )
     {
         m_navIndex--;
 
-        m_frame->GetToolManager()->RunAction( ACTIONS::cancelInteractive );
-        m_frame->GetToolManager()->RunAction( ACTIONS::selectionClear );
+        m_toolMgr->RunAction( ACTIONS::cancelInteractive );
+        m_toolMgr->RunAction( ACTIONS::selectionClear );
 
         m_frame->SetCurrentSheet( *m_navIndex );
         m_frame->DisplayCurrentSheet();
@@ -161,10 +179,14 @@ int SCH_NAVIGATE_TOOL::Back( const TOOL_EVENT& aEvent )
 
 int SCH_NAVIGATE_TOOL::Previous( const TOOL_EVENT& aEvent )
 {
+    SCHEMATIC* schematic = m_editor->GetSchematic();
+
+    wxCHECK( schematic, 0 );
+
     if( CanGoPrevious() )
     {
-        int targetSheet = m_frame->GetCurrentSheet().GetVirtualPageNumber() - 1;
-        changeSheet( m_frame->Schematic().Hierarchy().at( targetSheet - 1 ) );
+        int targetSheet = schematic->CurrentSheet().GetVirtualPageNumber() - 1;
+        changeSheet( schematic->Hierarchy().at( targetSheet - 1 ) );
     }
     else
     {
@@ -177,10 +199,14 @@ int SCH_NAVIGATE_TOOL::Previous( const TOOL_EVENT& aEvent )
 
 int SCH_NAVIGATE_TOOL::Next( const TOOL_EVENT& aEvent )
 {
+    SCHEMATIC* schematic = m_editor->GetSchematic();
+
+    wxCHECK( schematic, 0 );
+
     if( CanGoNext() )
     {
-        int targetSheet = m_frame->GetCurrentSheet().GetVirtualPageNumber() + 1;
-        changeSheet( m_frame->Schematic().Hierarchy().at( targetSheet - 1 ) );
+        int targetSheet = schematic->CurrentSheet().GetVirtualPageNumber() + 1;
+        changeSheet( schematic->Hierarchy().at( targetSheet - 1 ) );
     }
     else
     {
@@ -205,11 +231,16 @@ bool SCH_NAVIGATE_TOOL::CanGoForward()
 
 bool SCH_NAVIGATE_TOOL::CanGoUp()
 {
-    std::vector<SCH_SHEET*> topLevelSheets = m_frame->Schematic().GetTopLevelSheets();
+    SCHEMATIC* schematic = m_editor->GetSchematic();
+
+    if( !schematic )
+        return false;
+
+    std::vector<SCH_SHEET*> topLevelSheets = schematic->GetTopLevelSheets();
 
     for( SCH_SHEET* top_sheet : topLevelSheets )
     {
-        if( m_frame->GetCurrentSheet().Last() == top_sheet )
+        if( schematic->CurrentSheet().Last() == top_sheet )
             return false;
     }
 
@@ -219,17 +250,24 @@ bool SCH_NAVIGATE_TOOL::CanGoUp()
 
 bool SCH_NAVIGATE_TOOL::CanGoPrevious()
 {
-    return m_frame->GetCurrentSheet().GetVirtualPageNumber() > 1;
+    SCHEMATIC* schematic = m_editor->GetSchematic();
+
+    if( !schematic )
+        return false;
+
+    return schematic->CurrentSheet().GetVirtualPageNumber() > 1;
 }
 
 
 bool SCH_NAVIGATE_TOOL::CanGoNext()
 {
-    if( !m_frame->Schematic().IsValid() )
+    SCHEMATIC* schematic = m_editor->GetSchematic();
+
+    if( !schematic || !schematic->IsValid() )
         return false;
 
-    return m_frame->GetCurrentSheet().GetVirtualPageNumber()
-           < (int) m_frame->Schematic().Hierarchy().size();
+    return schematic->CurrentSheet().GetVirtualPageNumber()
+           < (int) schematic->Hierarchy().size();
 }
 
 
@@ -246,12 +284,16 @@ int SCH_NAVIGATE_TOOL::ChangeSheet( const TOOL_EVENT& aEvent )
 
 int SCH_NAVIGATE_TOOL::EnterSheet( const TOOL_EVENT& aEvent )
 {
-    SCH_SELECTION_TOOL*  selTool = m_toolMgr->GetTool<SCH_SELECTION_TOOL>();
+    SCHEMATIC*          schematic = m_editor->GetSchematic();
+    SCH_SELECTION_TOOL* selTool = m_toolMgr->GetTool<SCH_SELECTION_TOOL>();
+
+    wxCHECK( schematic && selTool, 0 );
+
     const SCH_SELECTION& selection = selTool->RequestSelection( { SCH_SHEET_T } );
 
     if( selection.GetSize() == 1 )
     {
-        SCH_SHEET_PATH pushed = m_frame->GetCurrentSheet();
+        SCH_SHEET_PATH pushed = schematic->CurrentSheet();
         pushed.push_back( (SCH_SHEET*) selection.Front() );
 
         changeSheet( pushed );
@@ -263,9 +305,13 @@ int SCH_NAVIGATE_TOOL::EnterSheet( const TOOL_EVENT& aEvent )
 
 int SCH_NAVIGATE_TOOL::LeaveSheet( const TOOL_EVENT& aEvent )
 {
+    SCHEMATIC* schematic = m_editor->GetSchematic();
+
+    wxCHECK( schematic, 0 );
+
     if( CanGoUp() )
     {
-        SCH_SHEET_PATH popped = m_frame->GetCurrentSheet();
+        SCH_SHEET_PATH popped = schematic->CurrentSheet();
         popped.pop_back();
 
         changeSheet( popped );
@@ -308,15 +354,25 @@ void SCH_NAVIGATE_TOOL::pushToHistory( const SCH_SHEET_PATH& aPath )
 
 void SCH_NAVIGATE_TOOL::changeSheet( const SCH_SHEET_PATH& aPath )
 {
-    m_frame->GetToolManager()->RunAction( ACTIONS::cancelInteractive );
-    m_frame->GetToolManager()->RunAction( ACTIONS::selectionClear );
+    SCHEMATIC* schematic = m_editor->GetSchematic();
+
+    wxCHECK( schematic, /* void */ );
+
+    m_toolMgr->RunAction( ACTIONS::cancelInteractive );
+    m_toolMgr->RunAction( ACTIONS::selectionClear );
 
     // Store the current zoom level into the current screen before switching
-    m_frame->GetScreen()->m_LastZoomLevel = m_frame->GetCanvas()->GetView()->GetScale();
+    if( SCH_SCREEN* screen = m_editor->GetScreen() )
+        screen->m_LastZoomLevel = getView()->GetScale();
 
     pushToHistory( aPath );
 
-    m_frame->ClearFocus();
-    m_frame->Schematic().SetCurrentSheet( aPath );
-    m_frame->DisplayCurrentSheet();
+    // A window: keyboard focus is one's, and there is nothing to clear without it.
+    if( m_frame )
+        m_frame->ClearFocus();
+
+    // Moves the document's current sheet *and* swaps the editor over to that sheet's
+    // screen. It is one call because doing only the first would leave the editor showing
+    // the old sheet while the history pointed at the new one.
+    m_editor->DisplaySheet( aPath );
 }

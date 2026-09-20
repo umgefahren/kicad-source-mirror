@@ -25,6 +25,7 @@
 
 #include <tool/tool_interactive.h>
 
+class CANVAS_HOLDER;
 class EDA_DRAW_FRAME;
 
 /**
@@ -36,6 +37,9 @@ public:
     COMMON_TOOLS();
 
     ~COMMON_TOOLS() override { }
+
+    /// @copydoc TOOL_INTERACTIVE::Init()
+    bool Init() override;
 
     /// @copydoc TOOL_BASE::Reset()
     void Reset( RESET_REASON aReason ) override;
@@ -112,7 +116,15 @@ private:
     ///< Sets up handlers for various events.
     void setTransitions() override;
 
-    ///< Pointer to the currently used edit frame.
+    /**
+     * Whatever owns the canvas: the view, the settings that decide how it behaves, the
+     * grid and the units. Non-null whenever the tool initialised at all, including when
+     * #m_frame is null.
+     */
+    CANVAS_HOLDER*  m_canvas;
+
+    ///< The currently used edit frame, or **null** when the canvas holder is not one
+    ///< (a headless host). Only the dialogs and the status bar want it.
     EDA_DRAW_FRAME* m_frame;
 
     int doZoomInOut( bool aDirection, bool aCenterOnCursor );
