@@ -56,11 +56,13 @@ struct MULTI_UNIT_GROUP;
  * SCHEMATIC::Connectivity() and the SCH_CONNECTIVITY::ENGINE diagnostic accessors, and some still read
  * the live model. Otherwise the checks read CONNECTION_GRAPH and the live model.
  */
+class LIBRARY_MANAGER;
+
 class ERC_TESTER
 {
 public:
 
-    ERC_TESTER( SCHEMATIC* aSchematic, bool aShowAllErrors = false );
+    ERC_TESTER( SCHEMATIC* aSchematic, bool aShowAllErrors = false, LIBRARY_MANAGER* aLibraries = nullptr );
 
     /**
      * Inside a given sheet, one cannot have sheets with duplicate names (file
@@ -226,6 +228,7 @@ public:
 private:
     std::vector<SCH_CONNECTIVITY::MULTI_UNIT_GROUP> multiUnitSources() const;
 
+    LIBRARY_MANAGER*             m_libraries;
     SCHEMATIC*                   m_schematic;
     ERC_SETTINGS&                m_settings;
     SCH_SHEET_LIST               m_sheetList;

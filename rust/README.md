@@ -11,8 +11,9 @@ cargo is never invoked and the host shared library is not built.
 It opens real `.kicad_sch` files — `--schematic` below — holds the C++ session open,
 re-records the frame from it whenever the view moves, and hands every pointer move,
 click, drag, scroll and key press to KiCad's `TOOL_MANAGER` as a `TOOL_EVENT`. Canvas editing tools run through the C++ host: selection, move, rotate,
-wiring, undo/redo and save. Dialog workflows, including symbol placement and
-properties, still need porting. `docs/rust-migration/06-what-is-missing.md`
+wiring, undo/redo and save. GPUI dialogs cover Find/Replace, symbol/power choosing,
+existing symbol fields and text properties, and ERC. Most other dialogs still
+need porting. `docs/rust-migration/09-dialog-workflows.md`
 describes that remaining work.
 
 ## What is and is not here
@@ -167,6 +168,13 @@ Search data crosses the host ABI into KiCad’s existing search tool; replacemen
 use its normal undo stack. Enter finds next, Shift-Enter finds previous, and Escape
 closes the panel and restores canvas focus. Replay mode reports that search needs
 a live schematic.
+
+`A` and `P` open the symbol and power choosers. Browse cached symbols or one
+configured library at a time; choose a result, then click the canvas to place it.
+`E` opens properties for one selected symbol, text, or label. Apply/Enter commits
+validated fields with undo; Close/Escape discards unapplied input. Inspect →
+Electrical Rules Checker runs ERC and provides clickable sheet/location results.
+Text editing shortcuts operate on the focused input rather than the schematic.
 
 Window close and the editor’s Quit action prompt to Save, Discard, or Cancel when
 the host reports unsaved changes. A failed save keeps the window open. GPUI’s

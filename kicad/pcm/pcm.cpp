@@ -1031,7 +1031,7 @@ time_t PLUGIN_CONTENT_MANAGER::getCurrentTimestamp() const
 }
 
 
-void PLUGIN_CONTENT_MANAGER::SaveInstalledPackages()
+bool PLUGIN_CONTENT_MANAGER::SaveInstalledPackages()
 {
     try
     {
@@ -1044,13 +1044,14 @@ void PLUGIN_CONTENT_MANAGER::SaveInstalledPackages()
         }
 
         wxFileName    f( PATHS::GetUserSettingsPath(), wxT( "installed_packages.json" ) );
-        std::ofstream stream( f.GetFullPath().fn_str() );
-
-        stream << std::setw( 4 ) << js << std::endl;
+        const std::string encoded = js.dump( 4 ) + "\n";
+        wxTempFileOutputStream stream( f.GetFullPath() );
+        stream.Write( encoded.data(), encoded.size() );
+        return stream.IsOk() && stream.Commit();
     }
-    catch( nlohmann::detail::exception& )
+    catch( const std::exception& )
     {
-        // Ignore
+        return false;
     }
 }
 

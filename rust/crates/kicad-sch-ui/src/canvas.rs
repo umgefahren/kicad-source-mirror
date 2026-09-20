@@ -321,6 +321,322 @@ impl CanvasState {
         result
     }
 
+    /// Read the selected item's editable fields.
+    pub fn document_workflow(&mut self, kind: u32) -> Result<Vec<(String, String)>, String> {
+        self.sink
+            .try_borrow_mut()
+            .map_err(|_| "Document is busy")?
+            .document_workflow(kind)
+    }
+    /// Apply native document changes and redraw.
+    pub fn apply_document_workflow(&mut self, kind: u32, values: &[String]) -> Result<(), String> {
+        self.sink
+            .try_borrow_mut()
+            .map_err(|_| "Document is busy")?
+            .apply_document_workflow(kind, values)?;
+        self.invalidate_view();
+        Ok(())
+    }
+    /// Read properties for the selection.
+    pub fn setup_properties(&mut self) -> Result<crate::properties::ItemProperties, String> {
+        self.sink
+            .try_borrow_mut()
+            .map_err(|_| "Document is busy")?
+            .setup_properties()
+    }
+    /// Save project setup and refresh the drawing.
+    pub fn apply_setup_properties(
+        &mut self,
+        data: &crate::properties::ItemProperties,
+    ) -> Result<(), String> {
+        self.sink
+            .try_borrow_mut()
+            .map_err(|_| "Document is busy")?
+            .apply_setup_properties(data)?;
+        self.invalidate_view();
+        Ok(())
+    }
+    /// Read the selected item's editable fields.
+    pub fn item_properties(&mut self) -> Result<crate::properties::ItemProperties, String> {
+        self.sink
+            .try_borrow_mut()
+            .map_err(|_| "Document is busy")?
+            .item_properties()
+    }
+    /// Hierarchical label and sheet pin synchronization.
+    pub fn sheet_pin_properties(
+        &mut self,
+        all: bool,
+    ) -> Result<crate::properties::ItemProperties, String> {
+        self.sink
+            .try_borrow_mut()
+            .map_err(|_| "Document is busy")?
+            .sheet_pin_properties(all)
+    }
+
+    /// Hierarchical label and sheet pin synchronization.
+    pub fn apply_sheet_pin_properties(
+        &mut self,
+        all: bool,
+        data: &crate::properties::ItemProperties,
+    ) -> Result<(), String> {
+        self.sink
+            .try_borrow_mut()
+            .map_err(|_| "Document is busy")?
+            .apply_sheet_pin_properties(all, data)?;
+        self.invalidate_view();
+        Ok(())
+    }
+
+    /// Read or persist application preferences.
+    pub fn preferences(&mut self) -> Result<crate::properties::ItemProperties, String> {
+        self.sink
+            .try_borrow_mut()
+            .map_err(|_| "Document is busy")?
+            .preferences()
+    }
+    /// Read validated vector graphics import options.
+    pub fn graphics_import_properties(
+        &mut self,
+    ) -> Result<crate::properties::ItemProperties, String> {
+        self.sink
+            .try_borrow_mut()
+            .map_err(|_| "Document is busy")?
+            .graphics_import_properties()
+    }
+    /// Read bitmap placement options.
+    pub fn image_properties(&mut self) -> Result<crate::properties::ItemProperties, String> {
+        self.sink
+            .try_borrow_mut()
+            .map_err(|_| "Document is busy")?
+            .image_properties()
+    }
+
+    /// Read or persist application preferences.
+    pub fn apply_preferences(
+        &mut self,
+        data: &crate::properties::ItemProperties,
+    ) -> Result<(), String> {
+        self.sink
+            .try_borrow_mut()
+            .map_err(|_| "Document is busy")?
+            .apply_preferences(data)?;
+        self.invalidate_view();
+        Ok(())
+    }
+    /// Import SVG/DXF geometry in one undo transaction.
+    pub fn apply_graphics_import(
+        &mut self,
+        data: &crate::properties::ItemProperties,
+    ) -> Result<(), String> {
+        self.sink
+            .try_borrow_mut()
+            .map_err(|_| "Document is busy")?
+            .apply_graphics_import(data)?;
+        self.invalidate_view();
+        Ok(())
+    }
+    /// Load a bitmap and begin placement or commit at the requested coordinates.
+    pub fn apply_image_properties(
+        &mut self,
+        data: &crate::properties::ItemProperties,
+    ) -> Result<(), String> {
+        self.sink
+            .try_borrow_mut()
+            .map_err(|_| "Document is busy")?
+            .apply_image_properties(data)?;
+        self.invalidate_view();
+        Ok(())
+    }
+
+    /// Consume an asynchronous properties request from the active tool.
+    pub fn take_pending_properties(&mut self) -> bool {
+        self.sink
+            .try_borrow_mut()
+            .is_ok_and(|mut sink| sink.take_pending_properties())
+    }
+
+    /// Relink a hierarchical sheet file, clearing undo history.
+    pub fn relink_sheet(&mut self, item_id: &str, path: &str) -> Result<(), String> {
+        self.sink
+            .try_borrow_mut()
+            .map_err(|_| "Document is busy")?
+            .relink_sheet(item_id, path)?;
+        self.invalidate_view();
+        Ok(())
+    }
+
+    /// Create or delete a selected item custom field.
+    pub fn edit_custom_field(
+        &mut self,
+        item_id: &str,
+        name: &str,
+        value: Option<&str>,
+    ) -> Result<(), String> {
+        self.sink
+            .try_borrow_mut()
+            .map_err(|_| "Document is busy")?
+            .edit_custom_field(item_id, name, value)?;
+        self.invalidate_view();
+        Ok(())
+    }
+
+    /// Commit properties and refresh the document drawing.
+    pub fn apply_properties(
+        &mut self,
+        data: &crate::properties::ItemProperties,
+    ) -> Result<(), String> {
+        self.sink
+            .try_borrow_mut()
+            .map_err(|_| "Document is busy")?
+            .apply_properties(data)?;
+        self.invalidate_view();
+        Ok(())
+    }
+
+    /// Toggle a live ERC marker exclusion.
+    pub fn exclude_erc(&mut self, id: &str, excluded: bool) -> Result<(), String> {
+        self.sink
+            .try_borrow_mut()
+            .map_err(|_| "Document is busy")?
+            .exclude_erc(id, excluded)?;
+        self.invalidate_view();
+        Ok(())
+    }
+    /// Run native ERC and redraw its markers.
+    pub fn run_erc(&mut self) -> Result<Vec<crate::erc::ErcViolation>, String> {
+        let result = self
+            .sink
+            .try_borrow_mut()
+            .map_err(|_| "Document is busy")?
+            .run_erc();
+        self.invalidate_view();
+        result
+    }
+    /// Navigate to a violation's sheet and position.
+    pub fn navigate_erc(&mut self, violation: &crate::erc::ErcViolation) -> Result<(), String> {
+        self.sink
+            .try_borrow_mut()
+            .map_err(|_| "Document is busy")?
+            .navigate_erc(violation)?;
+        self.renderer
+            .borrow_mut()
+            .camera_mut()
+            .set_center([violation.x, violation.y]);
+        self.invalidate_view();
+        Ok(())
+    }
+
+    /// Read project or global symbol library table entries.
+    pub fn library_table(
+        &mut self,
+        global: bool,
+    ) -> Result<Vec<crate::library_workflows::LibraryRow>, String> {
+        self.sink
+            .try_borrow_mut()
+            .map_err(|_| "Document is busy")?
+            .library_table(global)
+    }
+    /// Save the library table and invalidate cached views.
+    pub fn save_library_table(
+        &mut self,
+        global: bool,
+        rows: &[crate::library_workflows::LibraryRow],
+    ) -> Result<(), String> {
+        self.sink
+            .try_borrow_mut()
+            .map_err(|_| "Document is busy")?
+            .save_library_table(global, rows)?;
+        self.invalidate_view();
+        Ok(())
+    }
+    /// Read Database or HTTP library connection settings.
+    pub fn configure_library(
+        &mut self,
+        global: bool,
+        nickname: &str,
+    ) -> Result<Vec<(String, String)>, String> {
+        self.sink
+            .try_borrow_mut()
+            .map_err(|_| "Document is busy")?
+            .configure_library(global, nickname)
+    }
+    /// Read simulation and library symbol workflow values.
+    pub fn simulation_workflow(&mut self, kind: u32) -> Result<Vec<(String, String)>, String> {
+        self.sink
+            .try_borrow_mut()
+            .map_err(|_| "Document is busy")?
+            .simulation_workflow(kind)
+    }
+    /// Apply simulation or library symbol edits.
+    pub fn apply_simulation_workflow(
+        &mut self,
+        kind: u32,
+        values: &[String],
+    ) -> Result<(), String> {
+        self.sink
+            .try_borrow_mut()
+            .map_err(|_| "Document is busy")?
+            .apply_simulation_workflow(kind, values)?;
+        self.invalidate_view();
+        Ok(())
+    }
+    /// Cached library IDs for the symbol chooser.
+    pub fn symbol_libraries(&mut self) -> Result<Vec<String>, String> {
+        self.sink
+            .try_borrow_mut()
+            .map_err(|_| "Document is busy")?
+            .symbol_libraries()
+    }
+    /// Browse one library, or cached symbols when empty.
+    pub fn browse_symbols(
+        &mut self,
+        library: &str,
+        power_only: bool,
+    ) -> Result<Vec<String>, String> {
+        self.sink
+            .try_borrow_mut()
+            .map_err(|_| "Document is busy")?
+            .browse_symbols(library, power_only)
+    }
+    /// Cached library IDs.
+    pub fn list_symbols(&mut self) -> Result<Vec<String>, String> {
+        self.sink
+            .try_borrow_mut()
+            .map_err(|_| "Document is busy")?
+            .list_symbols()
+    }
+    /// Record a chooser preview without changing the document.
+    pub fn preview_symbol(
+        &mut self,
+        id: &str,
+        unit: u32,
+        body: u32,
+    ) -> Result<(kicad_gal::Stream, u32, u32), String> {
+        self.sink
+            .try_borrow_mut()
+            .map_err(|_| "Document is busy")?
+            .preview_symbol(id, unit, body)
+    }
+    /// Place a chosen unit and body style.
+    pub fn place_symbol_variant(&mut self, id: &str, unit: u32, body: u32) -> Result<(), String> {
+        self.sink
+            .try_borrow_mut()
+            .map_err(|_| "Document is busy")?
+            .place_symbol_variant(id, unit, body)?;
+        self.invalidate_view();
+        Ok(())
+    }
+    /// Start placement and redraw the preview.
+    pub fn place_symbol(&mut self, id: &str) -> Result<(), String> {
+        self.sink
+            .try_borrow_mut()
+            .map_err(|_| "Document is busy")?
+            .place_symbol(id)?;
+        self.invalidate_view();
+        Ok(())
+    }
+
     /// Search the host model and center the canvas on the match.
     pub fn search(
         &mut self,

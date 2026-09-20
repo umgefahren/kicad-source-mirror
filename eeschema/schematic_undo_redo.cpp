@@ -23,6 +23,7 @@
 #include <sch_edit_frame.h>
 #include <schematic_holder.h>
 #include <schematic_undo_redo.h>
+#include <sch_page_settings_undo.h>
 #include <tool/tool_manager.h>
 #include <tool/tools_holder.h>
 #include <undo_redo_holder.h>
@@ -401,7 +402,13 @@ void SCH_UNDO_REDO::PutDataInPreviousState( SCHEMATIC_HOLDER& aEditor, PICKED_IT
         }
         else if( status == UNDO_REDO::PAGESETTINGS )
         {
-            // The one case that genuinely needs a window: DS_PROXY_UNDO_ITEM reads and
+            if( auto* nativePage = dynamic_cast<SCH_PAGE_SETTINGS_UNDO_ITEM*>( eda_item ) )
+            {
+                nativePage->Swap( *aEditor.GetSchematic() );
+                if( auto* view = toolMgr->GetView() ) view->UpdateAllItems( KIGFX::ALL );
+                continue;
+            }
+            // The legacy drawing sheet proxy reads and
             // writes the drawing sheet through an EDA_DRAW_FRAME. An editor without one
             // also has no page-settings dialog, so it cannot have recorded this.
             wxCHECK2( frame, continue );

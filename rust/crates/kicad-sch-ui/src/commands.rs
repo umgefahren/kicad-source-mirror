@@ -105,6 +105,22 @@ impl RunAction {
 /// The shell-owned commands, as one enum so tables can name them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ShellCommand {
+    /// Resolve custom field name case conflicts.
+    FieldCaseConflicts,
+    /// Manage schematic data source packages.
+    SchematicDataSources,
+    /// Migrate legacy bus labels.
+    MigrateBuses,
+    /// Edit bus aliases.
+    BusAliases,
+    /// Edit net classes.
+    Netclasses,
+    /// Edit net chains.
+    NetChains,
+    /// Import schematic settings.
+    ImportSettings,
+    /// Configure remote symbol providers.
+    RemoteSymbolSettings,
     /// Close the editor.
     Quit,
     /// Zoom in one step.
@@ -141,6 +157,15 @@ impl ShellCommand {
     /// The gpui action this command dispatches.
     pub fn action(self) -> Box<dyn Action> {
         match self {
+            ShellCommand::BusAliases
+            | ShellCommand::Netclasses
+            | ShellCommand::NetChains
+            | ShellCommand::ImportSettings => Box::new(RunAction::new(self.reported_id())),
+            ShellCommand::FieldCaseConflicts | ShellCommand::SchematicDataSources => {
+                Box::new(RunAction::new(self.reported_id()))
+            }
+            ShellCommand::MigrateBuses => Box::new(RunAction::new(self.reported_id())),
+            ShellCommand::RemoteSymbolSettings => Box::new(RunAction::new(self.reported_id())),
             ShellCommand::Quit => Box::new(Quit),
             ShellCommand::ZoomIn => Box::new(ZoomIn),
             ShellCommand::ZoomOut => Box::new(ZoomOut),
@@ -165,6 +190,14 @@ impl ShellCommand {
     /// so the host can tell the two populations apart and ignore ours.
     pub fn reported_id(self) -> &'static str {
         match self {
+            ShellCommand::BusAliases => "gpui.Setup.buses",
+            ShellCommand::Netclasses => "gpui.Setup.netclasses",
+            ShellCommand::NetChains => "gpui.Setup.netchains",
+            ShellCommand::ImportSettings => "gpui.Setup.import",
+            ShellCommand::FieldCaseConflicts => "gpui.FieldCaseConflicts",
+            ShellCommand::SchematicDataSources => "gpui.SchematicDataSources",
+            ShellCommand::MigrateBuses => "gpui.MigrateBuses",
+            ShellCommand::RemoteSymbolSettings => "gpui.RemoteSymbols.settings",
             ShellCommand::Quit => "common.Control.quit",
             ShellCommand::ZoomIn => "common.Control.zoomIn",
             ShellCommand::ZoomOut => "common.Control.zoomOut",
@@ -539,7 +572,7 @@ pub fn key_bindings_with_registry(registry: &ActionRegistry) -> (Vec<KeyBinding>
         match KeyBinding::load(
             &keys,
             action,
-            context_for(&keys),
+            context_for(&keys, command.kind),
             false,
             None,
             &gpui_kit::DummyKeyboardMapper,
@@ -551,7 +584,7 @@ pub fn key_bindings_with_registry(registry: &ActionRegistry) -> (Vec<KeyBinding>
     match KeyBinding::load(
         "escape",
         ShellCommand::CancelTool.action(),
-        context_for("escape"),
+        context_for("escape", CommandKind::Shell(ShellCommand::CancelTool)),
         false,
         None,
         &gpui_kit::DummyKeyboardMapper,
@@ -690,6 +723,11 @@ static EDIT_ITEMS: &[MenuEntry] = &[
     kicad("Paste", "common.Interactive.paste", Some("ctrl-v")),
     kicad("Duplicate", "common.Interactive.duplicate", Some("ctrl-d")),
     kicad("Delete", "common.Interactive.delete", Some("delete")),
+    kicad(
+        "Properties...",
+        "eeschema.InteractiveEdit.properties",
+        Some("e"),
+    ),
     SEP,
     kicad("Select All", "common.Interactive.selectAll", Some("ctrl-a")),
     kicad(
@@ -871,6 +909,11 @@ static TOOLS_ITEMS: &[MenuEntry] = &[
         None,
     ),
     kicad(
+        "Increment Annotations...",
+        "eeschema.EditorControl.incrementAnnotations",
+        None,
+    ),
+    kicad(
         "Assign Footprints...",
         "eeschema.EditorControl.assignFootprints",
         None,
@@ -886,8 +929,74 @@ static TOOLS_ITEMS: &[MenuEntry] = &[
         None,
     ),
     SEP,
-    kicad("Symbol Editor", "common.Control.showSymbolEditor", None),
-    kicad("Symbol Browser", "common.Control.showSymbolBrowser", None),
+    MenuEntry::Submenu {
+        label: "Symbol Libraries",
+        items: &[
+            kicad(
+                "Symbol Pin Maps...",
+                "eeschema.InteractiveEdit.editSymbolPinMaps",
+                None,
+            ),
+            kicad("Symbol Editor", "common.Control.showSymbolEditor", None),
+            kicad("Symbol Browser", "common.Control.showSymbolBrowser", None),
+            kicad(
+                "Library Fields Table...",
+                "eeschema.SymbolLibraryControl.showLibraryFieldsTable",
+                None,
+            ),
+            kicad(
+                "Related Library Fields...",
+                "eeschema.SymbolLibraryControl.showRelatedLibraryFieldsTable",
+                None,
+            ),
+            kicad(
+                "New Library Symbol...",
+                "eeschema.SymbolLibraryControl.newSymbol",
+                None,
+            ),
+            kicad(
+                "Library Symbol Properties...",
+                "eeschema.InteractiveEdit.symbolProperties",
+                None,
+            ),
+            kicad(
+                "Library Pin Table...",
+                "eeschema.InteractiveEdit.pinTable",
+                None,
+            ),
+            kicad(
+                "Import Library Symbol...",
+                "eeschema.SymbolLibraryControl.importSymbol",
+                None,
+            ),
+        ],
+    },
+    SEP,
+    MenuEntry::Submenu {
+        label: "Symbol Maintenance",
+        items: &[
+            kicad(
+                "Change Symbols...",
+                "eeschema.InteractiveEdit.changeSymbols",
+                None,
+            ),
+            kicad(
+                "Update Symbols...",
+                "eeschema.InteractiveEdit.updateSymbols",
+                None,
+            ),
+            kicad(
+                "Remap Symbols...",
+                "eeschema.EditorControl.remapSymbols",
+                None,
+            ),
+            kicad(
+                "Rescue Symbols...",
+                "eeschema.EditorControl.rescueSymbols",
+                None,
+            ),
+        ],
+    },
     SEP,
     kicad(
         "Generate Bill of Materials...",
@@ -902,6 +1011,56 @@ static TOOLS_ITEMS: &[MenuEntry] = &[
 ];
 
 static PREFERENCES_ITEMS: &[MenuEntry] = &[
+    MenuEntry::Submenu {
+        label: "Schematic Tools and Settings",
+        items: &[
+            shell(
+                "Resolve Field Name Case Conflicts...",
+                ShellCommand::FieldCaseConflicts,
+                None,
+            ),
+            shell(
+                "Schematic Data Sources...",
+                ShellCommand::SchematicDataSources,
+                None,
+            ),
+            shell("Migrate Legacy Buses...", ShellCommand::MigrateBuses, None),
+            kicad(
+                "Update Inherited Symbol Fields...",
+                "eeschema.SymbolLibraryControl.updateSymbolFields",
+                None,
+            ),
+            shell("Bus Aliases...", ShellCommand::BusAliases, None),
+            shell("Net Classes...", ShellCommand::Netclasses, None),
+            shell("Net Chains...", ShellCommand::NetChains, None),
+            shell("Import Settings...", ShellCommand::ImportSettings, None),
+            kicad(
+                "Create Net Chain...",
+                "eeschema.EditorControl.createNetChain",
+                None,
+            ),
+            kicad(
+                "Edit Text and Graphics...",
+                "eeschema.InteractiveEdit.editTextAndGraphics",
+                None,
+            ),
+            kicad(
+                "Synchronize Sheet Pins...",
+                "eeschema.InteractiveDrawing.syncSheetPins",
+                None,
+            ),
+            kicad(
+                "Synchronize All Sheet Pins...",
+                "eeschema.InteractiveDrawing.syncAllSheetsPins",
+                None,
+            ),
+        ],
+    },
+    shell(
+        "Remote Symbol Providers...",
+        ShellCommand::RemoteSymbolSettings,
+        None,
+    ),
     kicad(
         "Schematic Setup...",
         "eeschema.EditorControl.schematicSetup",
@@ -1085,24 +1244,26 @@ pub fn key_bindings() -> (Vec<KeyBinding>, Vec<String>) {
     key_bindings_with_registry(&registry)
 }
 
-/// The context predicate a keystroke is bound under.
-///
-/// A shortcut with no Ctrl, Alt or Cmd in it is a character somebody might want
-/// to type. Bound globally, `w` would select the wire tool instead of reaching
-/// the command palette's search field, `delete` would delete a schematic item
-/// instead of a character, and typing "Annotate" into the palette would arrive
-/// as "Annoe" — which is exactly what happened before this existed. gpui's
-/// `!Input` matches only when no element in the focus chain declares the text
-/// input context, which is the question being asked.
-///
-/// Modified shortcuts are left global on purpose: Ctrl+S should save whether or
-/// not a text field has focus.
-fn context_for(keys: &str) -> Option<Rc<KeyBindingContextPredicate>> {
+/// Host shortcuts must never override a focused text input, including modified
+/// editing shortcuts (select all, clipboard, undo and redo). Only explicitly
+/// global shell commands may run from an input, and only with a modifier.
+fn context_for(keys: &str, kind: CommandKind) -> Option<Rc<KeyBindingContextPredicate>> {
     let modified = keys.contains("ctrl-")
         || keys.contains("alt-")
         || keys.contains("cmd-")
         || keys.contains("super-");
-    if modified {
+    let global = matches!(
+        kind,
+        CommandKind::Shell(
+            ShellCommand::Quit
+                | ShellCommand::OpenCommandPalette
+                | ShellCommand::ToggleTheme
+                | ShellCommand::ToggleLeftPanel
+                | ShellCommand::ToggleRightPanel
+                | ShellCommand::ToggleFrameStats
+        )
+    );
+    if modified && global {
         return None;
     }
     KeyBindingContextPredicate::parse("!Input")
@@ -1294,16 +1455,38 @@ mod tests {
         }
     }
 
-    /// Single-key shortcuts must not fire while a text field has focus, or the
-    /// command palette cannot be typed into.
+    /// Modified host shortcuts must also stay out of focused text inputs.
     #[test]
-    fn unmodified_shortcuts_are_scoped_away_from_text_inputs() {
-        assert!(context_for("w").is_some());
-        assert!(context_for("escape").is_some());
-        assert!(context_for("delete").is_some());
-        assert!(context_for("shift-t").is_some());
-        assert!(context_for("ctrl-s").is_none());
-        assert!(context_for("ctrl-shift-p").is_none());
+    fn host_shortcuts_are_scoped_away_from_text_inputs() {
+        for key in [
+            "w",
+            "escape",
+            "delete",
+            "shift-t",
+            "ctrl-a",
+            "cmd-a",
+            "ctrl-c",
+            "cmd-x",
+            "ctrl-v",
+            "cmd-z",
+            "cmd-shift-z",
+            "ctrl-s",
+        ] {
+            assert!(
+                context_for(key, CommandKind::Kicad("common.Interactive.edit")).is_some(),
+                "{key}"
+            );
+        }
+        assert!(
+            context_for(
+                "cmd-shift-p",
+                CommandKind::Shell(ShellCommand::OpenCommandPalette)
+            )
+            .is_none()
+        );
+        assert!(context_for("cmd-q", CommandKind::Shell(ShellCommand::Quit)).is_none());
+        assert!(context_for("p", CommandKind::Shell(ShellCommand::OpenCommandPalette)).is_some());
+        assert!(context_for("cmd-a", CommandKind::Tool(Tool::PlaceSymbol)).is_some());
 
         let (bindings, _) = key_bindings();
         for binding in &bindings {

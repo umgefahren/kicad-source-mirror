@@ -52,6 +52,10 @@ fn main() {
     // already gone to stderr by then.
     let checks: &[(&str, fn())] = &[
         (
+            "properties validate and form one undo transaction",
+            live::properties_validate_and_undo,
+        ),
+        (
             "registry metadata is owned and retains shortcuts after session initialization",
             live::registry_metadata_is_owned,
         ),
@@ -146,6 +150,85 @@ fn main() {
 
 #[cfg(ksch_linked)]
 mod live {
+    pub fn properties_validate_and_undo() {
+        let mut session = Session::open(&kitchen_sink()).unwrap();
+        assert!(session.item_properties().is_err());
+        // Zoom in on R1 and click its drawn left edge, away from fields and the
+        // unfilled body centre. At page-fit scale those hit targets overlap.
+        session
+            .set_viewport(&Viewport {
+                center_x: 109.22 * 10_000.,
+                center_y: 40.64 * 10_000.,
+                scale: 0.004,
+                ..FIXTURE_VIEWPORT
+            })
+            .unwrap();
+        let camera = session.viewport().unwrap();
+        let screen = (
+            (108.204 * 10_000. - camera.center_x) * camera.scale + f64::from(camera.width_px) / 2.,
+            (40.64 * 10_000. - camera.center_y) * camera.scale + f64::from(camera.height_px) / 2.,
+        );
+        for event in [
+            InputEvent::PointerMotion {
+                screen,
+                modifiers: Modifiers::default(),
+            },
+            InputEvent::PointerDown {
+                screen,
+                button: PointerButton::Left,
+                modifiers: Modifiers::default(),
+            },
+            InputEvent::PointerUp {
+                screen,
+                button: PointerButton::Left,
+                modifiers: Modifiers::default(),
+            },
+        ] {
+            session.dispatch_input(&event).unwrap();
+        }
+        let original = session.item_properties().unwrap();
+        assert_eq!(original.entries[0].value, "R1");
+        session.apply_properties(&original).unwrap();
+        assert_eq!(session.editor_state().unwrap().undo_count, 0);
+        let mut invalid = original.clone();
+        invalid.entries[0].value = "bad reference".into();
+        assert!(session.apply_properties(&invalid).is_err());
+        assert_eq!(session.item_properties().unwrap(), original);
+        let mut changed = original.clone();
+        changed.entries[1].value = "47k".into();
+        session.apply_properties(&changed).unwrap();
+        assert_eq!(session.item_properties().unwrap(), changed);
+        assert_eq!(session.editor_state().unwrap().undo_count, 1);
+        assert!(session.undo().unwrap());
+        let read_selected = |session: &mut Session| {
+            if session.item_properties().is_err() {
+                for event in [
+                    InputEvent::PointerDown {
+                        screen,
+                        button: PointerButton::Left,
+                        modifiers: Modifiers::default(),
+                    },
+                    InputEvent::PointerUp {
+                        screen,
+                        button: PointerButton::Left,
+                        modifiers: Modifiers::default(),
+                    },
+                ] {
+                    session.dispatch_input(&event).unwrap();
+                }
+            }
+            session.item_properties().unwrap()
+        };
+        assert_eq!(read_selected(&mut session), original);
+        assert!(session.redo().unwrap());
+        assert_eq!(read_selected(&mut session), changed);
+        assert_eq!(session.editor_state().unwrap().undo_count, 1);
+        let mut stale = changed.clone();
+        stale.item_id = "stale".into();
+        assert!(session.apply_properties(&stale).is_err());
+        assert_eq!(session.item_properties().unwrap(), changed);
+    }
+
     pub fn registry_metadata_is_owned() {
         let _session = Session::open(&kitchen_sink())
             .expect("session initialization before registry snapshot");

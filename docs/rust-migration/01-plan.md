@@ -189,7 +189,12 @@ W and macOS shortcut hints are verified. Stage 5 has begun with GPUI
 Find/Replace over host search data, including normal schematic undo. Window
 close and editor Quit now protect unsaved changes.
 
-The remaining gaps are dialog workflows, shared tools that still require a
+Stage 5 rebuilds the schematic dialog workflows in GPUI-kit: typed properties,
+document operations, libraries, simulation, preferences and ERC. Native model
+services retain validation and undo. See [`09-dialog-workflows.md`](09-dialog-workflows.md)
+for the implemented workflows and specific limits.
+
+The remaining gaps include shared tools that still require a
 frame, and the host interfaces listed in `06-what-is-missing.md`. Most eeschema
 tool classes now initialize without a frame, including rotate and delete;
 initialization does not make their dialog actions usable. The action-registry

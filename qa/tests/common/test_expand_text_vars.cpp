@@ -30,6 +30,7 @@
 #include <env_vars.h>
 #include <jobs/job_export_pcb_stats.h>
 #include <pgm_base.h>
+#include <project.h>
 #include <settings/environment.h>
 #include <title_block.h>
 #include <wx/filename.h>
@@ -738,3 +739,32 @@ BOOST_AUTO_TEST_CASE( IsVersionedEnvVarPredicate )
 }
 
 BOOST_AUTO_TEST_SUITE_END()
+
+
+BOOST_AUTO_TEST_CASE( ExplicitProjectDirectoryOverridesActiveProjectEnvironment )
+{
+    struct SCOPED_PROJECT_ENV
+    {
+        wxString oldValue;
+        bool hadValue = wxGetEnv( wxS( "KIPRJMOD" ), &oldValue );
+        SCOPED_PROJECT_ENV() { wxSetEnv( wxS( "KIPRJMOD" ), wxS( "/active-project" ) ); }
+        ~SCOPED_PROJECT_ENV()
+        {
+            if( hadValue ) wxSetEnv( wxS( "KIPRJMOD" ), oldValue );
+            else wxUnsetEnv( wxS( "KIPRJMOD" ) );
+        }
+    } scopedEnv;
+    struct DOCUMENT_PROJECT : PROJECT
+    {
+        const wxString GetProjectDirectory() const override { return wxS( "/document-project" ); }
+    } project;
+
+    for( const wxString& uri : { wxS( "${KIPRJMOD}/Device.kicad_sym" ),
+                                  wxS( "$(KIPRJMOD)/Device.kicad_sym" ) } )
+    {
+        BOOST_CHECK_EQUAL( ExpandEnvVarSubstitutions( uri, &project ),
+                           wxString( "/document-project/Device.kicad_sym" ) );
+        BOOST_CHECK_EQUAL( ExpandEnvVarSubstitutions( uri, nullptr ),
+                           wxString( "/active-project/Device.kicad_sym" ) );
+    }
+}

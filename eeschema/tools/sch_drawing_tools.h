@@ -93,6 +93,7 @@ public:
     int DrawRuleArea( const TOOL_EVENT& aEvent );
     int DrawTable( const TOOL_EVENT& aEvent );
     int DrawSheet( const TOOL_EVENT& aEvent );
+    int DrawSheetHost( const TOOL_EVENT& aEvent, const wxString& aSource );
     int PlaceImage( const TOOL_EVENT& aEvent );
     int SyncSheetsPins( const TOOL_EVENT& aEvent );
     int SyncAllSheetsPins( const TOOL_EVENT& aEvent );

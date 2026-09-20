@@ -334,7 +334,8 @@ const std::set<ELECTRICAL_PINTYPE> DrivenPinTypes =
 extern void CheckDuplicatePins( LIB_SYMBOL* aSymbol, std::vector<wxString>& aMessages,
                                 UNITS_PROVIDER* aUnitsProvider );
 
-ERC_TESTER::ERC_TESTER( SCHEMATIC* aSchematic, bool aShowAllErrors ) :
+ERC_TESTER::ERC_TESTER( SCHEMATIC* aSchematic, bool aShowAllErrors, LIBRARY_MANAGER* aLibraries ) :
+        m_libraries( aLibraries ),
         m_schematic( aSchematic ),
         m_settings( aSchematic->ErcSettings() ),
         m_sheetList( aSchematic->BuildSheetListSortedByPageNumbers() ),
@@ -2711,8 +2712,10 @@ int ERC_TESTER::TestLibSymbolIssues()
 {
     wxCHECK( m_schematic, 0 );
 
-    LIBRARY_MANAGER&        manager = Pgm().GetLibraryManager();
-    SYMBOL_LIBRARY_ADAPTER* adapter = PROJECT_SCH::SymbolLibAdapter( &m_schematic->Project() );
+    LIBRARY_MANAGER&        manager = m_libraries ? *m_libraries : Pgm().GetLibraryManager();
+    SYMBOL_LIBRARY_ADAPTER* adapter = m_libraries
+        ? static_cast<SYMBOL_LIBRARY_ADAPTER*>( manager.Adapter( LIBRARY_TABLE_TYPE::SYMBOL ).value() )
+        : PROJECT_SCH::SymbolLibAdapter( &m_schematic->Project() );
     int                     err_count = 0;
 
     const bool captured = ADVANCED_CFG::GetCfg().m_ConnectivityEngine;

@@ -20,6 +20,7 @@ name = "eeschema-gpui"
 path = "src/main.rs"
 
 [dependencies]
+kicad-gal = { path = "../kicad-gal" }
 kicad-sch-ui.workspace = true
 kicad-sch-render.workspace = true
 # Opening a `.kicad_sch` rather than a recorded stream. Builds without the C++

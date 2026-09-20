@@ -318,6 +318,266 @@ impl Session {
         Ok(outcome(flags))
     }
 
+    /// Toggle a still-live ERC marker exclusion.
+    pub fn exclude_erc(&mut self, id: &str, excluded: bool) -> Result<(), Error> {
+        let id = CString::new(id).map_err(|_| Error::Failed {
+            status: Status::InvalidArg,
+            message: "Marker ID contains NUL".into(),
+        })?;
+        // SAFETY: live session and owned C string.
+        self.check(unsafe {
+            ffi::ksch_session_exclude_erc(self.raw.as_ptr(), id.as_ptr(), excluded as u32)
+        })
+    }
+    /// Run KiCad's ERC engine and copy an owned result snapshot.
+    pub fn run_erc(&mut self) -> Result<Vec<crate::ErcViolation>, Error> {
+        let mut raw = std::ptr::null_mut();
+        self.check(unsafe { ffi::ksch_session_run_erc(self.raw.as_ptr(), &mut raw) })?;
+        struct Snapshot(*mut ffi::ksch_erc_result);
+        impl Drop for Snapshot {
+            fn drop(&mut self) {
+                unsafe { ffi::ksch_erc_result_destroy(self.0) };
+            }
+        }
+        let snapshot = Snapshot(raw);
+        let count = unsafe { ffi::ksch_erc_result_count(snapshot.0) };
+        let mut results = Vec::with_capacity(count as usize);
+        for index in 0..count {
+            let mut item = MaybeUninit::<ffi::ksch_erc_violation>::uninit();
+            self.check(unsafe { ffi::ksch_erc_result_get(snapshot.0, index, item.as_mut_ptr()) })?;
+            let item = unsafe { item.assume_init() };
+            results.push(crate::ErcViolation {
+                marker_id: unsafe { CStr::from_ptr(item.marker_id) }
+                    .to_string_lossy()
+                    .into_owned(),
+                message: unsafe { CStr::from_ptr(item.message) }
+                    .to_string_lossy()
+                    .into_owned(),
+                severity: item.severity,
+                sheet_index: item.sheet_index,
+                x: item.x,
+                y: item.y,
+            });
+        }
+        Ok(results)
+    }
+
+    /// Read text properties, copying all callback strings before returning.
+    pub fn item_properties(&mut self) -> Result<crate::ItemProperties, Error> {
+        let mut data = self.read_properties(false)?;
+        // SAFETY: the session and output pointer remain live for the call.
+        self.check(unsafe {
+            ffi::ksch_session_property_capabilities(self.raw.as_ptr(), &mut data.capabilities)
+        })?;
+        Ok(data)
+    }
+
+    /// Read the current project's schematic setup controls.
+    pub fn setup_properties(&mut self) -> Result<crate::ItemProperties, Error> {
+        self.read_properties(true)
+    }
+
+    fn read_properties(&mut self, setup: bool) -> Result<crate::ItemProperties, Error> {
+        unsafe extern "C" fn visit(
+            context: *mut std::ffi::c_void,
+            id: *const std::ffi::c_char,
+            name: *const std::ffi::c_char,
+            value: *const std::ffi::c_char,
+            kind: u32,
+            choices: *const *const std::ffi::c_char,
+            choice_count: u32,
+        ) {
+            // SAFETY: the host calls synchronously with valid strings and our owned output pointer.
+            unsafe {
+                let out = &mut *context.cast::<crate::ItemProperties>();
+                out.item_id = CStr::from_ptr(id).to_string_lossy().into_owned();
+                out.entries.push(crate::PropertyEntry {
+                    name: CStr::from_ptr(name).to_string_lossy().into_owned(),
+                    value: CStr::from_ptr(value).to_string_lossy().into_owned(),
+                    kind,
+                    choices: (0..choice_count as usize)
+                        .map(|index| {
+                            CStr::from_ptr(*choices.add(index))
+                                .to_string_lossy()
+                                .into_owned()
+                        })
+                        .collect(),
+                });
+            }
+        }
+        let mut result = crate::ItemProperties::default();
+        // SAFETY: result remains alive for the synchronous callback.
+        self.check(unsafe {
+            if setup {
+                ffi::ksch_session_setup(
+                    self.raw.as_ptr(),
+                    Some(visit),
+                    (&mut result as *mut crate::ItemProperties).cast(),
+                )
+            } else {
+                ffi::ksch_session_item_properties(
+                    self.raw.as_ptr(),
+                    Some(visit),
+                    (&mut result as *mut crate::ItemProperties).cast(),
+                )
+            }
+        })?;
+        Ok(result)
+    }
+
+    /// Apply all text values as one undo transaction.
+    pub fn apply_properties(&mut self, data: &crate::ItemProperties) -> Result<(), Error> {
+        let string = |value: &str| {
+            CString::new(value).map_err(|_| Error::Failed {
+                status: Status::InvalidArg,
+                message: "Property text may not contain a NUL".into(),
+            })
+        };
+        let id = string(&data.item_id)?;
+        let values = data
+            .entries
+            .iter()
+            .map(|entry| string(&entry.value))
+            .collect::<Result<Vec<_>, _>>()?;
+        let pointers = values
+            .iter()
+            .map(|value| value.as_ptr())
+            .collect::<Vec<_>>();
+        // SAFETY: all strings and their pointer array remain valid for the call.
+        self.check(unsafe {
+            ffi::ksch_session_apply_properties(
+                self.raw.as_ptr(),
+                id.as_ptr(),
+                pointers.as_ptr(),
+                pointers.len() as u32,
+            )
+        })
+    }
+
+    /// Validate and save schematic setup to the document's project file.
+    pub fn apply_setup_properties(&mut self, data: &crate::ItemProperties) -> Result<(), Error> {
+        let values = data
+            .entries
+            .iter()
+            .map(|entry| {
+                CString::new(entry.value.as_str()).map_err(|_| Error::Failed {
+                    status: Status::InvalidArg,
+                    message: "Settings cannot contain NUL".into(),
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let pointers = values
+            .iter()
+            .map(|value| value.as_ptr())
+            .collect::<Vec<_>>();
+        self.check(unsafe {
+            ffi::ksch_session_apply_setup(
+                self.raw.as_ptr(),
+                pointers.as_ptr(),
+                pointers.len() as u32,
+            )
+        })
+    }
+
+    /// Configured library nicknames without loading all their symbols.
+    pub fn symbol_libraries(&mut self) -> Result<Vec<String>, Error> {
+        let mut names = std::ptr::null();
+        // SAFETY: live session and writable output, copied before another call.
+        self.check(unsafe { ffi::ksch_session_symbol_libraries(self.raw.as_ptr(), &mut names) })?;
+        Ok(unsafe { std::ffi::CStr::from_ptr(names) }
+            .to_string_lossy()
+            .lines()
+            .map(str::to_owned)
+            .collect())
+    }
+    /// Browse one installed library, or cached symbols when the library is empty.
+    pub fn browse_symbols(
+        &mut self,
+        library: &str,
+        power_only: bool,
+    ) -> Result<Vec<String>, Error> {
+        let library = CString::new(library).map_err(|_| Error::Failed {
+            status: Status::InvalidArg,
+            message: "library may not contain NUL".into(),
+        })?;
+        let mut ids = std::ptr::null();
+        // SAFETY: input string and output pointer valid for the call; copy the result immediately.
+        self.check(unsafe {
+            ffi::ksch_session_browse_symbols(
+                self.raw.as_ptr(),
+                library.as_ptr(),
+                power_only as u32,
+                &mut ids,
+            )
+        })?;
+        Ok(unsafe { std::ffi::CStr::from_ptr(ids) }
+            .to_string_lossy()
+            .lines()
+            .map(str::to_owned)
+            .collect())
+    }
+    /// Library IDs already cached in the loaded schematic.
+    pub fn list_symbols(&mut self) -> Result<Vec<String>, Error> {
+        let mut ids = std::ptr::null();
+        // SAFETY: live session and writable output; copied before another call.
+        self.check(unsafe { ffi::ksch_session_list_symbols(self.raw.as_ptr(), &mut ids) })?;
+        let text = unsafe { std::ffi::CStr::from_ptr(ids) }.to_string_lossy();
+        Ok(text.lines().map(str::to_owned).collect())
+    }
+
+    /// Record an isolated chooser preview and report available units/body styles.
+    pub fn preview_symbol(
+        &mut self,
+        id: &str,
+        unit: u32,
+        body: u32,
+    ) -> Result<(Stream, u32, u32), Error> {
+        let id = CString::new(id).map_err(|_| Error::Failed {
+            status: Status::InvalidArg,
+            message: "Symbol ID contains NUL".into(),
+        })?;
+        let mut view = empty_view();
+        let (mut units, mut bodies) = (0, 0);
+        // SAFETY: live session and owned out parameters; copy before another call.
+        self.check(unsafe {
+            ffi::ksch_session_preview_symbol(
+                self.raw.as_ptr(),
+                id.as_ptr(),
+                unit,
+                body,
+                &mut units,
+                &mut bodies,
+                &mut view,
+            )
+        })?;
+        // SAFETY: preview buffer remains owned by this exclusively borrowed session.
+        Ok((
+            unsafe { StreamView::from_raw(&view) }?.to_owned_stream(),
+            units,
+            bodies,
+        ))
+    }
+    /// Place a chosen unit and body style.
+    pub fn place_symbol_variant(&mut self, id: &str, unit: u32, body: u32) -> Result<(), Error> {
+        let id = CString::new(id).map_err(|_| Error::Failed {
+            status: Status::InvalidArg,
+            message: "Symbol ID contains NUL".into(),
+        })?;
+        // SAFETY: live session and valid UTF-8 C string.
+        self.check(unsafe {
+            ffi::ksch_session_place_symbol_variant(self.raw.as_ptr(), id.as_ptr(), unit, body)
+        })
+    }
+    /// Begin interactive placement of an installed or cached library symbol.
+    pub fn place_symbol(&mut self, id: &str) -> Result<(), Error> {
+        let id = CString::new(id).map_err(|_| Error::Failed {
+            status: Status::InvalidArg,
+            message: "symbol ID may not contain NUL".into(),
+        })?;
+        // SAFETY: live session and string valid throughout the call.
+        self.check(unsafe { ffi::ksch_session_place_symbol(self.raw.as_ptr(), id.as_ptr()) })
+    }
+
     /// Copy search terms to the host and update match highlighting.
     pub fn set_search_data(&mut self, data: &crate::SearchData) -> Result<(), Error> {
         let string = |value: &str| {
@@ -698,4 +958,543 @@ fn empty_view() -> kgds_stream_view {
     // SAFETY: the struct is plain data: integers and raw pointers, for all of
     // which all-zero is a valid value.
     unsafe { MaybeUninit::<kgds_stream_view>::zeroed().assume_init() }
+}
+
+impl Session {
+    /// Snapshot editable document workflow fields. Strings are copied during the callback.
+    pub fn document_workflow(&mut self, kind: u32) -> Result<Vec<(String, String)>, Error> {
+        unsafe extern "C" fn visit(
+            context: *mut std::ffi::c_void,
+            name: *const std::ffi::c_char,
+            value: *const std::ffi::c_char,
+        ) {
+            // SAFETY: callback is synchronous, with live UTF-8 strings and our vector context.
+            unsafe {
+                (&mut *context.cast::<Vec<(String, String)>>()).push((
+                    CStr::from_ptr(name).to_string_lossy().into_owned(),
+                    CStr::from_ptr(value).to_string_lossy().into_owned(),
+                ));
+            }
+        }
+        let mut result = Vec::<(String, String)>::new();
+        // SAFETY: the vector and session live throughout the callback.
+        self.check(unsafe {
+            ffi::ksch_session_document_workflow(
+                self.raw.as_ptr(),
+                kind,
+                Some(visit),
+                (&mut result as *mut Vec<(String, String)>).cast(),
+            )
+        })?;
+        Ok(result)
+    }
+    /// Apply a validated document workflow through the native model service.
+    pub fn apply_document_workflow(&mut self, kind: u32, values: &[String]) -> Result<(), Error> {
+        let values = values
+            .iter()
+            .map(|s| {
+                CString::new(s.as_str()).map_err(|_| Error::Failed {
+                    status: Status::InvalidArg,
+                    message: "Text may not contain NUL".into(),
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let pointers = values.iter().map(|s| s.as_ptr()).collect::<Vec<_>>();
+        // SAFETY: pointer array and its strings remain live for the synchronous call.
+        self.check(unsafe {
+            ffi::ksch_session_apply_document_workflow(
+                self.raw.as_ptr(),
+                kind,
+                pointers.as_ptr(),
+                pointers.len() as u32,
+            )
+        })
+    }
+}
+
+impl Session {
+    /// Read the project (false) or global (true) symbol library table.
+    pub fn library_table(&mut self, global: bool) -> Result<Vec<crate::LibraryRow>, Error> {
+        unsafe extern "C" fn collect(
+            context: *mut std::ffi::c_void,
+            row: *const ffi::ksch_library_row,
+        ) {
+            // SAFETY: the host calls synchronously with borrowed valid strings and our Vec pointer.
+            unsafe {
+                let output = &mut *context.cast::<Vec<crate::LibraryRow>>();
+                let row = &*row;
+                let text = |ptr| CStr::from_ptr(ptr).to_string_lossy().into_owned();
+                output.push(crate::LibraryRow {
+                    name: text(row.name),
+                    kind: text(row.kind),
+                    uri: text(row.uri),
+                    options: text(row.options),
+                    description: text(row.description),
+                    enabled: row.enabled != 0,
+                    visible: row.visible != 0,
+                });
+            }
+        }
+        let mut rows = Vec::new();
+        // SAFETY: live session, synchronous callback, correctly typed context.
+        self.check(unsafe {
+            ffi::ksch_session_library_table(
+                self.raw.as_ptr(),
+                global as u32,
+                Some(collect),
+                (&mut rows as *mut Vec<crate::LibraryRow>).cast(),
+            )
+        })?;
+        Ok(rows)
+    }
+    /// Validate and persist a symbol library table through KiCad's atomic writer.
+    pub fn save_library_table(
+        &mut self,
+        global: bool,
+        rows: &[crate::LibraryRow],
+    ) -> Result<(), Error> {
+        let strings = rows
+            .iter()
+            .map(|r| {
+                [&r.name, &r.kind, &r.uri, &r.options, &r.description]
+                    .into_iter()
+                    .map(|s| CString::new(s.as_str()))
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| Error::Failed {
+                status: Status::InvalidArg,
+                message: "Library values may not contain NUL".into(),
+            })?;
+        let raw: Vec<_> = rows
+            .iter()
+            .zip(&strings)
+            .map(|(r, s)| ffi::ksch_library_row {
+                name: s[0].as_ptr(),
+                kind: s[1].as_ptr(),
+                uri: s[2].as_ptr(),
+                options: s[3].as_ptr(),
+                description: s[4].as_ptr(),
+                enabled: r.enabled as u32,
+                visible: r.visible as u32,
+            })
+            .collect();
+        // SAFETY: strings and rows remain live for the synchronous native call.
+        self.check(unsafe {
+            ffi::ksch_session_save_library_table(
+                self.raw.as_ptr(),
+                global as u32,
+                raw.as_ptr(),
+                raw.len() as u32,
+            )
+        })
+    }
+}
+
+impl Session {
+    /// Read simulation model, analysis configuration, or result vectors.
+    pub fn simulation_workflow(&mut self, kind: u32) -> Result<Vec<(String, String)>, Error> {
+        unsafe extern "C" fn collect(
+            context: *mut std::ffi::c_void,
+            name: *const std::ffi::c_char,
+            value: *const std::ffi::c_char,
+        ) {
+            // SAFETY: synchronous visitor receives valid borrowed strings and Vec context.
+            unsafe {
+                (&mut *context.cast::<Vec<(String, String)>>()).push((
+                    CStr::from_ptr(name).to_string_lossy().into_owned(),
+                    CStr::from_ptr(value).to_string_lossy().into_owned(),
+                ));
+            }
+        }
+        let mut rows = Vec::new();
+        // SAFETY: live session and visitor context outlive the call.
+        self.check(unsafe {
+            ffi::ksch_session_simulation_workflow(
+                self.raw.as_ptr(),
+                kind,
+                Some(collect),
+                (&mut rows as *mut Vec<(String, String)>).cast(),
+            )
+        })?;
+        Ok(rows)
+    }
+    /// Apply model fields, run an analysis, or stop simulation.
+    pub fn apply_simulation_workflow(&mut self, kind: u32, values: &[String]) -> Result<(), Error> {
+        let strings: Vec<_> = values
+            .iter()
+            .map(|s| CString::new(s.as_str()))
+            .collect::<Result<_, _>>()
+            .map_err(|_| Error::Failed {
+                status: Status::InvalidArg,
+                message: "Simulation values may not contain NUL".into(),
+            })?;
+        let pointers: Vec<_> = strings.iter().map(|s| s.as_ptr()).collect();
+        // SAFETY: all owned strings remain live throughout the synchronous call.
+        self.check(unsafe {
+            ffi::ksch_session_apply_simulation_workflow(
+                self.raw.as_ptr(),
+                kind,
+                pointers.as_ptr(),
+                pointers.len() as u32,
+            )
+        })
+    }
+}
+
+impl Session {
+    /// Create a selected item's custom field, or delete it when value is None.
+    pub fn edit_custom_field(
+        &mut self,
+        item_id: &str,
+        name: &str,
+        value: Option<&str>,
+    ) -> Result<(), Error> {
+        let string = |text: &str| {
+            CString::new(text).map_err(|_| Error::Failed {
+                status: Status::InvalidArg,
+                message: "Field text may not contain NUL".into(),
+            })
+        };
+        let id = string(item_id)?;
+        let name = string(name)?;
+        let value = value.map(string).transpose()?;
+        // SAFETY: session and optional NUL-terminated strings outlive this synchronous call.
+        self.check(unsafe {
+            ffi::ksch_session_edit_custom_field(
+                self.raw.as_ptr(),
+                id.as_ptr(),
+                name.as_ptr(),
+                value
+                    .as_ref()
+                    .map_or(std::ptr::null(), |value| value.as_ptr()),
+            )
+        })
+    }
+}
+
+impl Session {
+    /// Load Database or HTTP connection settings for a configured library.
+    pub fn configure_library(
+        &mut self,
+        global: bool,
+        nickname: &str,
+    ) -> Result<Vec<(String, String)>, Error> {
+        unsafe extern "C" fn collect(
+            context: *mut std::ffi::c_void,
+            name: *const std::ffi::c_char,
+            value: *const std::ffi::c_char,
+        ) {
+            // SAFETY: synchronous visitor with borrowed valid strings and our typed Vec context.
+            unsafe {
+                (&mut *context.cast::<Vec<(String, String)>>()).push((
+                    CStr::from_ptr(name).to_string_lossy().into_owned(),
+                    CStr::from_ptr(value).to_string_lossy().into_owned(),
+                ));
+            }
+        }
+        let nickname = CString::new(nickname).map_err(|_| Error::Failed {
+            status: Status::InvalidArg,
+            message: "Library name contains NUL".into(),
+        })?;
+        let mut rows = Vec::new();
+        // SAFETY: valid session, nickname and context outlive the synchronous call.
+        self.check(unsafe {
+            ffi::ksch_session_configure_library(
+                self.raw.as_ptr(),
+                global as u32,
+                nickname.as_ptr(),
+                Some(collect),
+                (&mut rows as *mut Vec<(String, String)>).cast(),
+            )
+        })?;
+        Ok(rows)
+    }
+}
+
+impl Session {
+    /// Relink a hierarchical sheet to a file, clearing undo history after validation.
+    pub fn relink_sheet(&mut self, item_id: &str, path: &str) -> Result<(), Error> {
+        let string = |text: &str| {
+            CString::new(text).map_err(|_| Error::Failed {
+                status: Status::InvalidArg,
+                message: "Sheet text may not contain NUL".into(),
+            })
+        };
+        let id = string(item_id)?;
+        let path = string(path)?;
+        // SAFETY: the session and NUL-terminated strings outlive the synchronous call.
+        self.check(unsafe {
+            ffi::ksch_session_relink_sheet(self.raw.as_ptr(), id.as_ptr(), path.as_ptr())
+        })
+    }
+}
+
+impl Session {
+    /// Consume a properties request from the active placement tool.
+    pub fn take_pending_properties(&mut self) -> Result<bool, Error> {
+        let mut pending = 0;
+        // SAFETY: output and session remain valid throughout the call.
+        self.check(unsafe {
+            ffi::ksch_session_take_pending_properties(self.raw.as_ptr(), &mut pending)
+        })?;
+        Ok(pending != 0)
+    }
+}
+
+impl Session {
+    /// Snapshot sheet-pin synchronization choices, with a stable model fingerprint.
+    pub fn sheet_pin_properties(&mut self, all: bool) -> Result<crate::ItemProperties, Error> {
+        unsafe extern "C" fn visit(
+            context: *mut std::ffi::c_void,
+            id: *const std::ffi::c_char,
+            name: *const std::ffi::c_char,
+            value: *const std::ffi::c_char,
+            kind: u32,
+            choices: *const *const std::ffi::c_char,
+            count: u32,
+        ) {
+            // SAFETY: the host calls synchronously with borrowed strings and our owned output.
+            unsafe {
+                let data = &mut *context.cast::<crate::ItemProperties>();
+                let text = |ptr| CStr::from_ptr(ptr).to_string_lossy().into_owned();
+                data.item_id = text(id);
+                data.entries.push(crate::PropertyEntry {
+                    name: text(name),
+                    value: text(value),
+                    kind,
+                    choices: (0..count as usize).map(|i| text(*choices.add(i))).collect(),
+                });
+            }
+        }
+        let mut data = crate::ItemProperties::default();
+        // SAFETY: the session and output live throughout the synchronous visitor.
+        self.check(unsafe {
+            ffi::ksch_session_sheet_pin_properties(
+                self.raw.as_ptr(),
+                all.into(),
+                Some(visit),
+                (&mut data as *mut crate::ItemProperties).cast(),
+            )
+        })?;
+        Ok(data)
+    }
+    /// Apply reviewed synchronization choices as one undo transaction.
+    pub fn apply_sheet_pin_properties(
+        &mut self,
+        all: bool,
+        data: &crate::ItemProperties,
+    ) -> Result<(), Error> {
+        let string = |s: &str| {
+            CString::new(s).map_err(|_| Error::Failed {
+                status: Status::InvalidArg,
+                message: "Synchronization text may not contain NUL".into(),
+            })
+        };
+        let id = string(&data.item_id)?;
+        let strings = data
+            .entries
+            .iter()
+            .map(|entry| string(&entry.value))
+            .collect::<Result<Vec<_>, _>>()?;
+        let pointers = strings
+            .iter()
+            .map(|value| value.as_ptr())
+            .collect::<Vec<_>>();
+        // SAFETY: the session, string array and fingerprint live for this synchronous call.
+        self.check(unsafe {
+            ffi::ksch_session_apply_sheet_pin_properties(
+                self.raw.as_ptr(),
+                all.into(),
+                id.as_ptr(),
+                pointers.as_ptr(),
+                pointers.len() as u32,
+            )
+        })
+    }
+}
+
+impl Session {
+    /// Snapshot application preferences.
+    pub fn preferences(&mut self) -> Result<crate::ItemProperties, Error> {
+        unsafe extern "C" fn visit(
+            context: *mut std::ffi::c_void,
+            id: *const std::ffi::c_char,
+            name: *const std::ffi::c_char,
+            value: *const std::ffi::c_char,
+            kind: u32,
+            choices: *const *const std::ffi::c_char,
+            count: u32,
+        ) {
+            // SAFETY: the host calls synchronously with borrowed strings and our owned output.
+            unsafe {
+                let data = &mut *context.cast::<crate::ItemProperties>();
+                let text = |ptr| CStr::from_ptr(ptr).to_string_lossy().into_owned();
+                data.item_id = text(id);
+                data.entries.push(crate::PropertyEntry {
+                    name: text(name),
+                    value: text(value),
+                    kind,
+                    choices: (0..count as usize).map(|i| text(*choices.add(i))).collect(),
+                });
+            }
+        }
+        let mut data = crate::ItemProperties::default();
+        // SAFETY: the session and output live throughout the synchronous visitor.
+        self.check(unsafe {
+            ffi::ksch_session_preferences(
+                self.raw.as_ptr(),
+                Some(visit),
+                (&mut data as *mut crate::ItemProperties).cast(),
+            )
+        })?;
+        Ok(data)
+    }
+    pub fn graphics_import_properties(&mut self) -> Result<crate::ItemProperties, Error> {
+        unsafe extern "C" fn visit(
+            context: *mut std::ffi::c_void,
+            id: *const std::ffi::c_char,
+            name: *const std::ffi::c_char,
+            value: *const std::ffi::c_char,
+            kind: u32,
+            choices: *const *const std::ffi::c_char,
+            count: u32,
+        ) {
+            // SAFETY: the host calls synchronously with borrowed strings and our owned output.
+            unsafe {
+                let data = &mut *context.cast::<crate::ItemProperties>();
+                let text = |ptr| CStr::from_ptr(ptr).to_string_lossy().into_owned();
+                data.item_id = text(id);
+                data.entries.push(crate::PropertyEntry {
+                    name: text(name),
+                    value: text(value),
+                    kind,
+                    choices: (0..count as usize).map(|i| text(*choices.add(i))).collect(),
+                });
+            }
+        }
+        let mut data = crate::ItemProperties::default();
+        // SAFETY: the session and output live throughout the synchronous visitor.
+        self.check(unsafe {
+            ffi::ksch_session_graphics_import_properties(
+                self.raw.as_ptr(),
+                Some(visit),
+                (&mut data as *mut crate::ItemProperties).cast(),
+            )
+        })?;
+        Ok(data)
+    }
+    pub fn image_properties(&mut self) -> Result<crate::ItemProperties, Error> {
+        unsafe extern "C" fn visit(
+            context: *mut std::ffi::c_void,
+            id: *const std::ffi::c_char,
+            name: *const std::ffi::c_char,
+            value: *const std::ffi::c_char,
+            kind: u32,
+            choices: *const *const std::ffi::c_char,
+            count: u32,
+        ) {
+            // SAFETY: the host calls synchronously with borrowed strings and our owned output.
+            unsafe {
+                let data = &mut *context.cast::<crate::ItemProperties>();
+                let text = |ptr| CStr::from_ptr(ptr).to_string_lossy().into_owned();
+                data.item_id = text(id);
+                data.entries.push(crate::PropertyEntry {
+                    name: text(name),
+                    value: text(value),
+                    kind,
+                    choices: (0..count as usize).map(|i| text(*choices.add(i))).collect(),
+                });
+            }
+        }
+        let mut data = crate::ItemProperties::default();
+        // SAFETY: the session and output live throughout the synchronous visitor.
+        self.check(unsafe {
+            ffi::ksch_session_image_properties(
+                self.raw.as_ptr(),
+                Some(visit),
+                (&mut data as *mut crate::ItemProperties).cast(),
+            )
+        })?;
+        Ok(data)
+    }
+    /// Apply application preferences to their native stores.
+    pub fn apply_preferences(&mut self, data: &crate::ItemProperties) -> Result<(), Error> {
+        let string = |s: &str| {
+            CString::new(s).map_err(|_| Error::Failed {
+                status: Status::InvalidArg,
+                message: "Synchronization text may not contain NUL".into(),
+            })
+        };
+
+        let strings = data
+            .entries
+            .iter()
+            .map(|entry| string(&entry.value))
+            .collect::<Result<Vec<_>, _>>()?;
+        let pointers = strings
+            .iter()
+            .map(|value| value.as_ptr())
+            .collect::<Vec<_>>();
+        // SAFETY: the session, string array and fingerprint live for this synchronous call.
+        self.check(unsafe {
+            ffi::ksch_session_apply_preferences(
+                self.raw.as_ptr(),
+                pointers.as_ptr(),
+                pointers.len() as u32,
+            )
+        })
+    }
+    pub fn apply_graphics_import(&mut self, data: &crate::ItemProperties) -> Result<(), Error> {
+        let string = |s: &str| {
+            CString::new(s).map_err(|_| Error::Failed {
+                status: Status::InvalidArg,
+                message: "Synchronization text may not contain NUL".into(),
+            })
+        };
+
+        let strings = data
+            .entries
+            .iter()
+            .map(|entry| string(&entry.value))
+            .collect::<Result<Vec<_>, _>>()?;
+        let pointers = strings
+            .iter()
+            .map(|value| value.as_ptr())
+            .collect::<Vec<_>>();
+        // SAFETY: the session, string array and fingerprint live for this synchronous call.
+        self.check(unsafe {
+            ffi::ksch_session_apply_graphics_import(
+                self.raw.as_ptr(),
+                pointers.as_ptr(),
+                pointers.len() as u32,
+            )
+        })
+    }
+    pub fn apply_image_properties(&mut self, data: &crate::ItemProperties) -> Result<(), Error> {
+        let string = |s: &str| {
+            CString::new(s).map_err(|_| Error::Failed {
+                status: Status::InvalidArg,
+                message: "Synchronization text may not contain NUL".into(),
+            })
+        };
+
+        let strings = data
+            .entries
+            .iter()
+            .map(|entry| string(&entry.value))
+            .collect::<Result<Vec<_>, _>>()?;
+        let pointers = strings
+            .iter()
+            .map(|value| value.as_ptr())
+            .collect::<Vec<_>>();
+        // SAFETY: the session, string array and fingerprint live for this synchronous call.
+        self.check(unsafe {
+            ffi::ksch_session_apply_image_properties(
+                self.raw.as_ptr(),
+                pointers.as_ptr(),
+                pointers.len() as u32,
+            )
+        })
+    }
 }

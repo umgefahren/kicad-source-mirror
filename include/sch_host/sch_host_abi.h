@@ -104,7 +104,7 @@ extern "C" {
  * signature. A caller built against a different version must refuse to run
  * rather than reinterpret a struct.
  */
-#define KSCH_ABI_VERSION 4u
+#define KSCH_ABI_VERSION 5u
 
 /* --------------------------------------------------------------- status */
 
@@ -876,6 +876,22 @@ typedef struct ksch_search_data
     uint32_t replace_references, search_all_fields, search_all_pins, replace_mode, active;
 } ksch_search_data;
 
+/** Installed library nicknames, newline separated; no symbol libraries are loaded. */
+KISCH_API ksch_status ksch_session_symbol_libraries( ksch_session*, const char** names );
+/** Load names from one library only. Empty library selects cached schematic symbols.
+ * Result is borrowed until the next symbol list/browse call. */
+KISCH_API ksch_status ksch_session_browse_symbols( ksch_session*, const char* library,
+                                                uint32_t power_only, const char** ids );
+/** Newline-separated cached library IDs; borrowed until the next symbol list call. */
+KISCH_API ksch_status ksch_session_list_symbols( ksch_session*, const char** ids );
+/** Resolve a cached or installed library ID and begin cancellable interactive placement. */
+KISCH_API ksch_status ksch_session_place_symbol( ksch_session*, const char* id );
+/** Place an explicitly selected unit/body style. */
+KISCH_API ksch_status ksch_session_place_symbol_variant( ksch_session*, const char*, uint32_t, uint32_t );
+/** Preview uses a separate recording buffer, borrowed until next preview/session destruction. */
+KISCH_API ksch_status ksch_session_preview_symbol( ksch_session*, const char*, uint32_t, uint32_t,
+                                                uint32_t*, uint32_t*, kgds_stream_view* );
+
 typedef struct ksch_search_result
 {
     uint32_t found, wrapped, replaced;
@@ -885,6 +901,122 @@ typedef struct ksch_search_result
 KISCH_API ksch_status ksch_session_set_search_data( ksch_session*, const ksch_search_data* );
 /** Read the last navigation result after running the existing Find/Replace actions. */
 KISCH_API ksch_status ksch_session_search_result( ksch_session*, ksch_search_result* );
+
+/** Property editor kinds; distances are millimetres, angles are degrees. */
+enum ksch_property_kind { KSCH_PROPERTY_TEXT, KSCH_PROPERTY_BOOL, KSCH_PROPERTY_INTEGER,
+    KSCH_PROPERTY_NUMBER, KSCH_PROPERTY_DISTANCE, KSCH_PROPERTY_ANGLE,
+    KSCH_PROPERTY_COLOR, KSCH_PROPERTY_CHOICE, KSCH_PROPERTY_MULTILINE };
+/** Selected item model properties. Strings passed to the visitor live for that call only.
+ * Applying requires the same selected item UUID and property count, and is one undo step. */
+typedef void (*ksch_property_visitor)( void*, const char* item_id, const char* name,
+                                      const char* value, uint32_t kind, const char* const* choices,
+                                      uint32_t choice_count );
+KISCH_API ksch_status ksch_session_item_properties( ksch_session*, ksch_property_visitor, void* );
+KISCH_API ksch_status ksch_session_apply_properties( ksch_session*, const char* item_id,
+                                                    const char* const* values, uint32_t count );
+/** Typed schematic setup fields; applying validates all fields before saving the project. */
+KISCH_API ksch_status ksch_session_setup( ksch_session*, ksch_property_visitor, void* );
+KISCH_API ksch_status ksch_session_apply_setup( ksch_session*, const char* const*, uint32_t );
+
+/** Consume an asynchronous item-properties request from the active placement tool. */
+KISCH_API ksch_status ksch_session_take_pending_properties( ksch_session*, int* pending );
+
+/** Selected item capabilities: bit 0 custom fields, bit 1 hierarchical sheet relinking. */
+KISCH_API ksch_status ksch_session_property_capabilities( ksch_session*, uint32_t* capabilities );
+
+/** Create a custom field, or delete it when value is null. One undo transaction. */
+KISCH_API ksch_status ksch_session_edit_custom_field( ksch_session*, const char* item_id,
+                                                        const char* name, const char* value );
+
+/** Relink a selected sheet. Clears undo history after successful validation. */
+/** Read SVG/DXF graphics import options; dimensions are millimeters. */
+KISCH_API ksch_status ksch_session_image_properties( ksch_session*, ksch_property_visitor, void* );
+KISCH_API ksch_status ksch_session_apply_image_properties( ksch_session*, const char* const*, uint32_t );
+KISCH_API ksch_status ksch_session_graphics_import_properties( ksch_session*, ksch_property_visitor, void* );
+/** Import using the ordered typed options in one undoable transaction. */
+KISCH_API ksch_status ksch_session_apply_graphics_import( ksch_session*, const char* const*, uint32_t );
+
+KISCH_API ksch_status ksch_session_relink_sheet( ksch_session*, const char* item_id, const char* path );
+
+/** Compare hierarchical labels and sheet pins, producing explicit synchronization choices. */
+KISCH_API ksch_status ksch_session_sheet_pin_properties( ksch_session*, int all,
+                                                       ksch_property_visitor, void* );
+KISCH_API ksch_status ksch_session_apply_sheet_pin_properties( ksch_session*, int all,
+                    const char* identity, const char* const* values, uint32_t count );
+
+/** Application preferences (persisted, separate from document undo). */
+KISCH_API ksch_status ksch_session_preferences( ksch_session*, ksch_property_visitor, void* );
+KISCH_API ksch_status ksch_session_apply_preferences( ksch_session*, const char* const* values, uint32_t count );
+
+/** Owned ERC snapshot. Strings remain valid until ksch_erc_result_destroy(). */
+typedef struct ksch_erc_result ksch_erc_result;
+typedef struct ksch_erc_violation
+{
+    const char* message;
+    uint32_t severity;
+    uint32_t sheet_index;
+    double x, y;
+    const char* marker_id; /**< Stable marker UUID; borrowed from result. */
+} ksch_erc_violation;
+KISCH_API ksch_status ksch_session_run_erc( ksch_session*, ksch_erc_result** );
+KISCH_API uint32_t ksch_erc_result_count( const ksch_erc_result* );
+/** Change a still-live marker exclusion; rejects stale UUIDs. */
+KISCH_API ksch_status ksch_session_exclude_erc( ksch_session*, const char* marker_id, uint32_t excluded );
+KISCH_API ksch_status ksch_erc_result_get( const ksch_erc_result*, uint32_t, ksch_erc_violation* );
+KISCH_API void ksch_erc_result_destroy( ksch_erc_result* );
+
+/** Document workflows use synchronous borrowed UTF-8 callbacks and validated value arrays.
+ * Kinds: 0 annotate, 1 increment, 2 page, 3 netlist, 4 plot, 5 print PDF,
+ * 6 BOM, 7 fields, 8 change symbols, 9 update symbols, 10 remap, 11 rescue, 12 library IDs,
+ * 13 bus aliases, 14 netclasses, 15 net chain setup, 16 create net chain,
+ * 17 global text/graphics, 18 import settings, 19 migrate buses, 20 PCB backannotation,
+ * 21 resolve field name case conflicts, 22 data source package management, 23 import schematic. */
+typedef void (*ksch_document_visitor)( void*, const char* name, const char* value );
+KISCH_API ksch_status ksch_session_document_workflow( ksch_session*, uint32_t,
+                                                     ksch_document_visitor, void* );
+KISCH_API ksch_status ksch_session_apply_document_workflow( ksch_session*, uint32_t,
+                                                           const char* const*, uint32_t );
+
+/** Symbol library tables, scope 0 = project, 1 = global. Strings are borrowed during visitor. */
+typedef struct ksch_library_row {
+    const char* name;
+    const char* kind;
+    const char* uri;
+    const char* options;
+    const char* description;
+    uint32_t enabled;
+    uint32_t visible;
+} ksch_library_row;
+typedef void (*ksch_library_visitor)( void*, const ksch_library_row* );
+KISCH_API ksch_status ksch_session_library_table( ksch_session*, uint32_t,
+                                                 ksch_library_visitor, void* );
+KISCH_API ksch_status ksch_session_save_library_table( ksch_session*, uint32_t,
+                                                      const ksch_library_row*, uint32_t );
+
+/** Frame-free simulation and library workflows. Values follow visitor order:
+ * 0 selected simulation model (UUID checked), 1 analysis/run configuration,
+ * 2 status/vectors (apply stops), 3 selected library symbol properties,
+ * 4 new library symbol, 5 selected library pin table, 6 copy/import symbol,
+ * 7 connection settings (read with configure_library), 8 library fields,
+ * 9 fields from the selected symbol's inheritance family, 10 remote provider
+ * settings, 11 refresh remote metadata (apply only), 12 sign out (apply only),
+ * 13 simulation numeric format, 14 user signal expression, 15 simulator preferences,
+ * 16 update inherited fields, 17 selected numeric result vector, 18 library pin maps,
+ * 19 model parameters/pins, 20 library/IBIS draft selection, 21 parser report,
+ * 22 schematic-cached pin maps (undoable; no library file write). Read-only choice
+ * metadata (Device/Type choice, Available vector, Wheel actions, Sample) is omitted
+ * from apply; result-vector apply takes the selected name as its first value.
+ * Apply validates complete input before mutation. Library operations explicitly
+ * persist files; new/copy operations reject existing destination symbols.
+ * Visitors receive synchronous borrowed UTF-8, never model pointers. */
+KISCH_API ksch_status ksch_session_simulation_workflow( ksch_session*, uint32_t,
+                                                       ksch_document_visitor, void* );
+KISCH_API ksch_status ksch_session_apply_simulation_workflow( ksch_session*, uint32_t,
+                                                             const char* const*, uint32_t );
+
+/** Open a configured Database/HTTP symbol library's settings without connecting to it. */
+KISCH_API ksch_status ksch_session_configure_library( ksch_session*, uint32_t global,
+                                                     const char* nickname, ksch_document_visitor, void* );
 
 #ifdef __cplusplus
 } /* extern "C" */

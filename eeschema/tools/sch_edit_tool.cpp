@@ -2631,6 +2631,14 @@ int SCH_EDIT_TOOL::EditField( const TOOL_EVENT& aEvent )
 
     bool      clearSelection = sel.IsHover();
     EDA_ITEM* item = sel.Front();
+    if( !m_frame )
+    {
+        if( item->Type() == SCH_PIN_T ) item = item->GetParent();
+        m_selectionTool->ClearSelection( true );
+        m_selectionTool->AddItemToSel( static_cast<SCH_ITEM*>( item ) );
+        m_editor->RequestItemProperties( static_cast<SCH_ITEM*>( item ) );
+        return 0;
+    }
 
     if( item->Type() == SCH_FIELD_T )
     {
@@ -3014,10 +3022,12 @@ int SCH_EDIT_TOOL::CycleBodyStyle( const TOOL_EVENT& aEvent )
 
 int SCH_EDIT_TOOL::Properties( const TOOL_EVENT& aEvent )
 {
-    // Every branch of this is a properties dialog, an info bar or the properties panel.
-    // Without a window to parent them there is nothing it can do.
     if( !m_frame )
+    {
+        SCH_SELECTION& selected = m_selectionTool->RequestSelection();
+        if( selected.Size() == 1 ) m_editor->RequestItemProperties( static_cast<SCH_ITEM*>( selected.Front() ) );
         return 0;
+    }
 
     SCH_SELECTION& selection = m_selectionTool->RequestSelection();
     bool           clearSelection = selection.IsHover();
@@ -3165,10 +3175,16 @@ int SCH_EDIT_TOOL::Properties( const TOOL_EVENT& aEvent )
 
 void SCH_EDIT_TOOL::EditProperties( EDA_ITEM* aItem )
 {
-    // Every case below is a properties dialog. Without a window to parent them there is
-    // nothing this can do, and nothing it could compute instead.
     if( !m_frame )
+    {
+        if( auto* item = dynamic_cast<SCH_ITEM*>( aItem ) )
+        {
+            m_selectionTool->ClearSelection( true );
+            m_selectionTool->AddItemToSel( item );
+            m_editor->RequestItemProperties( item );
+        }
         return;
+    }
 
     switch( aItem->Type() )
     {

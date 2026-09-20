@@ -25,6 +25,9 @@
  *   handler, which is the one way this seam could take a process down.
  */
 
+#include <cmath>
+#include <chrono>
+#include <thread>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -44,6 +47,11 @@
 #include <sch_screen.h>
 #include <schematic.h>
 #include <wx/filename.h>
+#include <wx/image.h>
+#include <wx/wfstream.h>
+#include <wx/zipstrm.h>
+#include <env_vars.h>
+#include <settings/environment.h>
 
 // Code under test
 #include <host/sch_host.h>
@@ -1691,7 +1699,8 @@ BOOST_AUTO_TEST_CASE( AnEditSurvivesASaveAndAReload )
         commit.Push( wxT( "Rename label" ) );
 
         BOOST_REQUIRE( host.IsModified() );
-        BOOST_REQUIRE_MESSAGE( host.Save(), host.GetLastError().ToStdString() );
+        // Exercise the toolbar/hotkey action route, not just the direct Save API.
+        BOOST_REQUIRE( host.RunActionByName( "common.Control.save" ) );
 
         // Saving clears the modified flags, which is what a UI's title bar reads.
         BOOST_CHECK( !host.IsModified() );
@@ -1816,6 +1825,93 @@ BOOST_AUTO_TEST_SUITE_END()
 
 
 BOOST_AUTO_TEST_SUITE( SchHostAbi )
+
+BOOST_AUTO_TEST_CASE( SymbolChooserBrowsesProjectLibrary )
+{
+    std::unique_ptr<ksch_session, decltype(&ksch_session_destroy)> session(
+            ksch_session_create(), ksch_session_destroy );
+    BOOST_REQUIRE( session );
+    BOOST_REQUIRE_EQUAL( ksch_session_load_file( session.get(),
+            eeschemaFixture( "variant_field_resolution/variant_field_resolution.kicad_sch" ).utf8_str().data() ), KSCH_OK );
+    const char* names = nullptr;
+    BOOST_REQUIRE_EQUAL( ksch_session_symbol_libraries( session.get(), &names ), KSCH_OK );
+    BOOST_CHECK( std::string( names ).find( "variant_test_lib" ) != std::string::npos );
+    BOOST_REQUIRE_MESSAGE( ksch_session_browse_symbols( session.get(), "variant_test_lib", 0, &names ) == KSCH_OK,
+                           ksch_session_last_error( session.get() ) );
+    BOOST_CHECK( std::string( names ).find( "variant_test_lib:R_100R" ) != std::string::npos );
+    BOOST_REQUIRE_EQUAL( ksch_session_browse_symbols( session.get(), "variant_test_lib", 1, &names ), KSCH_OK );
+    BOOST_CHECK( std::string( names ).empty() );
+    ksch_erc_result* erc = nullptr;
+    BOOST_REQUIRE_EQUAL( ksch_session_run_erc( session.get(), &erc ), KSCH_OK );
+    for( uint32_t i = 0; i < ksch_erc_result_count( erc ); ++i )
+    {
+        ksch_erc_violation violation{};
+        BOOST_REQUIRE_EQUAL( ksch_erc_result_get( erc, i, &violation ), KSCH_OK );
+        BOOST_CHECK( std::string( violation.message ).find( "does not include the symbol library" ) == std::string::npos );
+    }
+    ksch_erc_result_destroy( erc );
+
+}
+
+BOOST_AUTO_TEST_CASE( SymbolChooserPlacementCancelsAndUndoes )
+{
+    std::unique_ptr<ksch_session, decltype(&ksch_session_destroy)> session(
+            ksch_session_create(), ksch_session_destroy );
+    BOOST_REQUIRE( session );
+    const char* ids = nullptr;
+    BOOST_CHECK_EQUAL( ksch_session_list_symbols( session.get(), &ids ), KSCH_ERR_NO_DOCUMENT );
+    BOOST_CHECK_EQUAL( ksch_session_place_symbol( nullptr, "Device:R" ), KSCH_ERR_INVALID_ARG );
+    BOOST_REQUIRE_EQUAL( ksch_session_load_file( session.get(),
+            eeschemaFixture( "api_kitchen_sink.kicad_sch" ).utf8_str().data() ), KSCH_OK );
+    BOOST_REQUIRE_EQUAL( ksch_session_list_symbols( session.get(), &ids ), KSCH_OK );
+    BOOST_REQUIRE( ids && *ids );
+    const std::string id = std::string( ids ).substr( 0, std::string( ids ).find( '\n' ) );
+    const std::string cached = ids;
+    kgds_stream_view preview{};
+    uint32_t units = 0, bodies = 0;
+    BOOST_REQUIRE_MESSAGE( ksch_session_preview_symbol( session.get(), id.c_str(), 1, 1,
+            &units, &bodies, &preview ) == KSCH_OK, ksch_session_last_error( session.get() ) );
+    BOOST_CHECK_GE( units, 1u );
+    BOOST_CHECK_GE( bodies, 1u );
+    BOOST_CHECK_GT( preview.group_count, 0u );
+    BOOST_CHECK_EQUAL( ksch_session_place_symbol_variant( session.get(), id.c_str(),
+            units + 1, 1 ), KSCH_ERR_INVALID_ARG );
+    BOOST_CHECK_EQUAL( ksch_session_preview_symbol( session.get(), id.c_str(), 0, 1,
+            &units, &bodies, &preview ), KSCH_ERR_INVALID_ARG );
+    BOOST_REQUIRE_EQUAL( ksch_session_symbol_libraries( session.get(), &ids ), KSCH_OK );
+    BOOST_REQUIRE( ids != nullptr );
+    BOOST_REQUIRE_EQUAL( ksch_session_browse_symbols( session.get(), "", 0, &ids ), KSCH_OK );
+    BOOST_CHECK_EQUAL( std::string( ids ), cached );
+    BOOST_REQUIRE_EQUAL( ksch_session_browse_symbols( session.get(), "", 1, &ids ), KSCH_OK );
+    BOOST_CHECK( std::string( ids ).find( "Device:R" ) == std::string::npos );
+    BOOST_CHECK_EQUAL( ksch_session_browse_symbols( session.get(), "", 2, &ids ), KSCH_ERR_INVALID_ARG );
+    BOOST_CHECK_EQUAL( ksch_session_browse_symbols( session.get(), "missing-stage5-library", 0, &ids ), KSCH_ERR_INVALID_ARG );
+    ksch_viewport viewport{ 800, 600, 0, 0, 0.001 };
+    BOOST_REQUIRE_EQUAL( ksch_session_set_viewport( session.get(), &viewport ), KSCH_OK );
+    BOOST_REQUIRE_EQUAL( ksch_session_zoom_to_fit( session.get() ), KSCH_OK );
+    BOOST_REQUIRE_EQUAL( ksch_session_place_symbol( session.get(), id.c_str() ), KSCH_OK );
+    ksch_input_event cancel{};
+    cancel.type = KSCH_INPUT_CANCEL;
+    BOOST_REQUIRE_EQUAL( ksch_session_dispatch_input( session.get(), &cancel, nullptr ), KSCH_OK );
+    int changed = 0;
+    BOOST_REQUIRE_EQUAL( ksch_session_undo( session.get(), &changed ), KSCH_OK );
+    BOOST_CHECK_EQUAL( changed, 0 );
+    BOOST_REQUIRE_EQUAL( ksch_session_dispatch_input( session.get(), &cancel, nullptr ), KSCH_OK );
+    BOOST_REQUIRE_EQUAL( ksch_session_place_symbol( session.get(), id.c_str() ), KSCH_OK );
+    for( int type : { KSCH_INPUT_POINTER_MOTION, KSCH_INPUT_POINTER_DOWN, KSCH_INPUT_POINTER_UP } )
+    {
+        ksch_input_event input{};
+        input.type = type;
+        input.button = KSCH_BUTTON_LEFT;
+        input.x = 400;
+        input.y = 300;
+        BOOST_REQUIRE_EQUAL( ksch_session_dispatch_input( session.get(), &input, nullptr ), KSCH_OK );
+    }
+    BOOST_REQUIRE_EQUAL( ksch_session_undo( session.get(), &changed ), KSCH_OK );
+    BOOST_CHECK_EQUAL( changed, 1 );
+    BOOST_REQUIRE_EQUAL( ksch_session_redo( session.get(), &changed ), KSCH_OK );
+    BOOST_CHECK_EQUAL( changed, 1 );
+}
 
 BOOST_AUTO_TEST_CASE( SearchAbiCopiesUtf8AndReportsResults )
 {
@@ -2455,4 +2551,1207 @@ BOOST_AUTO_TEST_CASE( KnownActionResolvesByName )
 }
 
 
+BOOST_AUTO_TEST_CASE( ErcExclusionsPersistAndRejectStaleMarkers )
+{
+    const auto temp = std::filesystem::temp_directory_path() / ("gpui_erc_exclusion_" + std::to_string(::getpid()));
+    std::filesystem::create_directories(temp);
+    const auto path = temp / "erc.kicad_sch";
+    std::filesystem::copy_file(eeschemaFixture("erc_label_test.kicad_sch").ToStdString(), path,
+                              std::filesystem::copy_options::overwrite_existing);
+    std::unique_ptr<ksch_session, decltype(&ksch_session_destroy)> session(ksch_session_create(), ksch_session_destroy);
+    BOOST_REQUIRE_EQUAL(ksch_session_load_file(session.get(), path.string().c_str()), KSCH_OK);
+    ksch_erc_result* result = nullptr;
+    BOOST_REQUIRE_EQUAL(ksch_session_run_erc(session.get(), &result), KSCH_OK);
+    BOOST_REQUIRE_GT(ksch_erc_result_count(result), 0u);
+    ksch_erc_violation violation{};
+    BOOST_REQUIRE_EQUAL(ksch_erc_result_get(result, 0, &violation), KSCH_OK);
+    const std::string marker = violation.marker_id;
+    BOOST_REQUIRE_MESSAGE(ksch_session_exclude_erc(session.get(), marker.c_str(), 1) == KSCH_OK,
+                          ksch_session_last_error(session.get()));
+    ksch_erc_result_destroy(result);
+    BOOST_CHECK(std::filesystem::exists(temp / "erc.kicad_pro"));
+    session.reset(ksch_session_create());
+    BOOST_REQUIRE_EQUAL(ksch_session_load_file(session.get(), path.string().c_str()), KSCH_OK);
+    BOOST_REQUIRE_EQUAL(ksch_session_run_erc(session.get(), &result), KSCH_OK);
+    bool found = false;
+    for(uint32_t i=0;i<ksch_erc_result_count(result);++i) {
+        BOOST_REQUIRE_EQUAL(ksch_erc_result_get(result,i,&violation),KSCH_OK);
+        found |= violation.severity == RPT_SEVERITY_EXCLUSION;
+    }
+    BOOST_CHECK(found);
+    BOOST_CHECK_EQUAL(ksch_session_exclude_erc(session.get(), "stale-marker", 1), KSCH_ERR_INVALID_ARG);
+    ksch_erc_result_destroy(result);
+}
+
+BOOST_AUTO_TEST_CASE( ErcSnapshotsOwnResultsAcrossRerunsAndSessionDestruction )
+{
+    ksch_session* session = ksch_session_create();
+    BOOST_REQUIRE( session );
+    const wxString path = eeschemaFixture( wxT( "erc_label_test.kicad_sch" ) );
+    BOOST_REQUIRE_EQUAL( ksch_session_load_file( session, path.utf8_str().data() ), KSCH_OK );
+    ksch_document_info before{};
+    BOOST_REQUIRE_EQUAL( ksch_session_document_info( session, &before ), KSCH_OK );
+    ksch_erc_result* first = nullptr;
+    BOOST_REQUIRE_MESSAGE( ksch_session_run_erc( session, &first ) == KSCH_OK,
+                           ksch_session_last_error( session ) );
+    BOOST_REQUIRE_GT( ksch_erc_result_count( first ), 0u );
+    ksch_erc_violation violation{};
+    BOOST_REQUIRE_EQUAL( ksch_erc_result_get( first, 0, &violation ), KSCH_OK );
+    const std::string message = violation.message;
+    BOOST_CHECK( !message.empty() );
+    BOOST_CHECK_EQUAL( violation.sheet_index, 0u );
+    BOOST_CHECK( std::isfinite( violation.x ) && std::isfinite( violation.y ) );
+    ksch_erc_result* second = nullptr;
+    BOOST_REQUIRE_EQUAL( ksch_session_run_erc( session, &second ), KSCH_OK );
+    BOOST_CHECK_EQUAL( ksch_erc_result_count( first ), ksch_erc_result_count( second ) );
+    // Markers are transient and must not make a clean document appear edited.
+    ksch_document_info after{};
+    BOOST_REQUIRE_EQUAL( ksch_session_document_info( session, &after ), KSCH_OK );
+    BOOST_CHECK_EQUAL( before.modified, after.modified );
+    kgds_stream_view stream{};
+    BOOST_REQUIRE_EQUAL( ksch_session_render( session, &stream ), KSCH_OK );
+    ksch_session_destroy( session );
+    BOOST_CHECK_EQUAL( std::string( violation.message ), message );
+    BOOST_CHECK_EQUAL( ksch_erc_result_get( first, ksch_erc_result_count( first ), &violation ),
+                       KSCH_ERR_INVALID_ARG );
+    ksch_erc_result_destroy( first );
+    ksch_erc_result_destroy( second );
+    ksch_erc_result_destroy( nullptr );
+}
+
+BOOST_AUTO_TEST_CASE( PropertiesValidateReferencesAndNoOpDoesNotCreateUndo )
+{
+    ksch_session* session = ksch_session_create();
+    BOOST_REQUIRE( session );
+    const wxString path = eeschemaFixture( wxT( "api_kitchen_sink.kicad_sch" ) );
+    BOOST_REQUIRE_EQUAL( ksch_session_load_file( session, path.utf8_str().data() ), KSCH_OK );
+    // Hit the visible body edge at a useful editing zoom, not the hollow centre
+    // at page-fit scale where the symbol and its field hit targets overlap.
+    ksch_viewport viewport{ 1920, 1080, 109.22 * 10000, 40.64 * 10000, 0.004 };
+    BOOST_REQUIRE_EQUAL( ksch_session_set_viewport( session, &viewport ), KSCH_OK );
+    BOOST_REQUIRE_EQUAL( ksch_session_get_viewport( session, &viewport ), KSCH_OK );
+    for( int type : { KSCH_INPUT_POINTER_MOTION, KSCH_INPUT_POINTER_DOWN, KSCH_INPUT_POINTER_UP } )
+    {
+        ksch_input_event event{};
+        event.type = type;
+        event.button = KSCH_BUTTON_LEFT;
+        event.x = ( 108.204 * 10000 - viewport.center_x ) * viewport.scale + viewport.width_px / 2.;
+        event.y = ( 40.64 * 10000 - viewport.center_y ) * viewport.scale + viewport.height_px / 2.;
+        BOOST_REQUIRE_EQUAL( ksch_session_dispatch_input( session, &event, nullptr ), KSCH_OK );
+    }
+    struct Properties { std::string id; std::vector<std::string> values, names; std::vector<uint32_t> kinds; } properties;
+    auto visitor = []( void* context, const char* id, const char* name, const char* value, uint32_t kind, const char* const*, uint32_t )
+    {
+        auto& result = *static_cast<Properties*>( context );
+        result.id = id;
+        result.values.emplace_back( value );
+        result.names.emplace_back( name );
+        result.kinds.push_back( kind );
+    };
+    BOOST_REQUIRE_EQUAL( ksch_session_item_properties( session, visitor, &properties ), KSCH_OK );
+    BOOST_REQUIRE_GE( properties.values.size(), 2u );
+    BOOST_CHECK_EQUAL( properties.values[0], "R1" );
+    auto apply = [&]()
+    {
+        std::vector<const char*> values;
+        for( const auto& value : properties.values ) values.push_back( value.c_str() );
+        return ksch_session_apply_properties( session, properties.id.c_str(), values.data(), values.size() );
+    };
+    BOOST_REQUIRE_EQUAL( apply(), KSCH_OK );
+    ksch_editor_state state{};
+    BOOST_REQUIRE_EQUAL( ksch_session_editor_state( session, &state ), KSCH_OK );
+    BOOST_CHECK_EQUAL( state.undo_count, 0u );
+    for( const char* invalid : { "", "R 2", "R\n2", "R\t2" } )
+    {
+        properties.values[0] = invalid;
+        BOOST_CHECK_EQUAL( apply(), KSCH_ERR_INVALID_ARG );
+    }
+    properties.values[0] = "R1";
+    bool checkedDistance = false, checkedBool = false, checkedChoice = false;
+    for( size_t i = 0; i < properties.values.size(); ++i )
+    {
+        auto original = properties.values[i];
+        if( properties.kinds[i] == KSCH_PROPERTY_DISTANCE && !checkedDistance )
+        {
+            properties.values[i] = "nan";
+            BOOST_CHECK_EQUAL( apply(), KSCH_ERR_INVALID_ARG );
+            properties.values[i] = "9999999999999999999999";
+            BOOST_CHECK_EQUAL( apply(), KSCH_ERR_INVALID_ARG );
+            checkedDistance = true;
+        }
+        else if( properties.kinds[i] == KSCH_PROPERTY_BOOL && !checkedBool )
+        {
+            properties.values[i] = "maybe";
+            BOOST_CHECK_EQUAL( apply(), KSCH_ERR_INVALID_ARG );
+            checkedBool = true;
+        }
+        else if( properties.kinds[i] == KSCH_PROPERTY_CHOICE && !checkedChoice )
+        {
+            properties.values[i] = "not an allowed option";
+            BOOST_CHECK_EQUAL( apply(), KSCH_ERR_INVALID_ARG );
+            checkedChoice = true;
+        }
+        properties.values[i] = original;
+    }
+    BOOST_CHECK( checkedDistance && checkedBool && checkedChoice );
+    properties.values[0] = "R42";
+    BOOST_REQUIRE_EQUAL( apply(), KSCH_OK );
+    BOOST_REQUIRE_EQUAL( ksch_session_editor_state( session, &state ), KSCH_OK );
+    BOOST_CHECK_EQUAL( state.undo_count, 1u );
+    // Reference comparison uses the current sheet instance, including after editing it.
+    BOOST_REQUIRE_EQUAL( apply(), KSCH_OK );
+    BOOST_REQUIRE_EQUAL( ksch_session_editor_state( session, &state ), KSCH_OK );
+    BOOST_CHECK_EQUAL( state.undo_count, 1u );
+    Properties reread;
+    BOOST_REQUIRE_EQUAL( ksch_session_item_properties( session, visitor, &reread ), KSCH_OK );
+    BOOST_CHECK_EQUAL( reread.values[0], "R42" );
+    int undone = 0;
+    BOOST_REQUIRE_EQUAL( ksch_session_undo( session, &undone ), KSCH_OK );
+    BOOST_CHECK_EQUAL( undone, 1 );
+    BOOST_CHECK_EQUAL( ksch_session_edit_custom_field( session, properties.id.c_str(), "Reference", nullptr ), KSCH_ERR_INVALID_ARG );
+    BOOST_CHECK_EQUAL( ksch_session_edit_custom_field( session, properties.id.c_str(), "", "bad" ), KSCH_ERR_INVALID_ARG );
+    BOOST_REQUIRE_EQUAL( ksch_session_edit_custom_field( session, properties.id.c_str(), "Assembly note", "Hand solder" ), KSCH_OK );
+    BOOST_CHECK_EQUAL( ksch_session_edit_custom_field( session, properties.id.c_str(), "Assembly note", "Duplicate" ), KSCH_ERR_INVALID_ARG );
+    Properties withField;
+    BOOST_REQUIRE_EQUAL( ksch_session_item_properties( session, visitor, &withField ), KSCH_OK );
+    BOOST_CHECK( std::find( withField.values.begin(), withField.values.end(), "Hand solder" ) != withField.values.end() );
+    BOOST_REQUIRE_EQUAL( ksch_session_edit_custom_field( session, properties.id.c_str(), "Assembly note", nullptr ), KSCH_OK );
+    BOOST_REQUIRE_EQUAL( ksch_session_undo( session, &undone ), KSCH_OK );
+    BOOST_CHECK_EQUAL( undone, 1 );
+    Properties restoredField;
+    BOOST_REQUIRE_EQUAL( ksch_session_item_properties( session, visitor, &restoredField ), KSCH_OK );
+    BOOST_CHECK( std::find( restoredField.values.begin(), restoredField.values.end(), "Hand solder" ) != restoredField.values.end() );
+    ksch_session_destroy( session );
+}
+
+BOOST_AUTO_TEST_CASE( ApplicationPreferencesAreTypedAndValidateBeforePersistence )
+{
+    ksch_session* session = ksch_session_create();
+    BOOST_REQUIRE( session );
+    struct Preferences { std::vector<std::string> values; std::vector<uint32_t> kinds; } preferences;
+    auto visit = []( void* ctx, const char*, const char*, const char* value,
+                    uint32_t kind, const char* const*, uint32_t )
+    {
+        auto& preferences = *static_cast<Preferences*>( ctx );
+        preferences.values.emplace_back( value );
+        preferences.kinds.push_back( kind );
+    };
+    BOOST_REQUIRE_EQUAL( ksch_session_preferences( session, visit, &preferences ), KSCH_OK );
+    BOOST_REQUIRE_GT( preferences.values.size(), 20u );
+    auto apply = [&]()
+    {
+        std::vector<const char*> values;
+        for( const auto& value : preferences.values ) values.push_back( value.c_str() );
+        return ksch_session_apply_preferences( session, values.data(), values.size() );
+    };
+    // A no-op must not write the user's settings files.
+    BOOST_REQUIRE_EQUAL( apply(), KSCH_OK );
+    const auto before = preferences.values;
+    for( size_t i = 0; i < preferences.values.size(); ++i )
+    {
+        if( preferences.kinds[i] == KSCH_PROPERTY_BOOL ) preferences.values[i] = "maybe";
+        else if( preferences.kinds[i] == KSCH_PROPERTY_INTEGER ) preferences.values[i] = "1e99";
+        else continue;
+        BOOST_CHECK_EQUAL( apply(), KSCH_ERR_INVALID_ARG );
+        preferences.values[i] = before[i];
+    }
+    Preferences after;
+    BOOST_REQUIRE_EQUAL( ksch_session_preferences( session, visit, &after ), KSCH_OK );
+    BOOST_CHECK( after.values == before );
+    ksch_session_destroy( session );
+}
+
+BOOST_AUTO_TEST_CASE( SheetPinSynchronizationValidatesPlanAndUndoesChanges )
+{
+    ksch_session* session = ksch_session_create();
+    BOOST_REQUIRE( session );
+    const auto fixture = eeschemaFixture( "api_kitchen_sink.kicad_sch" );
+    std::ifstream input( fixture.ToStdString() );
+    std::string source( ( std::istreambuf_iterator<char>( input ) ), std::istreambuf_iterator<char>() );
+    const std::string originalPin = "(pin \"${param}\" input";
+    auto pinAt = source.find( originalPin );
+    BOOST_REQUIRE( pinAt != std::string::npos );
+    source.replace( pinAt, originalPin.size(), "(pin \"OrphanForSync\" input" );
+    const std::string child = "erc_test_dynamic_power_symbol_subsheet.kicad_sch";
+    auto childAt = source.find( child );
+    BOOST_REQUIRE( childAt != std::string::npos );
+    source.replace( childAt, child.size(), eeschemaFixture( child.c_str() ).ToStdString() );
+    wxFileName temporaryName( wxFileName::CreateTempFileName( "gpui-pin-sync-" ) );
+    wxRemoveFile( temporaryName.GetFullPath() );
+    temporaryName.SetExt( "kicad_sch" );
+    const auto temporary = temporaryName.GetFullPath();
+    { std::ofstream output( temporary.ToStdString() ); output << source; }
+    BOOST_REQUIRE_EQUAL( ksch_session_load_file( session, temporary.utf8_str().data() ), KSCH_OK );
+    struct Plan { std::string id; std::vector<std::string> values, alternatives; } plan;
+    auto visitor = []( void* ctx, const char* id, const char*, const char* value,
+                      uint32_t kind, const char* const* choices, uint32_t count )
+    {
+        auto& plan = *static_cast<Plan*>( ctx );
+        BOOST_REQUIRE_EQUAL( kind, KSCH_PROPERTY_CHOICE );
+        BOOST_REQUIRE_GT( count, 1u );
+        plan.id = id;
+        plan.values.emplace_back( value );
+        plan.alternatives.emplace_back( choices[1] );
+    };
+    BOOST_REQUIRE_EQUAL( ksch_session_sheet_pin_properties( session, 1, visitor, &plan ), KSCH_OK );
+    BOOST_REQUIRE( !plan.values.empty() );
+    auto apply = [&]()
+    {
+        std::vector<const char*> values;
+        for( const auto& value : plan.values ) values.push_back( value.c_str() );
+        return ksch_session_apply_sheet_pin_properties( session, 1, plan.id.c_str(), values.data(), values.size() );
+    };
+    BOOST_REQUIRE_EQUAL( apply(), KSCH_OK );
+    ksch_editor_state state{};
+    BOOST_REQUIRE_EQUAL( ksch_session_editor_state( session, &state ), KSCH_OK );
+    BOOST_CHECK_EQUAL( state.undo_count, 0u );
+    plan.values[0] = "Invalid action";
+    BOOST_CHECK_EQUAL( apply(), KSCH_ERR_INVALID_ARG );
+    plan.values[0] = plan.alternatives[0];
+    BOOST_REQUIRE_EQUAL( apply(), KSCH_OK );
+    BOOST_REQUIRE_EQUAL( ksch_session_editor_state( session, &state ), KSCH_OK );
+    BOOST_CHECK_EQUAL( state.undo_count, 1u );
+    BOOST_CHECK_EQUAL( apply(), KSCH_ERR_INVALID_ARG );
+    int undone = 0;
+    BOOST_REQUIRE_EQUAL( ksch_session_undo( session, &undone ), KSCH_OK );
+    BOOST_REQUIRE_EQUAL( undone, 1 );
+    Plan restored;
+    BOOST_REQUIRE_EQUAL( ksch_session_sheet_pin_properties( session, 1, visitor, &restored ), KSCH_OK );
+    BOOST_CHECK_EQUAL( restored.id, plan.id );
+    ksch_session_destroy( session );
+    wxRemoveFile( temporary );
+}
+
+BOOST_AUTO_TEST_CASE( TextPlacementRequestsGpuiPropertiesAndCommitsOnce )
+{
+    ksch_session* session = ksch_session_create();
+    BOOST_REQUIRE( session );
+    BOOST_REQUIRE_EQUAL( ksch_session_load_file( session,
+        eeschemaFixture( "api_kitchen_sink.kicad_sch" ).utf8_str().data() ), KSCH_OK );
+    BOOST_REQUIRE_EQUAL( ksch_session_run_action( session,
+        "eeschema.InteractiveDrawing.placeSchematicText", nullptr ), KSCH_OK );
+    int pending = 0;
+    BOOST_REQUIRE_EQUAL( ksch_session_take_pending_properties( session, &pending ), KSCH_OK );
+    if( !pending )
+    {
+        BOOST_REQUIRE_EQUAL( ksch_session_run_action( session, "common.Control.cursorClick", nullptr ), KSCH_OK );
+        BOOST_REQUIRE_EQUAL( ksch_session_take_pending_properties( session, &pending ), KSCH_OK );
+    }
+    BOOST_REQUIRE_EQUAL( pending, 1 );
+    BOOST_REQUIRE_EQUAL( ksch_session_take_pending_properties( session, &pending ), KSCH_OK );
+    BOOST_CHECK_EQUAL( pending, 0 );
+    struct Data { std::string id; std::vector<std::string> values; } data;
+    auto visitor = []( void* ctx, const char* id, const char*, const char* value,
+                       uint32_t kind, const char* const*, uint32_t )
+    {
+        auto& data = *static_cast<Data*>( ctx );
+        data.id = id;
+        data.values.emplace_back( kind == KSCH_PROPERTY_MULTILINE ? "First line\nSecond line" : value );
+    };
+    BOOST_REQUIRE_EQUAL( ksch_session_item_properties( session, visitor, &data ), KSCH_OK );
+    std::vector<const char*> values;
+    for( const auto& value : data.values ) values.push_back( value.c_str() );
+    BOOST_REQUIRE_EQUAL( ksch_session_apply_properties( session, data.id.c_str(), values.data(), values.size() ), KSCH_OK );
+    ksch_editor_state state{};
+    BOOST_REQUIRE_EQUAL( ksch_session_editor_state( session, &state ), KSCH_OK );
+    BOOST_CHECK_EQUAL( state.undo_count, 0u );
+    BOOST_REQUIRE_EQUAL( ksch_session_run_action( session, "common.Control.cursorClick", nullptr ), KSCH_OK );
+    BOOST_REQUIRE_EQUAL( ksch_session_editor_state( session, &state ), KSCH_OK );
+    BOOST_CHECK_EQUAL( state.undo_count, 1u );
+    ksch_session_destroy( session );
+}
+
+BOOST_AUTO_TEST_CASE( BusEntryPreviewPropertiesDoNotCreatePrematureUndo )
+{
+    ksch_session* session = ksch_session_create();
+    BOOST_REQUIRE( session );
+    BOOST_REQUIRE_EQUAL( ksch_session_load_file( session,
+        eeschemaFixture( "api_kitchen_sink.kicad_sch" ).utf8_str().data() ), KSCH_OK );
+    BOOST_REQUIRE_EQUAL( ksch_session_run_action( session,
+        "eeschema.InteractiveDrawing.placeBusWireEntry", nullptr ), KSCH_OK );
+    struct Data { std::string id; std::vector<std::string> values; bool width = false; } data;
+    auto visitor = []( void* ctx, const char* uuid, const char* name, const char* value,
+                       uint32_t kind, const char* const*, uint32_t )
+    {
+        auto& data = *static_cast<Data*>( ctx );
+        data.id = uuid;
+        if( std::string( name ) == "Line Width" )
+        {
+            BOOST_CHECK_EQUAL( kind, KSCH_PROPERTY_DISTANCE );
+            data.width = true;
+            data.values.emplace_back( "0.254" );
+        }
+        else data.values.emplace_back( value );
+    };
+    BOOST_REQUIRE_EQUAL( ksch_session_item_properties( session, visitor, &data ), KSCH_OK );
+    BOOST_REQUIRE( data.width );
+    std::vector<const char*> values;
+    for( const auto& value : data.values ) values.push_back( value.c_str() );
+    BOOST_REQUIRE_EQUAL( ksch_session_apply_properties( session, data.id.c_str(), values.data(), values.size() ), KSCH_OK );
+    ksch_editor_state state{};
+    BOOST_REQUIRE_EQUAL( ksch_session_editor_state( session, &state ), KSCH_OK );
+    BOOST_CHECK_EQUAL( state.undo_count, 0u );
+    BOOST_REQUIRE_EQUAL( ksch_session_run_action( session, "common.Control.cursorClick", nullptr ), KSCH_OK );
+    BOOST_REQUIRE_EQUAL( ksch_session_editor_state( session, &state ), KSCH_OK );
+    BOOST_CHECK_EQUAL( state.undo_count, 1u );
+    BOOST_REQUIRE_EQUAL( ksch_session_run_action( session, "common.Interactive.cancel", nullptr ), KSCH_OK );
+    ksch_session_destroy( session );
+}
+
+BOOST_AUTO_TEST_CASE( RasterImagePlacementValidatesCancelsAndCommitsOnce )
+{
+    ksch_session* session = ksch_session_create();
+    BOOST_REQUIRE( session );
+    BOOST_REQUIRE_EQUAL( ksch_session_load_file( session,
+        eeschemaFixture( "api_kitchen_sink.kicad_sch" ).utf8_str().data() ), KSCH_OK );
+    wxFileName file( wxFileName::CreateTempFileName( "gpui-image-" ) );
+    wxRemoveFile( file.GetFullPath() );
+    file.SetExt( "png" );
+    wxImage image( 2, 2 );
+    image.SetRGB( wxRect( 0, 0, 2, 2 ), 100, 150, 200 );
+    BOOST_REQUIRE( image.SaveFile( file.GetFullPath(), wxBITMAP_TYPE_PNG ) );
+    const auto filename = file.GetFullPath().ToStdString();
+    const char* values[] = { filename.c_str(), "-1", "Cursor", "10", "20" };
+    BOOST_CHECK_EQUAL( ksch_session_apply_image_properties( session, values, 5 ), KSCH_ERR_INVALID_ARG );
+    values[1] = "2";
+    BOOST_REQUIRE_EQUAL( ksch_session_apply_image_properties( session, values, 5 ), KSCH_OK );
+    ksch_editor_state state{};
+    BOOST_REQUIRE_EQUAL( ksch_session_editor_state( session, &state ), KSCH_OK );
+    BOOST_CHECK_EQUAL( state.undo_count, 0u );
+    BOOST_REQUIRE_EQUAL( ksch_session_run_action( session, "common.Interactive.cancel", nullptr ), KSCH_OK );
+    BOOST_REQUIRE_EQUAL( ksch_session_editor_state( session, &state ), KSCH_OK );
+    BOOST_CHECK_EQUAL( state.undo_count, 0u );
+    BOOST_REQUIRE_EQUAL( ksch_session_apply_image_properties( session, values, 5 ), KSCH_OK );
+    BOOST_REQUIRE_EQUAL( ksch_session_run_action( session, "common.Control.cursorClick", nullptr ), KSCH_OK );
+    BOOST_REQUIRE_EQUAL( ksch_session_editor_state( session, &state ), KSCH_OK );
+    BOOST_CHECK_EQUAL( state.undo_count, 1u );
+    BOOST_REQUIRE_EQUAL( ksch_session_run_action( session, "common.Interactive.undo", nullptr ), KSCH_OK );
+    values[2] = "Coordinates";
+    BOOST_REQUIRE_EQUAL( ksch_session_apply_image_properties( session, values, 5 ), KSCH_OK );
+    BOOST_REQUIRE_EQUAL( ksch_session_editor_state( session, &state ), KSCH_OK );
+    BOOST_CHECK_EQUAL( state.undo_count, 1u );
+    ksch_session_destroy( session );
+    wxRemoveFile( file.GetFullPath() );
+}
+
+BOOST_AUTO_TEST_CASE( GraphicsImportValidatesAndCreatesOneUndoTransaction )
+{
+    ksch_session* session = ksch_session_create();
+    BOOST_REQUIRE( session );
+    BOOST_REQUIRE_EQUAL( ksch_session_load_file( session,
+        eeschemaFixture( "api_kitchen_sink.kicad_sch" ).utf8_str().data() ), KSCH_OK );
+    wxFileName file( wxFileName::CreateTempFileName( "gpui-import-" ) );
+    wxRemoveFile( file.GetFullPath() );
+    file.SetExt( "svg" );
+    { std::ofstream output( file.GetFullPath().ToStdString() );
+      output << R"SVG(<svg xmlns="http://www.w3.org/2000/svg" width="10mm" height="10mm" viewBox="0 0 10 10"><path d="M1 1 L9 9" stroke="black" fill="none" stroke-width="0.2"/></svg>)SVG"; }
+    const auto filename = file.GetFullPath().ToStdString();
+    const char* values[] = { filename.c_str(), "-1", "10", "20", "File default", "0.1524" };
+    BOOST_CHECK_EQUAL( ksch_session_apply_graphics_import( session, values, 6 ), KSCH_ERR_INVALID_ARG );
+    ksch_editor_state state{};
+    BOOST_REQUIRE_EQUAL( ksch_session_editor_state( session, &state ), KSCH_OK );
+    BOOST_CHECK_EQUAL( state.undo_count, 0u );
+    values[1] = "2";
+    BOOST_REQUIRE_EQUAL( ksch_session_apply_graphics_import( session, values, 6 ), KSCH_OK );
+    BOOST_REQUIRE_EQUAL( ksch_session_editor_state( session, &state ), KSCH_OK );
+    BOOST_CHECK_EQUAL( state.undo_count, 1u );
+    BOOST_REQUIRE_EQUAL( ksch_session_run_action( session, "common.Interactive.undo", nullptr ), KSCH_OK );
+    BOOST_REQUIRE_EQUAL( ksch_session_editor_state( session, &state ), KSCH_OK );
+    BOOST_CHECK_EQUAL( state.undo_count, 0u );
+    ksch_session_destroy( session );
+    wxRemoveFile( file.GetFullPath() );
+}
+
+BOOST_AUTO_TEST_CASE( NewSheetRequestsGpuiPropertiesAndCommitsOnce )
+{
+    ksch_session* session = ksch_session_create();
+    BOOST_REQUIRE( session );
+    BOOST_REQUIRE_EQUAL( ksch_session_load_file( session,
+        eeschemaFixture( "api_kitchen_sink.kicad_sch" ).utf8_str().data() ), KSCH_OK );
+    BOOST_REQUIRE_EQUAL( ksch_session_run_action( session,
+        "eeschema.InteractiveDrawing.drawSheet", nullptr ), KSCH_OK );
+    for( int click = 0; click < 2; ++click )
+        BOOST_REQUIRE_EQUAL( ksch_session_run_action( session, "common.Control.cursorClick", nullptr ), KSCH_OK );
+    int pending = 0;
+    BOOST_REQUIRE_EQUAL( ksch_session_take_pending_properties( session, &pending ), KSCH_OK );
+    BOOST_REQUIRE_EQUAL( pending, 1 );
+    std::string id;
+    auto visitor = []( void* ctx, const char* uuid, const char*, const char*, uint32_t,
+                       const char* const*, uint32_t ) { *static_cast<std::string*>( ctx ) = uuid; };
+    BOOST_REQUIRE_EQUAL( ksch_session_item_properties( session, visitor, &id ), KSCH_OK );
+    BOOST_REQUIRE( !id.empty() );
+    BOOST_REQUIRE_EQUAL( ksch_session_edit_custom_field( session, id.c_str(), "Review", "Pending" ), KSCH_OK );
+    BOOST_REQUIRE_EQUAL( ksch_session_edit_custom_field( session, id.c_str(), "Review", nullptr ), KSCH_OK );
+    wxFileName output( wxFileName::CreateTempFileName( "gpui-new-sheet-" ) );
+    wxRemoveFile( output.GetFullPath() );
+    output.SetExt( "kicad_sch" );
+    BOOST_REQUIRE_EQUAL( ksch_session_relink_sheet( session, id.c_str(), output.GetFullPath().utf8_str().data() ), KSCH_OK );
+    ksch_editor_state state{};
+    BOOST_REQUIRE_EQUAL( ksch_session_editor_state( session, &state ), KSCH_OK );
+    BOOST_CHECK_EQUAL( state.undo_count, 0u );
+    BOOST_REQUIRE_EQUAL( ksch_session_run_action( session, "common.Control.cursorClick", nullptr ), KSCH_OK );
+    BOOST_REQUIRE_EQUAL( ksch_session_editor_state( session, &state ), KSCH_OK );
+    BOOST_CHECK_EQUAL( state.undo_count, 1u );
+    BOOST_CHECK( output.FileExists() );
+    BOOST_REQUIRE_EQUAL( ksch_session_run_action( session, "common.Interactive.undo", nullptr ), KSCH_OK );
+    ksch_session_destroy( session );
+    wxRemoveFile( output.GetFullPath() );
+}
+
+BOOST_AUTO_TEST_CASE( SheetPropertiesRelinkRejectsRecursionAndLoadsReplacement )
+{
+    ksch_session* session = ksch_session_create();
+    BOOST_REQUIRE( session );
+    const auto path = eeschemaFixture( "issue10926_1.kicad_sch" );
+    BOOST_REQUIRE_EQUAL( ksch_session_load_file( session, path.utf8_str().data() ), KSCH_OK );
+    ksch_viewport viewport{ 1920, 1080, 152.4 * 10000, 59.69 * 10000, 0.004 };
+    BOOST_REQUIRE_EQUAL( ksch_session_set_viewport( session, &viewport ), KSCH_OK );
+    BOOST_REQUIRE_EQUAL( ksch_session_get_viewport( session, &viewport ), KSCH_OK );
+    for( int type : { KSCH_INPUT_POINTER_MOTION, KSCH_INPUT_POINTER_DOWN, KSCH_INPUT_POINTER_UP } )
+    {
+        ksch_input_event event{};
+        event.type = type;
+        event.button = KSCH_BUTTON_LEFT;
+        event.x = ( 152.4 * 10000 - viewport.center_x ) * viewport.scale + viewport.width_px / 2.;
+        event.y = ( 59.69 * 10000 - viewport.center_y ) * viewport.scale + viewport.height_px / 2.;
+        BOOST_REQUIRE_EQUAL( ksch_session_dispatch_input( session, &event, nullptr ), KSCH_OK );
+    }
+    std::string id;
+    auto visit = []( void* ctx, const char* uuid, const char*, const char*, uint32_t,
+                     const char* const*, uint32_t ) { *static_cast<std::string*>( ctx ) = uuid; };
+    BOOST_REQUIRE_EQUAL( ksch_session_item_properties( session, visit, &id ), KSCH_OK );
+    BOOST_REQUIRE_EQUAL( id, "48e5c29d-dae7-410f-a801-6c402cc42990" );
+    BOOST_CHECK_EQUAL( ksch_session_relink_sheet( session, id.c_str(), path.utf8_str().data() ), KSCH_ERR_INVALID_ARG );
+    BOOST_CHECK_EQUAL( ksch_session_relink_sheet( session, id.c_str(), "bad.txt" ), KSCH_ERR_INVALID_ARG );
+    const auto replacement = eeschemaFixture( "test_issue24663_sheet_dnp_sub.kicad_sch" );
+    const auto relinkStatus = ksch_session_relink_sheet( session, id.c_str(), replacement.utf8_str().data() );
+    BOOST_REQUIRE_MESSAGE( relinkStatus == KSCH_OK, ksch_session_last_error( session ) );
+    ksch_editor_state state{};
+    BOOST_REQUIRE_EQUAL( ksch_session_editor_state( session, &state ), KSCH_OK );
+    BOOST_CHECK_EQUAL( state.undo_count, 0u );
+    uint32_t count = 0;
+    BOOST_REQUIRE_EQUAL( ksch_session_sheet_count( session, &count ), KSCH_OK );
+    BOOST_CHECK_GE( count, 3u );
+    ksch_session_destroy( session );
+}
+
+BOOST_AUTO_TEST_CASE( ErcResultsCoverTheHierarchyFromAnyCurrentSheet )
+{
+    ksch_session* session = ksch_session_create();
+    BOOST_REQUIRE( session );
+    const wxString path = eeschemaFixture( wxT( "issue10926_1.kicad_sch" ) );
+    BOOST_REQUIRE_EQUAL( ksch_session_load_file( session, path.utf8_str().data() ), KSCH_OK );
+    uint32_t sheetCount = 0;
+    BOOST_REQUIRE_EQUAL( ksch_session_sheet_count( session, &sheetCount ), KSCH_OK );
+    BOOST_REQUIRE_GT( sheetCount, 1u );
+    ksch_erc_result* rootResults = nullptr;
+    BOOST_REQUIRE_EQUAL( ksch_session_run_erc( session, &rootResults ), KSCH_OK );
+    BOOST_REQUIRE_EQUAL( ksch_session_set_sheet( session, sheetCount - 1 ), KSCH_OK );
+    ksch_erc_result* childResults = nullptr;
+    BOOST_REQUIRE_EQUAL( ksch_session_run_erc( session, &childResults ), KSCH_OK );
+    BOOST_CHECK_EQUAL( ksch_erc_result_count( rootResults ), ksch_erc_result_count( childResults ) );
+    for( uint32_t i = 0; i < ksch_erc_result_count( childResults ); ++i )
+    {
+        ksch_erc_violation result{};
+        BOOST_REQUIRE_EQUAL( ksch_erc_result_get( childResults, i, &result ), KSCH_OK );
+        BOOST_REQUIRE_LT( result.sheet_index, sheetCount );
+        BOOST_REQUIRE_EQUAL( ksch_session_set_sheet( session, result.sheet_index ), KSCH_OK );
+        kgds_stream_view stream{};
+        BOOST_REQUIRE_EQUAL( ksch_session_render( session, &stream ), KSCH_OK );
+    }
+    ksch_erc_result_destroy( rootResults );
+    ksch_erc_result_destroy( childResults );
+    ksch_session_destroy( session );
+}
+
+BOOST_AUTO_TEST_CASE( DocumentDialogsExportCsvAndNetlistWithoutMutatingDocument )
+{
+    ksch_session* session = ksch_session_create();
+    BOOST_REQUIRE( session );
+    const auto path = eeschemaFixture( wxT( "api_kitchen_sink.kicad_sch" ) );
+    BOOST_REQUIRE_EQUAL( ksch_session_load_file( session, path.utf8_str().data() ), KSCH_OK );
+    const auto output = wxFileName::CreateTempFileName( "gpui-document-export-" );
+    const auto outputUtf8 = output.utf8_string();
+    const char* csv[] = { outputUtf8.c_str(), "no", "standard", "", "yes", "no", "", "", "" };
+    BOOST_REQUIRE_EQUAL( ksch_session_apply_document_workflow( session, 6, csv, 9 ), KSCH_OK );
+    BOOST_CHECK_GT( wxFileName( output ).GetSize().GetValue(), 40u );
+    const char* netlist[] = { outputUtf8.c_str(), "kicad" };
+    BOOST_REQUIRE_EQUAL( ksch_session_apply_document_workflow( session, 3, netlist, 2 ), KSCH_OK );
+    BOOST_CHECK_GT( wxFileName( output ).GetSize().GetValue(), 100u );
+    ksch_editor_state state{};
+    BOOST_REQUIRE_EQUAL( ksch_session_editor_state( session, &state ), KSCH_OK );
+    BOOST_CHECK_EQUAL( state.undo_count, 0u );
+    BOOST_CHECK( wxRemoveFile( output ) );
+    ksch_session_destroy( session );
+}
+
+BOOST_AUTO_TEST_CASE( DocumentDialogsValidateAndCommitFieldsAsOneUndo )
+{
+    ksch_session* session = ksch_session_create();
+    BOOST_REQUIRE( session );
+    const auto path = eeschemaFixture( wxT( "api_kitchen_sink.kicad_sch" ) );
+    BOOST_REQUIRE_EQUAL( ksch_session_load_file( session, path.utf8_str().data() ), KSCH_OK );
+    using Fields = std::vector<std::pair<std::string,std::string>>;
+    auto visitor = []( void* context, const char* name, const char* value ) {
+        static_cast<Fields*>( context )->emplace_back( name, value );
+    };
+    auto apply = [&]( uint32_t kind, const Fields& fields ) {
+        std::vector<const char*> values;
+        for( const auto& field : fields ) values.push_back( field.second.c_str() );
+        return ksch_session_apply_document_workflow( session, kind, values.data(), values.size() );
+    };
+    Fields fields;
+    BOOST_REQUIRE_EQUAL( ksch_session_document_workflow( session, 7, visitor, &fields ), KSCH_OK );
+    BOOST_REQUIRE_GT( fields.size(), 2u );
+    const auto old = fields[1].second;
+    fields[1].second = "47k";
+    BOOST_REQUIRE_EQUAL( apply( 7, fields ), KSCH_OK );
+    Fields edited;
+    BOOST_REQUIRE_EQUAL( ksch_session_document_workflow( session, 7, visitor, &edited ), KSCH_OK );
+    BOOST_CHECK_EQUAL( edited[1].second, "47k" );
+    int undone = 0;
+    BOOST_REQUIRE_EQUAL( ksch_session_undo( session, &undone ), KSCH_OK );
+    BOOST_CHECK_EQUAL( undone, 1 );
+    Fields reverted;
+    BOOST_REQUIRE_EQUAL( ksch_session_document_workflow( session, 7, visitor, &reverted ), KSCH_OK );
+    BOOST_CHECK_EQUAL( reverted[1].second, old );
+    fields[0].second = "stale";
+    BOOST_CHECK_EQUAL( apply( 7, fields ), KSCH_ERR_INVALID_ARG );
+    Fields page;
+    BOOST_REQUIRE_EQUAL( ksch_session_document_workflow( session, 2, visitor, &page ), KSCH_OK );
+    const auto paper = page[0].second;
+    page[0].second = "invalid paper";
+    BOOST_CHECK_EQUAL( apply( 2, page ), KSCH_ERR_INVALID_ARG );
+    page[0].second = paper;
+    page[2].second = "GPUI document settings";
+    BOOST_REQUIRE_EQUAL( apply( 2, page ), KSCH_OK );
+    Fields reread;
+    BOOST_REQUIRE_EQUAL( ksch_session_document_workflow( session, 2, visitor, &reread ), KSCH_OK );
+    BOOST_CHECK_EQUAL( reread[2].second, "GPUI document settings" );
+    BOOST_REQUIRE_EQUAL( ksch_session_undo( session, &undone ), KSCH_OK );
+    BOOST_CHECK_EQUAL( undone, 1 );
+    Fields pageUndone;
+    BOOST_REQUIRE_EQUAL( ksch_session_document_workflow( session, 2, visitor, &pageUndone ), KSCH_OK );
+    BOOST_CHECK_NE( pageUndone[2].second, "GPUI document settings" );
+    int redone = 0;
+    BOOST_REQUIRE_EQUAL( ksch_session_redo( session, &redone ), KSCH_OK );
+    BOOST_CHECK_EQUAL( redone, 1 );
+    Fields pageRedone;
+    BOOST_REQUIRE_EQUAL( ksch_session_document_workflow( session, 2, visitor, &pageRedone ), KSCH_OK );
+    BOOST_CHECK_EQUAL( pageRedone[2].second, "GPUI document settings" );
+    Fields annotation;
+    BOOST_REQUIRE_EQUAL( ksch_session_document_workflow( session, 0, visitor, &annotation ), KSCH_OK );
+    annotation[0].second = "-1";
+    BOOST_CHECK_EQUAL( apply( 0, annotation ), KSCH_ERR_INVALID_ARG );
+    annotation[0].second = "10";
+    annotation[3].second = "yes";
+    BOOST_REQUIRE_EQUAL( apply( 0, annotation ), KSCH_OK );
+    BOOST_REQUIRE_EQUAL( ksch_session_undo( session, &undone ), KSCH_OK );
+    BOOST_CHECK_EQUAL( undone, 1 );
+    ksch_session_destroy( session );
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+BOOST_AUTO_TEST_SUITE( SchHostLibrariesAndSimulation )
+BOOST_AUTO_TEST_CASE( ProjectLibraryTableCrudValidatesBeforeWriting )
+{
+    const auto temp = std::filesystem::temp_directory_path()
+            / ( "kicad_host_library_crud_" + std::to_string( ::getpid() ) );
+    std::filesystem::create_directories( temp );
+    const auto copy = temp / "library_test.kicad_sch";
+    std::filesystem::copy_file( eeschemaFixture( "api_kitchen_sink.kicad_sch" ).ToStdString(), copy,
+                                std::filesystem::copy_options::overwrite_existing );
+    std::unique_ptr<ksch_session, decltype(&ksch_session_destroy)> session( ksch_session_create(), ksch_session_destroy );
+    BOOST_REQUIRE_EQUAL( ksch_session_load_file( session.get(), copy.string().c_str() ), KSCH_OK );
+    ksch_library_row row{ "Host_Test", "KiCad", "${KIPRJMOD}/test.kicad_sym", "", "GPUI table test", 1, 1 };
+    BOOST_REQUIRE_MESSAGE( ksch_session_save_library_table( session.get(), 0, &row, 1 ) == KSCH_OK,
+                           ksch_session_last_error( session.get() ) );
+    std::vector<std::string> names;
+    auto visitor = []( void* context, const ksch_library_row* value ) {
+        static_cast<std::vector<std::string>*>( context )->push_back( value->name );
+    };
+    BOOST_REQUIRE_EQUAL( ksch_session_library_table( session.get(), 0, visitor, &names ), KSCH_OK );
+    BOOST_REQUIRE_EQUAL( names.size(), 1u ); BOOST_CHECK_EQUAL( names[0], "Host_Test" );
+    ksch_library_row duplicates[]{ row, row };
+    BOOST_CHECK_EQUAL( ksch_session_save_library_table( session.get(), 0, duplicates, 2 ), KSCH_ERR_INVALID_ARG );
+    names.clear();
+    BOOST_REQUIRE_EQUAL( ksch_session_library_table( session.get(), 0, visitor, &names ), KSCH_OK );
+    BOOST_REQUIRE_EQUAL( names.size(), 1u ); BOOST_CHECK_EQUAL( names[0], "Host_Test" );
+    row.enabled = 0;
+    BOOST_REQUIRE_EQUAL( ksch_session_save_library_table( session.get(), 0, &row, 1 ), KSCH_OK );
+    const char* enabled = nullptr;
+    BOOST_REQUIRE_EQUAL( ksch_session_symbol_libraries( session.get(), &enabled ), KSCH_OK );
+    BOOST_CHECK( std::string( enabled ).find( "Host_Test" ) == std::string::npos );
+    BOOST_REQUIRE_EQUAL( ksch_session_save_library_table( session.get(), 0, nullptr, 0 ), KSCH_OK );
+    names.clear();
+    BOOST_REQUIRE_EQUAL( ksch_session_library_table( session.get(), 0, visitor, &names ), KSCH_OK );
+    BOOST_CHECK( names.empty() );
+}
+BOOST_AUTO_TEST_CASE( SimulationAnalysisRejectsInvalidCommandsWithoutStartingEngine )
+{
+    std::unique_ptr<ksch_session, decltype(&ksch_session_destroy)> session( ksch_session_create(), ksch_session_destroy );
+    BOOST_REQUIRE_EQUAL( ksch_session_load_file( session.get(), eeschemaFixture( "api_kitchen_sink.kicad_sch" ).utf8_str().data() ), KSCH_OK );
+    const char* invalid[]{ "not an analysis", "0", "1" };
+    BOOST_CHECK_EQUAL( ksch_session_apply_simulation_workflow( session.get(), 1, invalid, 3 ), KSCH_ERR_INVALID_ARG );
+    std::vector<std::string> values;
+    auto visitor = []( void* context, const char*, const char* value ) { static_cast<std::vector<std::string>*>( context )->push_back( value ); };
+    BOOST_REQUIRE_EQUAL( ksch_session_simulation_workflow( session.get(), 1, visitor, &values ), KSCH_OK );
+    BOOST_REQUIRE_EQUAL( values.size(), 3u ); BOOST_CHECK_EQUAL( values[0], ".op" );
+    values.clear();
+    BOOST_REQUIRE_EQUAL( ksch_session_simulation_workflow( session.get(), 2, visitor, &values ), KSCH_OK );
+    BOOST_CHECK_EQUAL( values[0], "No analysis has been started" );
+    BOOST_CHECK_EQUAL( ksch_session_simulation_workflow( session.get(), 0, visitor, &values ), KSCH_ERR_INVALID_ARG );
+}
+BOOST_AUTO_TEST_SUITE_END()
+
+BOOST_AUTO_TEST_SUITE( SchHostLibrarySymbolDialogs )
+BOOST_AUTO_TEST_CASE( NewSymbolCloneRejectsOverwriteAndPinTablePersists )
+{
+    const auto temp=std::filesystem::temp_directory_path()/("kicad_library_symbol_"+std::to_string(::getpid()));
+    std::filesystem::create_directories(temp);
+    const auto source=std::filesystem::path(eeschemaFixture("variant_field_resolution").ToStdString());
+    for(const auto* name:{"variant_field_resolution.kicad_sch","variant_field_resolution.kicad_pro","variant_test_lib.kicad_sym","sym-lib-table"})
+        std::filesystem::copy_file(source/name,temp/name,std::filesystem::copy_options::overwrite_existing);
+    std::unique_ptr<ksch_session,decltype(&ksch_session_destroy)> session(ksch_session_create(),ksch_session_destroy);
+    BOOST_REQUIRE_MESSAGE(ksch_session_load_file(session.get(),(temp/"variant_field_resolution.kicad_sch").string().c_str())==KSCH_OK,ksch_session_last_error(session.get()));
+    const char* create[]{"variant_test_lib:GPUI_Clone","R","1","variant_test_lib:R_100R"};
+    BOOST_REQUIRE_MESSAGE(ksch_session_apply_simulation_workflow(session.get(),4,create,4)==KSCH_OK,ksch_session_last_error(session.get()));
+    BOOST_CHECK_EQUAL(ksch_session_apply_simulation_workflow(session.get(),4,create,4),KSCH_ERR_INVALID_ARG);
+    const char* names=nullptr;
+    BOOST_REQUIRE_EQUAL(ksch_session_browse_symbols(session.get(),"variant_test_lib",0,&names),KSCH_OK);
+    BOOST_CHECK(std::string(names).find("variant_test_lib:GPUI_Clone")!=std::string::npos);
+    BOOST_REQUIRE_EQUAL(ksch_session_run_action(session.get(),"common.Interactive.selectAll",nullptr),KSCH_OK);
+    std::vector<std::string> rows;
+    auto visitor=[](void* context,const char*,const char* value){static_cast<std::vector<std::string>*>(context)->push_back(value);};
+    BOOST_REQUIRE_MESSAGE(ksch_session_simulation_workflow(session.get(),5,visitor,&rows)==KSCH_OK,ksch_session_last_error(session.get()));
+    BOOST_REQUIRE_GT(rows.size(),13u);
+    rows[2]="GPUI_PIN";
+    std::vector<const char*> values; for(const auto& value:rows)values.push_back(value.c_str());
+    BOOST_REQUIRE_MESSAGE(ksch_session_apply_simulation_workflow(session.get(),5,values.data(),values.size())==KSCH_OK,ksch_session_last_error(session.get()));
+    rows.clear();
+    BOOST_REQUIRE_EQUAL(ksch_session_simulation_workflow(session.get(),5,visitor,&rows),KSCH_OK);
+    BOOST_CHECK_EQUAL(rows[2],"GPUI_PIN");
+    const auto pinCount=rows.size();
+    rows.insert(rows.end(),{"GPUI_NEW","ADDED","Passive","Line","Right","2.54","0","0","1.27","1.27","1","1","true",""});
+    values.clear();for(const auto& value:rows)values.push_back(value.c_str());
+    BOOST_REQUIRE_MESSAGE(ksch_session_apply_simulation_workflow(session.get(),5,values.data(),values.size())==KSCH_OK,ksch_session_last_error(session.get()));
+    rows.clear();BOOST_REQUIRE_EQUAL(ksch_session_simulation_workflow(session.get(),5,visitor,&rows),KSCH_OK);
+    BOOST_CHECK_EQUAL(rows.size(),pinCount+14);
+    size_t added=1;while(added<rows.size() && rows[added]!="GPUI_NEW")added+=14;
+    BOOST_REQUIRE_LT(added,rows.size());BOOST_CHECK(!rows[added+13].empty());
+    rows.erase(rows.begin()+added,rows.begin()+added+14);
+    values.clear();for(const auto& value:rows)values.push_back(value.c_str());
+    BOOST_REQUIRE_EQUAL(ksch_session_apply_simulation_workflow(session.get(),5,values.data(),values.size()),KSCH_OK);
+    rows.clear();
+    BOOST_REQUIRE_EQUAL(ksch_session_simulation_workflow(session.get(),3,visitor,&rows),KSCH_OK);
+    rows[1]="Description edited by GPUI";
+    rows.insert(rows.end(),{"GPUI_CUSTOM_FIELD","persistent user value"});
+    values.clear(); for(const auto& value:rows)values.push_back(value.c_str());
+    BOOST_REQUIRE_MESSAGE(ksch_session_apply_simulation_workflow(session.get(),3,values.data(),values.size())==KSCH_OK,ksch_session_last_error(session.get()));
+    rows.clear(); BOOST_REQUIRE_EQUAL(ksch_session_simulation_workflow(session.get(),3,visitor,&rows),KSCH_OK);
+    BOOST_CHECK_EQUAL(rows[1],"Description edited by GPUI");
+    BOOST_CHECK(std::find(rows.begin(),rows.end(),"GPUI_CUSTOM_FIELD")!=rows.end());
+    rows.clear(); BOOST_REQUIRE_EQUAL(ksch_session_simulation_workflow(session.get(),8,visitor,&rows),KSCH_OK);
+    BOOST_REQUIRE_GT(rows.size(),3u);
+    const auto original=rows[3]; rows[3]="GPUI_BULK_VALUE";
+    values.clear(); for(const auto& value:rows)values.push_back(value.c_str());
+    BOOST_REQUIRE_MESSAGE(ksch_session_apply_simulation_workflow(session.get(),8,values.data(),values.size())==KSCH_OK,ksch_session_last_error(session.get()));
+    rows.clear(); BOOST_REQUIRE_EQUAL(ksch_session_simulation_workflow(session.get(),8,visitor,&rows),KSCH_OK);
+    BOOST_CHECK_EQUAL(rows[3],"GPUI_BULK_VALUE");
+    rows[1]="stale revision";
+    values.clear(); for(const auto& value:rows)values.push_back(value.c_str());
+    BOOST_CHECK_EQUAL(ksch_session_apply_simulation_workflow(session.get(),8,values.data(),values.size()),KSCH_ERR_INVALID_ARG);
+    rows.clear();BOOST_REQUIRE_EQUAL(ksch_session_simulation_workflow(session.get(),18,visitor,&rows),KSCH_OK);
+    const size_t pins=std::stoul(rows[2]);const size_t firstMap=rows.size();rows.push_back("GPUI_Map");rows.push_back("Package_Test:Demo");
+    for(size_t i=0;i<pins;++i)rows.push_back(i==0?"[2,3]":rows[3+i]);
+    values.clear();for(const auto& value:rows)values.push_back(value.c_str());
+    BOOST_REQUIRE_MESSAGE(ksch_session_apply_simulation_workflow(session.get(),18,values.data(),values.size())==KSCH_OK,ksch_session_last_error(session.get()));
+    rows.clear();BOOST_REQUIRE_EQUAL(ksch_session_simulation_workflow(session.get(),18,visitor,&rows),KSCH_OK);
+    BOOST_CHECK(std::find(rows.begin(),rows.end(),"GPUI_Map")!=rows.end());
+    BOOST_CHECK(std::find(rows.begin(),rows.end(),"[2,3]")!=rows.end());
+    rows[firstMap+2]="[1,";values.clear();for(const auto& value:rows)values.push_back(value.c_str());
+    BOOST_CHECK(ksch_session_apply_simulation_workflow(session.get(),18,values.data(),values.size())!=KSCH_OK);
+    rows.clear();BOOST_REQUIRE_EQUAL(ksch_session_simulation_workflow(session.get(),22,visitor,&rows),KSCH_OK);
+    const auto beforeMaps=rows;const size_t instancePins=std::stoul(rows[2]);rows.push_back("GPUI_InstanceMap");rows.push_back("");
+    for(size_t i=0;i<instancePins;++i)rows.push_back("9");
+    values.clear();for(const auto& value:rows)values.push_back(value.c_str());
+    BOOST_REQUIRE_MESSAGE(ksch_session_apply_simulation_workflow(session.get(),22,values.data(),values.size())==KSCH_OK,ksch_session_last_error(session.get()));
+    rows.clear();BOOST_REQUIRE_EQUAL(ksch_session_simulation_workflow(session.get(),22,visitor,&rows),KSCH_OK);
+    BOOST_CHECK(std::find(rows.begin(),rows.end(),"GPUI_InstanceMap")!=rows.end());
+    BOOST_REQUIRE_EQUAL(ksch_session_run_action(session.get(),"common.Interactive.undo",nullptr),KSCH_OK);
+    BOOST_REQUIRE_EQUAL(ksch_session_run_action(session.get(),"common.Interactive.selectAll",nullptr),KSCH_OK);
+    rows.clear();BOOST_REQUIRE_EQUAL(ksch_session_simulation_workflow(session.get(),22,visitor,&rows),KSCH_OK);
+    BOOST_CHECK(rows==beforeMaps);
+    rows.clear();BOOST_REQUIRE_MESSAGE(ksch_session_simulation_workflow(session.get(),19,visitor,&rows)==KSCH_OK,ksch_session_last_error(session.get()));
+    auto modelVisitor=[](void* context,const char* name,const char* value){if(!std::string(name).starts_with("Choice "))static_cast<std::vector<std::string>*>(context)->push_back(value);};
+    std::vector<std::string> selector;
+    BOOST_REQUIRE_EQUAL(ksch_session_simulation_workflow(session.get(),20,modelVisitor,&selector),KSCH_OK);
+    BOOST_REQUIRE_EQUAL(selector.size(),7u);
+    selector[1]=eeschemaFixture("ibis_v4_1_series_pin_mapping.ibs").utf8_string();selector[2]="SeriesSwitchDevice";selector[3]="1";selector[4]="Input";selector[5]="false";selector[6]="";
+    values.clear();for(const auto& value:selector)values.push_back(value.c_str());
+    BOOST_REQUIRE_MESSAGE(ksch_session_apply_simulation_workflow(session.get(),20,values.data(),values.size())==KSCH_OK,ksch_session_last_error(session.get()));
+    rows.clear();BOOST_REQUIRE_EQUAL(ksch_session_simulation_workflow(session.get(),20,modelVisitor,&rows),KSCH_OK);
+    BOOST_CHECK_EQUAL(rows[2],"SeriesSwitchDevice");BOOST_CHECK_EQUAL(rows[3],"1");BOOST_CHECK_EQUAL(rows[4],"Input");
+    rows.clear();BOOST_REQUIRE_MESSAGE(ksch_session_simulation_workflow(session.get(),19,modelVisitor,&rows)==KSCH_OK,ksch_session_last_error(session.get()));
+    BOOST_REQUIRE_GT(rows.size(),2u);
+    values.clear();for(const auto& value:rows)values.push_back(value.c_str());
+    BOOST_REQUIRE_MESSAGE(ksch_session_apply_simulation_workflow(session.get(),19,values.data(),values.size())==KSCH_OK,ksch_session_last_error(session.get()));
+    rows.clear();BOOST_REQUIRE_EQUAL(ksch_session_simulation_workflow(session.get(),0,modelVisitor,&rows),KSCH_OK);
+    BOOST_CHECK_EQUAL(rows[5],selector[1]);
+    rows.clear();BOOST_REQUIRE_EQUAL(ksch_session_simulation_workflow(session.get(),21,modelVisitor,&rows),KSCH_OK);BOOST_REQUIRE_EQUAL(rows.size(),1u);
+
+
+
+}
+BOOST_AUTO_TEST_SUITE_END()
+
+BOOST_AUTO_TEST_SUITE( SchHostLibraryConnectionDialogs )
+BOOST_AUTO_TEST_CASE( ConnectionSettingsSaveAndValidateWithoutConnecting )
+{
+    const auto temp=std::filesystem::temp_directory_path()/("kicad_library_config_"+std::to_string(::getpid()));
+    std::filesystem::create_directories(temp);
+    const auto schematic=temp/"config.kicad_sch";
+    std::filesystem::copy_file(eeschemaFixture("api_kitchen_sink.kicad_sch").ToStdString(),schematic,std::filesystem::copy_options::overwrite_existing);
+    const auto config=temp/"test.kicad_dbl";
+    { std::ofstream output(config); output<<R"({"meta":{"version":1},"source":{"type":"odbc","dsn":"GPUI_TEST","timeout":5},"libraries":[],"cache":{"max_size":10,"max_age":30}})"; }
+    std::unique_ptr<ksch_session,decltype(&ksch_session_destroy)> session(ksch_session_create(),ksch_session_destroy);
+    BOOST_REQUIRE_EQUAL(ksch_session_load_file(session.get(),schematic.string().c_str()),KSCH_OK);
+    const auto uri=config.string();
+    ksch_library_row row{"TestDB","Database",uri.c_str(),"","",1,1};
+    BOOST_REQUIRE_EQUAL(ksch_session_save_library_table(session.get(),0,&row,1),KSCH_OK);
+    std::vector<std::string> rows;
+    auto visitor=[](void* context,const char*,const char* value){static_cast<std::vector<std::string>*>(context)->push_back(value);};
+    BOOST_REQUIRE_MESSAGE(ksch_session_configure_library(session.get(),0,"TestDB",visitor,&rows)==KSCH_OK,ksch_session_last_error(session.get()));
+    BOOST_REQUIRE_EQUAL(rows.size(),9u); BOOST_CHECK_EQUAL(rows[3],"GPUI_TEST");
+    rows[3]="GPUI_CHANGED";
+    std::vector<const char*> values; for(const auto& value:rows)values.push_back(value.c_str());
+    BOOST_REQUIRE_MESSAGE(ksch_session_apply_simulation_workflow(session.get(),7,values.data(),values.size())==KSCH_OK,ksch_session_last_error(session.get()));
+    rows.clear(); BOOST_REQUIRE_EQUAL(ksch_session_configure_library(session.get(),0,"TestDB",visitor,&rows),KSCH_OK);
+    BOOST_CHECK_EQUAL(rows[3],"GPUI_CHANGED");
+    rows[7]="-1";
+    values.clear();for(const auto& value:rows)values.push_back(value.c_str());
+    BOOST_CHECK_EQUAL(ksch_session_apply_simulation_workflow(session.get(),7,values.data(),values.size()),KSCH_ERR_INVALID_ARG);
+    rows.clear();BOOST_REQUIRE_EQUAL(ksch_session_configure_library(session.get(),0,"TestDB",visitor,&rows),KSCH_OK);
+    BOOST_CHECK_EQUAL(rows[7],"10");
+}
+BOOST_AUTO_TEST_SUITE_END()
+
+BOOST_AUTO_TEST_SUITE( SchHostSimulationEngine )
+BOOST_AUTO_TEST_CASE( OperatingPointRunsWithoutSimulatorFrame )
+{
+    struct BuildRuntime {
+        wxString previous;
+        bool present;
+        BuildRuntime() : present(wxGetEnv("KICAD_RUN_FROM_BUILD_DIR",&previous)) { wxSetEnv("KICAD_RUN_FROM_BUILD_DIR","1"); }
+        ~BuildRuntime() { if(present)wxSetEnv("KICAD_RUN_FROM_BUILD_DIR",previous);else wxUnsetEnv("KICAD_RUN_FROM_BUILD_DIR"); }
+    } buildRuntime;
+
+    std::unique_ptr<ksch_session,decltype(&ksch_session_destroy)> session(ksch_session_create(),ksch_session_destroy);
+    BOOST_REQUIRE_EQUAL(ksch_session_load_file(session.get(),eeschemaFixture("spice_netlists/rlc/rlc.kicad_sch").utf8_str().data()),KSCH_OK);
+    const char* values[]{".op","240","1"};
+    BOOST_REQUIRE_MESSAGE(ksch_session_apply_simulation_workflow(session.get(),1,values,3)==KSCH_OK,ksch_session_last_error(session.get()));
+    std::vector<std::string> rows;
+    auto visitor=[](void* context,const char*,const char* value){static_cast<std::vector<std::string>*>(context)->push_back(value);};
+    for(int i=0;i<200;++i) {
+        rows.clear(); BOOST_REQUIRE_EQUAL(ksch_session_simulation_workflow(session.get(),2,visitor,&rows),KSCH_OK);
+        if(rows.size()>1 && rows[0]=="Finished")break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    BOOST_REQUIRE(!rows.empty());BOOST_CHECK_EQUAL(rows[0],"Finished");
+    BOOST_CHECK_GT(rows.size(),1u);
+    const char* signal[]{"gpui_signal","1 + 2"};
+    BOOST_REQUIRE_MESSAGE(ksch_session_apply_simulation_workflow(session.get(),14,signal,2)==KSCH_OK,ksch_session_last_error(session.get()));
+    rows.clear();BOOST_REQUIRE_MESSAGE(ksch_session_simulation_workflow(session.get(),17,visitor,&rows)==KSCH_OK,ksch_session_last_error(session.get()));
+    BOOST_CHECK_EQUAL(rows[0],"gpui_signal");
+    BOOST_CHECK(std::find(rows.begin(),rows.end(),"0,3,0")!=rows.end());
+    const char* partialEdit[]{"gpui_signal","8","zz_invalid","gpui_missing_vector + 1"};
+    BOOST_CHECK(ksch_session_apply_simulation_workflow(session.get(),14,partialEdit,4)!=KSCH_OK);
+    rows.clear();BOOST_REQUIRE_EQUAL(ksch_session_simulation_workflow(session.get(),17,visitor,&rows),KSCH_OK);
+    BOOST_CHECK(std::find(rows.begin(),rows.end(),"0,3,0")!=rows.end());
+    const char* invalidEdit[]{"gpui_signal","gpui_missing_vector + 1"};
+    BOOST_CHECK(ksch_session_apply_simulation_workflow(session.get(),14,invalidEdit,2)!=KSCH_OK);
+    rows.clear();BOOST_REQUIRE_EQUAL(ksch_session_simulation_workflow(session.get(),17,visitor,&rows),KSCH_OK);
+    BOOST_CHECK(std::find(rows.begin(),rows.end(),"0,3,0")!=rows.end());
+    const char* commandSubstitution[]{"bad","`echo 1`"};
+    BOOST_CHECK_EQUAL(ksch_session_apply_simulation_workflow(session.get(),14,commandSubstitution,2),KSCH_ERR_INVALID_ARG);
+    const char* extraControl[]{".op\n.control\necho unintended\n.endc","240","1"};
+    BOOST_CHECK_EQUAL(ksch_session_apply_simulation_workflow(session.get(),1,extraControl,3),KSCH_ERR_INVALID_ARG);
+    const char* injected[]{"bad","1; quit"};
+    BOOST_CHECK_EQUAL(ksch_session_apply_simulation_workflow(session.get(),14,injected,2),KSCH_ERR_INVALID_ARG);
+    // The fixture contains .tran 1u 10m. The requested analysis must replace it.
+    const char* transient[]{".tran 10u 1m","240","1"};
+    BOOST_REQUIRE_MESSAGE(ksch_session_apply_simulation_workflow(session.get(),1,transient,3)==KSCH_OK,ksch_session_last_error(session.get()));
+    for(int i=0;i<200;++i){rows.clear();BOOST_REQUIRE_EQUAL(ksch_session_simulation_workflow(session.get(),2,visitor,&rows),KSCH_OK);if(!rows.empty()&&rows[0]=="Finished")break;std::this_thread::sleep_for(std::chrono::milliseconds(10));}
+    BOOST_REQUIRE(!rows.empty());BOOST_REQUIRE_EQUAL(rows[0],"Finished");
+    const char* timeVector[]{"time"};BOOST_REQUIRE_EQUAL(ksch_session_apply_simulation_workflow(session.get(),17,timeVector,1),KSCH_OK);
+    std::vector<double> times;
+    auto samples=[](void* context,const char* name,const char* value){if(std::string(name)=="Sample")static_cast<std::vector<double>*>(context)->push_back(std::stod(value));};
+    BOOST_REQUIRE_EQUAL(ksch_session_simulation_workflow(session.get(),17,samples,&times),KSCH_OK);
+    BOOST_REQUIRE_GT(times.size(),1u);BOOST_CHECK_SMALL(times.back()-0.001,1e-9);
+
+}
+BOOST_AUTO_TEST_SUITE_END()
+
+BOOST_AUTO_TEST_SUITE( SchHostInheritedLibraryDialogs )
+BOOST_AUTO_TEST_CASE( PinDialogTargetsRootAndRejectsDirectDerivedMutation )
+{
+    const auto temp=std::filesystem::temp_directory_path()/("kicad_library_derived_"+std::to_string(::getpid()));
+    std::filesystem::create_directories(temp);
+    const auto source=std::filesystem::path(eeschemaFixture("variant_field_resolution").ToStdString());
+    for(const auto* name:{"variant_field_resolution.kicad_sch","variant_field_resolution.kicad_pro","variant_test_lib.kicad_sym","sym-lib-table"})
+        std::filesystem::copy_file(source/name,temp/name,std::filesystem::copy_options::overwrite_existing);
+    {
+        const auto file=temp/"variant_test_lib.kicad_sym";
+        std::ifstream input(file);std::string text((std::istreambuf_iterator<char>(input)),{});input.close();
+        const auto pos=text.find_last_of(')');BOOST_REQUIRE(pos!=std::string::npos);
+        text.insert(pos,R"((symbol "GPUI_Derived" (extends "R_100R") (property "Reference" "R" (at 0 0 0) (effects (font (size 1.27 1.27)))) (property "Value" "GPUI_Derived" (at 0 0 0) (effects (font (size 1.27 1.27)))))
+)");
+        std::ofstream output(file);output<<text;
+    }
+    {
+        const auto file=temp/"variant_field_resolution.kicad_sch";
+        std::ifstream input(file);std::string text((std::istreambuf_iterator<char>(input)),{});input.close();
+        const std::string old="R_100R",replacement="GPUI_Derived";
+        for(size_t pos=0;(pos=text.find(old,pos))!=std::string::npos;pos+=replacement.size())text.replace(pos,old.size(),replacement);
+        std::ofstream output(file);output<<text;
+    }
+    std::unique_ptr<ksch_session,decltype(&ksch_session_destroy)> session(ksch_session_create(),ksch_session_destroy);
+    BOOST_REQUIRE_MESSAGE(ksch_session_load_file(session.get(),(temp/"variant_field_resolution.kicad_sch").string().c_str())==KSCH_OK,ksch_session_last_error(session.get()));
+    BOOST_REQUIRE_EQUAL(ksch_session_run_action(session.get(),"common.Interactive.selectAll",nullptr),KSCH_OK);
+    std::vector<std::string> rows;
+    auto visitor=[](void* context,const char*,const char* value){static_cast<std::vector<std::string>*>(context)->push_back(value);};
+    BOOST_REQUIRE_MESSAGE(ksch_session_simulation_workflow(session.get(),5,visitor,&rows)==KSCH_OK,ksch_session_last_error(session.get()));
+    BOOST_REQUIRE_GT(rows.size(),13u);BOOST_CHECK_EQUAL(rows[0],"variant_test_lib:R_100R");
+    const auto original=rows[2];rows[0]="variant_test_lib:GPUI_Derived";rows[2]="DO_NOT_CHANGE_ROOT";
+    std::vector<const char*> values;for(const auto& value:rows)values.push_back(value.c_str());
+    BOOST_CHECK_EQUAL(ksch_session_apply_simulation_workflow(session.get(),5,values.data(),values.size()),KSCH_ERR_INVALID_ARG);
+    rows.clear();BOOST_REQUIRE_EQUAL(ksch_session_simulation_workflow(session.get(),5,visitor,&rows),KSCH_OK);
+    BOOST_CHECK_EQUAL(rows[2],original);
+    rows.clear();BOOST_REQUIRE_MESSAGE(ksch_session_simulation_workflow(session.get(),16,visitor,&rows)==KSCH_OK,ksch_session_last_error(session.get()));
+    BOOST_REQUIRE_GT(rows.size(),7u);BOOST_CHECK_EQUAL(rows[0],"variant_test_lib:GPUI_Derived");
+    const auto schema=rows.back();rows.back()="stale field schema";
+    values.clear();for(const auto& value:rows)values.push_back(value.c_str());
+    BOOST_CHECK_EQUAL(ksch_session_apply_simulation_workflow(session.get(),16,values.data(),values.size()),KSCH_ERR_INVALID_ARG);
+    rows.back()=schema;
+    rows[5]="true";
+    values.clear();for(const auto& value:rows)values.push_back(value.c_str());
+    BOOST_REQUIRE_MESSAGE(ksch_session_apply_simulation_workflow(session.get(),16,values.data(),values.size())==KSCH_OK,ksch_session_last_error(session.get()));
+    rows.clear();BOOST_REQUIRE_EQUAL(ksch_session_simulation_workflow(session.get(),3,visitor,&rows),KSCH_OK);
+    BOOST_CHECK_EQUAL(rows[0],"variant_test_lib:GPUI_Derived");
+}
+BOOST_AUTO_TEST_SUITE_END()
+
+BOOST_AUTO_TEST_SUITE( SchHostDocumentSetup )
+BOOST_AUTO_TEST_CASE( BusAliasesAndNetclassesValidateAndPersistWithoutDialogs )
+{
+    const auto temp = std::filesystem::temp_directory_path() / ("gpui_setup_" + std::to_string(::getpid()));
+    std::filesystem::create_directories( temp );
+    const auto path = temp / "setup.kicad_sch";
+    std::filesystem::copy_file( eeschemaFixture("api_kitchen_sink.kicad_sch").ToStdString(), path,
+                               std::filesystem::copy_options::overwrite_existing );
+    std::unique_ptr<ksch_session, decltype(&ksch_session_destroy)> session(ksch_session_create(), ksch_session_destroy);
+    BOOST_REQUIRE_EQUAL( ksch_session_load_file(session.get(),path.string().c_str()), KSCH_OK );
+    using Fields = std::vector<std::pair<std::string,std::string>>;
+    auto read = [&]( uint32_t kind ) {
+        Fields fields;
+        auto visit=[](void* data,const char* name,const char* value) {static_cast<Fields*>(data)->emplace_back(name,value);};
+        BOOST_REQUIRE_EQUAL(ksch_session_document_workflow(session.get(),kind,visit,&fields),KSCH_OK);
+        return fields;
+    };
+    auto apply = [&](uint32_t kind, const Fields& fields) {
+        std::vector<const char*> values; for(const auto& field:fields) values.push_back(field.second.c_str());
+        return ksch_session_apply_document_workflow(session.get(),kind,values.data(),values.size());
+    };
+    auto aliases=read(13); aliases[1].second="DATA"; aliases[2].second="D0,D1,D2";
+    BOOST_REQUIRE_MESSAGE(apply(13,aliases)==KSCH_OK,ksch_session_last_error(session.get()));
+    aliases=read(13);
+    BOOST_CHECK(std::any_of(aliases.begin(),aliases.end(),[](const auto& item){return item.first=="DATA" && item.second=="D0, D1, D2";}));
+    aliases[1].second="DATA"; aliases[2].second="DATA";
+    BOOST_CHECK_EQUAL(apply(13,aliases),KSCH_ERR_INVALID_ARG);
+    auto classes=read(14); classes[1].second="Fast"; classes[2].second="0.25"; classes[8].second="D*";
+    BOOST_REQUIRE_MESSAGE(apply(14,classes)==KSCH_OK,ksch_session_last_error(session.get()));
+    classes=read(14);
+    BOOST_CHECK(std::any_of(classes.begin(),classes.end(),[](const auto& item){return item.first=="Fast";}));
+    classes[1].second="Fast"; classes[6].second="0.2"; classes[7].second="0.4";
+    BOOST_CHECK_EQUAL(apply(14,classes),KSCH_ERR_INVALID_ARG);
+    BOOST_CHECK(std::filesystem::exists(temp/"setup.kicad_pro"));
+    auto readSetup = [&]() {
+        Fields fields;
+        auto visit=[](void* data,const char*,const char* name,const char* value,uint32_t,const char* const*,uint32_t) {
+            static_cast<Fields*>(data)->emplace_back(name,value);
+        };
+        BOOST_REQUIRE_EQUAL(ksch_session_setup(session.get(),visit,&fields),KSCH_OK);
+        return fields;
+    };
+    auto setupBefore=readSetup();
+    auto ercIndex=std::find_if(setupBefore.begin(),setupBefore.end(),[](const auto& field){return field.first.rfind("ERC: ",0)==0;})-setupBefore.begin();
+    BOOST_REQUIRE_LT(static_cast<size_t>(ercIndex),setupBefore.size());
+    const auto sourceProject=temp/"import_source.kicad_pro";
+    std::filesystem::copy_file(temp/"setup.kicad_pro",sourceProject,std::filesystem::copy_options::overwrite_existing);
+    auto setupChanged=setupBefore;
+    setupChanged[ercIndex].second=setupBefore[ercIndex].second=="Ignore"?"Error":"Ignore";
+    std::vector<const char*> setupValues;for(const auto& field:setupChanged)setupValues.push_back(field.second.c_str());
+    BOOST_REQUIRE_EQUAL(ksch_session_apply_setup(session.get(),setupValues.data(),setupValues.size()),KSCH_OK);
+    aliases=read(13); aliases[1].second="EXTRA"; aliases[2].second="E0,E1";
+    BOOST_REQUIRE_MESSAGE(apply(13,aliases)==KSCH_OK,ksch_session_last_error(session.get()));
+    auto importFields=read(18); importFields[0].second=sourceProject.string();
+    BOOST_REQUIRE_MESSAGE(apply(18,importFields)==KSCH_OK,ksch_session_last_error(session.get()));
+    BOOST_CHECK_EQUAL(readSetup()[ercIndex].second,setupBefore[ercIndex].second);
+    aliases=read(13);
+    BOOST_CHECK(std::none_of(aliases.begin(),aliases.end(),[](const auto& item){return item.first=="EXTRA";}));
+    auto global=read(17); global[2].second="1.5";
+    BOOST_REQUIRE_MESSAGE(apply(17,global)==KSCH_OK,ksch_session_last_error(session.get()));
+    int undone=0;
+    BOOST_REQUIRE_EQUAL(ksch_session_undo(session.get(),&undone),KSCH_OK); BOOST_CHECK_EQUAL(undone,1);
+    session.reset(ksch_session_create());
+    BOOST_REQUIRE_EQUAL(ksch_session_load_file(session.get(),path.string().c_str()),KSCH_OK);
+    aliases=read(13);
+    BOOST_CHECK(std::any_of(aliases.begin(),aliases.end(),[](const auto& item){return item.first=="DATA";}));
+}
+BOOST_AUTO_TEST_SUITE_END()
+
+BOOST_AUTO_TEST_SUITE( SchHostScalarSetup )
+BOOST_AUTO_TEST_CASE( ValidateWholeRequestBeforeSavingAndReloadTypedSettings )
+{
+    const auto temp=std::filesystem::temp_directory_path()/("gpui_scalar_setup_"+std::to_string(::getpid()));
+    std::filesystem::create_directories(temp);
+    const auto path=temp/"scalar.kicad_sch";
+    std::filesystem::copy_file(eeschemaFixture("api_kitchen_sink.kicad_sch").ToStdString(),path,std::filesystem::copy_options::overwrite_existing);
+    std::unique_ptr<ksch_session,decltype(&ksch_session_destroy)> session(ksch_session_create(),ksch_session_destroy);
+    BOOST_REQUIRE_EQUAL(ksch_session_load_file(session.get(),path.string().c_str()),KSCH_OK);
+    using Fields=std::vector<std::pair<std::string,std::string>>;
+    auto read=[&]() {
+        Fields fields;
+        auto visit=[](void* data,const char*,const char* name,const char* value,uint32_t,const char* const*,uint32_t) {
+            static_cast<Fields*>(data)->emplace_back(name,value);
+        };
+        BOOST_REQUIRE_EQUAL(ksch_session_setup(session.get(),visit,&fields),KSCH_OK);
+        return fields;
+    };
+    auto apply=[&](const Fields& fields) {
+        std::vector<const char*> values; for(const auto& field:fields) values.push_back(field.second.c_str());
+        return ksch_session_apply_setup(session.get(),values.data(),values.size());
+    };
+    const auto original=read();
+    auto edited=original;
+    BOOST_REQUIRE_GE(edited.size(),2u);
+    edited[0].second="2"; edited[1].second="invalid";
+    BOOST_CHECK_EQUAL(apply(edited),KSCH_ERR_INVALID_ARG);
+    BOOST_CHECK(read()==original);
+    edited[1].second=original[1].second;
+    BOOST_REQUIRE_MESSAGE(apply(edited)==KSCH_OK,ksch_session_last_error(session.get()));
+    BOOST_CHECK_EQUAL(read()[0].second,"2");
+    BOOST_CHECK(std::filesystem::exists(temp/"scalar.kicad_pro"));
+    session.reset(ksch_session_create());
+    BOOST_REQUIRE_EQUAL(ksch_session_load_file(session.get(),path.string().c_str()),KSCH_OK);
+    BOOST_CHECK_EQUAL(read()[0].second,"2");
+}
+BOOST_AUTO_TEST_SUITE_END()
+
+BOOST_AUTO_TEST_SUITE( SchHostDocumentMigration )
+BOOST_AUTO_TEST_CASE( BoardImportPreviewThenApplyAndUndoUsesNativeBackannotation )
+{
+    const auto temp=std::filesystem::temp_directory_path()/("gpui_backannotation_"+std::to_string(::getpid()));
+    std::filesystem::create_directories(temp);
+    const auto pcb=temp/"changes.kicad_pcb";
+    {std::ofstream out(pcb);out<<R"PCB((kicad_pcb (version 20250101) (footprint "Resistor_SMD:R_0603_1608Metric" (property "Reference" "R1") (property "Value" "47k") (path ""))))PCB";}
+    std::unique_ptr<ksch_session,decltype(&ksch_session_destroy)> session(ksch_session_create(),ksch_session_destroy);
+    BOOST_REQUIRE_EQUAL(ksch_session_load_file(session.get(),eeschemaFixture("api_kitchen_sink.kicad_sch").utf8_str().data()),KSCH_OK);
+    using Fields=std::vector<std::pair<std::string,std::string>>;
+    auto read=[&](uint32_t kind){Fields values;auto visit=[](void* data,const char* name,const char* value){static_cast<Fields*>(data)->emplace_back(name,value);};
+        BOOST_REQUIRE_EQUAL(ksch_session_document_workflow(session.get(),kind,visit,&values),KSCH_OK);return values;};
+    auto apply=[&](uint32_t kind,const Fields& fields){std::vector<const char*> values;for(const auto& field:fields)values.push_back(field.second.c_str());return ksch_session_apply_document_workflow(session.get(),kind,values.data(),values.size());};
+    auto value=[&](){const auto fields=read(7);auto found=std::find_if(fields.begin(),fields.end(),[](const auto& field){return field.first=="R1 / Value";});BOOST_REQUIRE(found!=fields.end());return found->second;};
+    const auto old=value();
+    auto fields=read(20);fields[1].second=pcb.string();fields[2].second="yes";fields[3].second="no";fields[7].second="no";
+    BOOST_REQUIRE_MESSAGE(apply(20,fields)==KSCH_OK,ksch_session_last_error(session.get()));
+    BOOST_CHECK_EQUAL(value(),old);
+    BOOST_CHECK(!read(20).back().second.empty());
+    fields[0].second="apply";
+    BOOST_REQUIRE_MESSAGE(apply(20,fields)==KSCH_OK,ksch_session_last_error(session.get()));
+    BOOST_CHECK_EQUAL(value(),"47k");
+    int undone=0;BOOST_REQUIRE_EQUAL(ksch_session_undo(session.get(),&undone),KSCH_OK);BOOST_CHECK_EQUAL(undone,1);
+    BOOST_CHECK_EQUAL(value(),old);
+}
+BOOST_AUTO_TEST_CASE( BusMigrationDetectsConflictsAndCommitsOneUndo )
+{
+    const auto temp=std::filesystem::temp_directory_path()/("gpui_bus_migration_"+std::to_string(::getpid()));
+    std::filesystem::create_directories(temp);
+    std::ifstream input(eeschemaFixture("api_kitchen_sink.kicad_sch").ToStdString());
+    std::string source((std::istreambuf_iterator<char>(input)),std::istreambuf_iterator<char>());
+    const auto end=source.rfind(')');BOOST_REQUIRE(end!=std::string::npos);
+    source.insert(end,R"SCH(
+(bus (pts (xy 400 400) (xy 450 400)) (stroke (width 0) (type default)) (uuid "30000000-0000-4000-8000-000000000001"))
+(label "DATA[0..3]" (at 400 400 0) (effects (font (size 1.27 1.27))) (uuid "30000000-0000-4000-8000-000000000002"))
+(label "ADDR[0..7]" (at 450 400 0) (effects (font (size 1.27 1.27))) (uuid "30000000-0000-4000-8000-000000000003"))
+)SCH");
+    const auto path=temp/"migration.kicad_sch";{std::ofstream out(path);out<<source;}
+    std::unique_ptr<ksch_session,decltype(&ksch_session_destroy)> session(ksch_session_create(),ksch_session_destroy);
+    BOOST_REQUIRE_MESSAGE(ksch_session_load_file(session.get(),path.string().c_str())==KSCH_OK,ksch_session_last_error(session.get()));
+    auto read=[&](){std::vector<std::string> values;auto visit=[](void* data,const char*,const char* value){static_cast<std::vector<std::string>*>(data)->push_back(value);};BOOST_REQUIRE_EQUAL(ksch_session_document_workflow(session.get(),19,visit,&values),KSCH_OK);return values;};
+    auto values=read();BOOST_REQUIRE_GE(values.size(),3u);
+    values[2]="BUS[0..7]";
+    std::vector<const char*> pointers;for(const auto& value:values)pointers.push_back(value.c_str());
+    BOOST_REQUIRE_MESSAGE(ksch_session_apply_document_workflow(session.get(),19,pointers.data(),pointers.size())==KSCH_OK,ksch_session_last_error(session.get()));
+    BOOST_CHECK_LT(read().size(),values.size());
+    int undone=0;BOOST_REQUIRE_EQUAL(ksch_session_undo(session.get(),&undone),KSCH_OK);BOOST_CHECK_EQUAL(undone,1);
+    BOOST_CHECK_EQUAL(read().size(),values.size());
+}
+BOOST_AUTO_TEST_SUITE_END()
+
+BOOST_AUTO_TEST_SUITE( SchHostFieldCaseAndDataSources )
+BOOST_AUTO_TEST_CASE( JoinConflictingFieldNamesThenUndo )
+{
+    const auto temp=std::filesystem::temp_directory_path()/("gpui_field_case_"+std::to_string(::getpid()));
+    std::filesystem::create_directories(temp);
+    std::ifstream input(eeschemaFixture("api_kitchen_sink.kicad_sch").ToStdString());
+    std::string source((std::istreambuf_iterator<char>(input)),std::istreambuf_iterator<char>());
+    const auto at=source.find("(property \"Reference\" \"R1\"");BOOST_REQUIRE(at!=std::string::npos);
+    source.insert(at,R"FIELDS((property "Part" "One" (at 110 40 0) (effects (font (size 1.27 1.27))))
+(property "part" "Two" (at 110 42 0) (effects (font (size 1.27 1.27))))
+)FIELDS");
+    const auto path=temp/"fields.kicad_sch";{std::ofstream out(path);out<<source;}
+    std::unique_ptr<ksch_session,decltype(&ksch_session_destroy)> session(ksch_session_create(),ksch_session_destroy);
+    BOOST_REQUIRE_MESSAGE(ksch_session_load_file(session.get(),path.string().c_str())==KSCH_OK,ksch_session_last_error(session.get()));
+    auto read=[&](uint32_t kind){std::vector<std::string> values;auto visit=[](void* data,const char*,const char* value){static_cast<std::vector<std::string>*>(data)->push_back(value);};BOOST_REQUIRE_EQUAL(ksch_session_document_workflow(session.get(),kind,visit,&values),KSCH_OK);return values;};
+    auto values=read(21);BOOST_REQUIRE_GE(values.size(),5u);values[4]="join";
+    std::vector<const char*> pointers;for(const auto& value:values)pointers.push_back(value.c_str());
+    BOOST_REQUIRE_MESSAGE(ksch_session_apply_document_workflow(session.get(),21,pointers.data(),pointers.size())==KSCH_OK,ksch_session_last_error(session.get()));
+    BOOST_CHECK_EQUAL(read(21).size(),2u);
+    auto fields=read(7);BOOST_CHECK(std::find(fields.begin(),fields.end(),"One; Two")!=fields.end());
+    int undone=0;BOOST_REQUIRE_EQUAL(ksch_session_undo(session.get(),&undone),KSCH_OK);BOOST_CHECK_EQUAL(undone,1);
+    BOOST_CHECK_EQUAL(read(21).size(),values.size());
+}
+BOOST_AUTO_TEST_CASE( DataSourceManagementRejectsMissingArchiveWithoutShowingDialogs )
+{
+    std::unique_ptr<ksch_session,decltype(&ksch_session_destroy)> session(ksch_session_create(),ksch_session_destroy);
+    BOOST_REQUIRE_EQUAL(ksch_session_load_file(session.get(),eeschemaFixture("api_kitchen_sink.kicad_sch").utf8_str().data()),KSCH_OK);
+    std::vector<std::string> values;
+    auto visit=[](void* data,const char*,const char* value){static_cast<std::vector<std::string>*>(data)->push_back(value);};
+    BOOST_REQUIRE_EQUAL(ksch_session_document_workflow(session.get(),22,visit,&values),KSCH_OK);
+    BOOST_REQUIRE_GE(values.size(),5u);values[0]="install";values[1]="/nonexistent/gpui-source.zip";
+    std::vector<const char*> pointers;for(const auto& value:values)pointers.push_back(value.c_str());
+    BOOST_CHECK_EQUAL(ksch_session_apply_document_workflow(session.get(),22,pointers.data(),pointers.size()),KSCH_ERR_INVALID_ARG);
+}
+BOOST_AUTO_TEST_SUITE_END()
+
+BOOST_AUTO_TEST_SUITE( SchHostDataSourceRollback )
+BOOST_AUTO_TEST_CASE( InvalidReplacementArchiveRestoresInstalledFiles )
+{
+    const auto temp=std::filesystem::temp_directory_path()/("gpui_pcm_rollback_"+std::to_string(::getpid()));
+    const auto package=temp/"resources"/"org_kicad_gpui_rollback_test";
+    std::filesystem::create_directories(package);
+    { std::ofstream original(package/"original.txt"); original<<"preserve installed data"; }
+    struct EnvironmentGuard
+    {
+        ENV_VAR_MAP old=Pgm().GetLocalEnvVariables();
+        wxString oldRuntime;
+        bool hadRuntime=wxGetEnv("KICAD_RUN_FROM_BUILD_DIR",&oldRuntime);
+        wxString oldStock;
+        bool hadStock=wxGetEnv("KICAD_STOCK_DATA_HOME",&oldStock);
+        ~EnvironmentGuard() {
+            Pgm().GetLocalEnvVariables()=old;
+            if(hadRuntime)wxSetEnv("KICAD_RUN_FROM_BUILD_DIR",oldRuntime);else wxUnsetEnv("KICAD_RUN_FROM_BUILD_DIR");
+            if(hadStock)wxSetEnv("KICAD_STOCK_DATA_HOME",oldStock);else wxUnsetEnv("KICAD_STOCK_DATA_HOME");
+        }
+    } environment;
+    Pgm().GetLocalEnvVariables()[ENV_VAR::GetVersionedEnvVarName("3RD_PARTY")]=ENV_VAR_ITEM(wxString::FromUTF8(temp.string()));
+    wxUnsetEnv("KICAD_RUN_FROM_BUILD_DIR");
+    const auto stock=std::filesystem::path(eeschemaFixture("../../../kicad/pcm").ToStdString()).lexically_normal();
+    BOOST_REQUIRE(std::filesystem::exists(stock/"schemas"/"pcm.v2.schema.json"));
+    wxSetEnv("KICAD_STOCK_DATA_HOME",wxString::FromUTF8(stock.string()));
+    const auto archive=temp/"bad.zip";
+    {
+        wxFFileOutputStream output(wxString::FromUTF8(archive.string()));
+        wxZipOutputStream zip(output);
+        const std::string metadata=R"({"name":"Rollback test","description":"test","description_full":"test","identifier":"org.kicad.gpui.rollback.test","type":"datasource","author":{"name":"KiCad","contact":{}},"license":"GPL-3.0","resources":{},"versions":[{"kicad_version":"7.0.0","version":"1.0.0","status":"stable"}]})";
+        zip.PutNextEntry("metadata.json");zip.Write(metadata.data(),metadata.size());
+        zip.PutNextEntry("resources/replacement.txt");zip.Write("partial",7);
+        zip.PutNextEntry("resources/../../escape.txt");zip.Write("invalid",7);
+        BOOST_REQUIRE(zip.Close());
+    }
+    std::unique_ptr<ksch_session,decltype(&ksch_session_destroy)> session(ksch_session_create(),ksch_session_destroy);
+    BOOST_REQUIRE_EQUAL(ksch_session_load_file(session.get(),eeschemaFixture("api_kitchen_sink.kicad_sch").utf8_str().data()),KSCH_OK);
+    std::vector<std::string> values;
+    auto visit=[](void* data,const char*,const char* value){static_cast<std::vector<std::string>*>(data)->push_back(value);};
+    BOOST_REQUIRE_EQUAL(ksch_session_document_workflow(session.get(),22,visit,&values),KSCH_OK);
+    values[0]="install";values[1]=archive.string();values[3]="yes";
+    std::vector<const char*> pointers;for(const auto& value:values)pointers.push_back(value.c_str());
+    BOOST_REQUIRE_EQUAL(ksch_session_apply_document_workflow(session.get(),22,pointers.data(),pointers.size()),KSCH_ERR_INVALID_ARG);
+    BOOST_CHECK_MESSAGE(std::string(ksch_session_last_error(session.get())).find("restoring previous files")!=std::string::npos,
+                        ksch_session_last_error(session.get()));
+    std::ifstream original(package/"original.txt");std::string contents((std::istreambuf_iterator<char>(original)),{});
+    BOOST_CHECK_EQUAL(contents,"preserve installed data");
+    BOOST_CHECK(!std::filesystem::exists(package/"replacement.txt"));
+    BOOST_CHECK(!std::filesystem::exists(temp/"escape.txt"));
+}
+BOOST_AUTO_TEST_SUITE_END()
+
+BOOST_AUTO_TEST_SUITE( SchHostNetChainSettings )
+BOOST_AUTO_TEST_CASE( RenameAndCreatePersistProjectChainClasses )
+{
+    const auto temp=std::filesystem::temp_directory_path()/("gpui_chain_settings_"+std::to_string(::getpid()));
+    std::filesystem::create_directories(temp);
+    const auto path=temp/"chains.kicad_sch";
+    std::filesystem::copy_file(eeschemaFixture("net_chains_four_nets_labeled.kicad_sch").ToStdString(),path,std::filesystem::copy_options::overwrite_existing);
+    std::unique_ptr<ksch_session,decltype(&ksch_session_destroy)> session(ksch_session_create(),ksch_session_destroy);
+    BOOST_REQUIRE_EQUAL(ksch_session_load_file(session.get(),path.string().c_str()),KSCH_OK);
+    using Fields=std::vector<std::pair<std::string,std::string>>;
+    auto read=[&](uint32_t kind){Fields fields;auto visit=[](void* data,const char* name,const char* value){static_cast<Fields*>(data)->emplace_back(name,value);};BOOST_REQUIRE_EQUAL(ksch_session_document_workflow(session.get(),kind,visit,&fields),KSCH_OK);return fields;};
+    auto apply=[&](uint32_t kind,const Fields& fields){std::vector<const char*> values;for(const auto& field:fields)values.push_back(field.second.c_str());return ksch_session_apply_document_workflow(session.get(),kind,values.data(),values.size());};
+    // The fixture supplies a potential chain, not a committed one. Create it
+    // through the same native service before testing rename and persistence.
+    auto initial=read(16);initial[0].second="SIG";
+    initial[4].second="TP1";initial[5].second="1";initial[6].second="TP2";initial[7].second="1";
+    for(size_t i=8;i<initial.size();++i){if(!initial[1].second.empty())initial[1].second+=",";initial[1].second+=initial[i].second;}
+    BOOST_REQUIRE_MESSAGE(apply(16,initial)==KSCH_OK,ksch_session_last_error(session.get()));
+    auto setup=read(15);setup[1].second="SIG";setup[2].second="Renamed";setup[3].second="HighSpeed";
+    BOOST_REQUIRE_MESSAGE(apply(15,setup)==KSCH_OK,ksch_session_last_error(session.get()));
+    BOOST_REQUIRE_EQUAL(ksch_session_save(session.get()),KSCH_OK);
+    auto reopen=[&](){session.reset(ksch_session_create());BOOST_REQUIRE_EQUAL(ksch_session_load_file(session.get(),path.string().c_str()),KSCH_OK);};
+    reopen();setup=read(15);
+    BOOST_REQUIRE(std::any_of(setup.begin(),setup.end(),[](const auto& field){return field.first=="Renamed" && field.second.find("class: HighSpeed")!=std::string::npos;}));
+    setup[0].second="delete";setup[1].second="Renamed";
+    BOOST_REQUIRE_MESSAGE(apply(15,setup)==KSCH_OK,ksch_session_last_error(session.get()));
+    auto create=read(16);create[0].second="Manual";create[3].second="ManualClass";
+    create[4].second="TP1";create[5].second="1";create[6].second="TP2";create[7].second="1";
+    for(size_t i=8;i<create.size();++i){if(!create[1].second.empty())create[1].second+=",";create[1].second+=create[i].second;}
+    BOOST_REQUIRE_MESSAGE(apply(16,create)==KSCH_OK,ksch_session_last_error(session.get()));
+    BOOST_REQUIRE_EQUAL(ksch_session_save(session.get()),KSCH_OK);
+    reopen();setup=read(15);
+    BOOST_CHECK(std::any_of(setup.begin(),setup.end(),[](const auto& field){return field.first=="Manual" && field.second.find("class: ManualClass")!=std::string::npos;}));
+}
+BOOST_AUTO_TEST_SUITE_END()
+
+BOOST_AUTO_TEST_SUITE( SchHostSchematicImport )
+BOOST_AUTO_TEST_CASE( AppendAndHierarchicalImportCommitAndUndo )
+{
+    const auto temp=std::filesystem::temp_directory_path()/("gpui_schematic_import_"+std::to_string(::getpid()));
+    std::filesystem::create_directories(temp);
+    const auto root=temp/"root.kicad_sch",source=temp/"source.kicad_sch";
+    std::filesystem::copy_file(eeschemaFixture("net_chains_four_nets_labeled.kicad_sch").ToStdString(),root,std::filesystem::copy_options::overwrite_existing);
+    std::filesystem::copy_file(root,source,std::filesystem::copy_options::overwrite_existing);
+    std::unique_ptr<ksch_session,decltype(&ksch_session_destroy)> session(ksch_session_create(),ksch_session_destroy);
+    BOOST_REQUIRE_EQUAL(ksch_session_load_file(session.get(),root.string().c_str()),KSCH_OK);
+    auto read=[&](uint32_t kind){std::vector<std::string> fields;auto visit=[](void* data,const char*,const char* value){static_cast<std::vector<std::string>*>(data)->push_back(value);};BOOST_REQUIRE_EQUAL(ksch_session_document_workflow(session.get(),kind,visit,&fields),KSCH_OK);return fields;};
+    auto apply=[&](const std::vector<std::string>& fields){std::vector<const char*> values;for(const auto& field:fields)values.push_back(field.c_str());return ksch_session_apply_document_workflow(session.get(),23,values.data(),values.size());};
+    const auto originalFields=read(7).size();
+    auto fields=read(23);fields[0]="append";fields[1]=source.string();fields[3]="invalid";
+    BOOST_CHECK_EQUAL(apply(fields),KSCH_ERR_INVALID_ARG);BOOST_CHECK_EQUAL(read(7).size(),originalFields);
+    fields[3]="25";
+    BOOST_REQUIRE_MESSAGE(apply(fields)==KSCH_OK,ksch_session_last_error(session.get()));
+    BOOST_CHECK_GT(read(7).size(),originalFields);
+    int undone=0;BOOST_REQUIRE_EQUAL(ksch_session_undo(session.get(),&undone),KSCH_OK);BOOST_CHECK_EQUAL(undone,1);
+    BOOST_CHECK_EQUAL(read(7).size(),originalFields);
+    fields[0]="sheet";fields[2]="Imported";
+    BOOST_REQUIRE_MESSAGE(apply(fields)==KSCH_OK,ksch_session_last_error(session.get()));
+    uint32_t count=0;BOOST_REQUIRE_EQUAL(ksch_session_sheet_count(session.get(),&count),KSCH_OK);BOOST_CHECK_EQUAL(count,2u);
+    BOOST_REQUIRE_EQUAL(ksch_session_undo(session.get(),&undone),KSCH_OK);BOOST_CHECK_EQUAL(undone,1);
+    BOOST_REQUIRE_EQUAL(ksch_session_sheet_count(session.get(),&count),KSCH_OK);BOOST_CHECK_EQUAL(count,1u);
+    BOOST_REQUIRE_EQUAL(ksch_session_redo(session.get(),&undone),KSCH_OK);BOOST_CHECK_EQUAL(undone,1);
+    BOOST_REQUIRE_EQUAL(ksch_session_save(session.get()),KSCH_OK);
+    session.reset(ksch_session_create());BOOST_REQUIRE_EQUAL(ksch_session_load_file(session.get(),root.string().c_str()),KSCH_OK);
+    BOOST_REQUIRE_EQUAL(ksch_session_sheet_count(session.get(),&count),KSCH_OK);BOOST_CHECK_EQUAL(count,2u);
+}
 BOOST_AUTO_TEST_SUITE_END()

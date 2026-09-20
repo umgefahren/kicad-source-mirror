@@ -35,9 +35,9 @@ enum class UNDO_REDO;
  * one-way. `SCH_EDIT_FRAME`'s methods of the same names forward here, so the GUI runs this
  * code and cannot drift from it.
  *
- * What is *not* here is the part that genuinely needs a window: restoring page settings
- * goes through `DS_PROXY_UNDO_ITEM`, which takes an `EDA_DRAW_FRAME`, and the hierarchy
- * navigator and the variant selector are panes. Each of those is reached by downcasting
+ * Native page settings use `SCH_PAGE_SETTINGS_UNDO_ITEM` and require no frame.
+ * The legacy drawing-sheet proxy, hierarchy navigator and variant selector remain
+ * frame-specific. Each of those is reached by downcasting
  * the editor and skipped when the answer is null; ::PutDataInPreviousState says so at each
  * site.
  *

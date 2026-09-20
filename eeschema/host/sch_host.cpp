@@ -66,6 +66,8 @@
 #include <zoom_defines.h>
 
 #include "sch_host.h"
+#include <wildcards_and_files_ext.h>
+#include <erc/erc.h>
 #include "sch_host_control.h"
 
 
@@ -628,6 +630,10 @@ bool SCH_HOST::GetShowAllPins() const
 
 void SCH_HOST::OnModify()
 {
+    // Hierarchy edits and undo/redo update the schematic's sheet list, but the
+    // host also owns the copied list exposed to Rust. Keep names, pages and
+    // counts current after commits rather than retaining the load-time snapshot.
+    rebuildSheetList();
     // A frame additionally requests an autosave and retitles its window. Neither exists
     // here; the screen's own modified flag is what IsModified() and the ABI report, and
     // SCH_COMMIT has already set it.
@@ -876,8 +882,16 @@ bool SCH_HOST::LoadFile( const wxString& aFileName )
     // number of exception types), so nothing below may escape into a C caller.
     try
     {
+        // Standalone sheets still need their own project identity and settings.
+        // Passive loading initializes defaults for a missing .kicad_pro without
+        // writing it or changing the application's active project.
+        wxFileName projectFile( fn );
+        projectFile.MakeAbsolute();
+        projectFile.SetExt( FILEEXT::ProjectFileExtension );
+        if( !settingsManager.GetProject( projectFile.GetFullPath() ) )
+            settingsManager.LoadProject( projectFile.GetFullPath(), false );
         m_schematic = EESCHEMA_HELPERS::LoadSchematic( fn.GetFullPath(), /* aSetActive */ false,
-                                                       /* aForceDefaultProject */ false );
+                /* aForceDefaultProject */ false, settingsManager.GetProject( projectFile.GetFullPath() ) );
     }
     catch( const IO_ERROR& e )
     {
@@ -946,6 +960,7 @@ bool SCH_HOST::LoadFile( const wxString& aFileName )
 
 void SCH_HOST::Unload()
 {
+    m_pendingItemProperties = false;
     m_searchActive = false;
     // The tools must stop referring to the document before it goes. Restating the
     // environment with a null model is what SCH_EDIT_FRAME's equivalent does not need
@@ -987,13 +1002,13 @@ void SCH_HOST::initRenderSettings()
 {
     SCH_RENDER_SETTINGS& settings = RenderSettings();
 
-    settings.LoadColors( ::GetColorSettings( DEFAULT_THEME ) );
+    auto* preferences = GetAppSettings<EESCHEMA_SETTINGS>( "eeschema" );
+    settings.LoadColors( ::GetColorSettings( preferences ? preferences->m_ColorTheme : DEFAULT_THEME ) );
 
-    // Match what the CLI exporters show, so a recorded stream and a `kicad-cli` SVG of the
-    // same sheet are comparable. See EESCHEMA_JOBS_HANDLER::InitRenderSettings().
-    settings.m_ShowHiddenPins = false;
-    settings.m_ShowHiddenFields = false;
-    settings.m_ShowPinAltIcons = false;
+    settings.m_ShowHiddenPins = preferences && preferences->m_Appearance.show_hidden_pins;
+    settings.m_ShowHiddenFields = preferences && preferences->m_Appearance.show_hidden_fields;
+    settings.m_ShowPinAltIcons = preferences && preferences->m_Appearance.show_pin_alt_icons;
+    settings.m_ShowRemappedPinNumbers = preferences && preferences->m_Appearance.show_remapped_pin_numbers;
     settings.m_ShowPinsElectricalType = false;
 
     settings.SetDefaultPenWidth( m_schematic->Settings().m_DefaultLineWidth );
@@ -1321,4 +1336,29 @@ void SCH_HOST::SetSearchData( const SCH_SEARCH_DATA& aData, bool aActive )
     }
     tool->UpdateFind( ACTIONS::updateFind.MakeEvent() );
     m_searchActive = aActive;
+}
+
+
+void SCH_HOST::RunERC( LIBRARY_MANAGER* aLibraries )
+{
+    if( !m_schematic )
+        return;
+
+    // ERC replaces markers. Remove their view references before the engine deletes them.
+    m_toolManager->RunAction( ACTIONS::cancelInteractive );
+    m_toolManager->GetTool<SCH_SELECTION_TOOL>()->ClearSelection();
+    m_toolManager->GetTool<SCH_FIND_REPLACE_TOOL>()->ResetSearch();
+    m_view->Cleanup();
+    m_gal->ClearCache();
+    try
+    {
+        ERC_TESTER tester( m_schematic, false, aLibraries );
+        tester.RunTests( nullptr, nullptr, nullptr, &m_schematic->Project(), nullptr );
+    }
+    catch( ... )
+    {
+        displayCurrentSheet();
+        throw;
+    }
+    displayCurrentSheet();
 }

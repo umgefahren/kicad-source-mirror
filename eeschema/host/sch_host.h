@@ -15,6 +15,7 @@
 #include <cstddef>
 #include <eda_search_data.h>
 #include <memory>
+#include <utility>
 #include <vector>
 
 #include <gal/cursors.h>
@@ -125,6 +126,8 @@ struct SCH_HOST_SHEET_INFO
  *
  * Not thread safe, and neither is anything it owns. One session per thread.
  */
+class LIBRARY_MANAGER;
+
 class SCH_HOST : public TOOLS_HOLDER, public SCHEMATIC_HOLDER, public CANVAS_HOLDER,
                  public UNITS_PROVIDER, public UNDO_REDO_HOLDER
 {
@@ -158,6 +161,9 @@ public:
     EDA_SEARCH_DATA* GetHostSearchData() override
     { return m_searchActive ? m_searchData.get() : nullptr; }
     void SetSearchData( const SCH_SEARCH_DATA& aData, bool aActive );
+
+    /// Run the native ERC engine and rebuild marker drawing safely.
+    void RunERC( LIBRARY_MANAGER* aLibraries = nullptr );
 
     bool IsLoaded() const { return m_schematic != nullptr; }
 
@@ -422,6 +428,9 @@ public:
      */
     bool GetShowAllPins() const override;
 
+    void RequestItemProperties( SCH_ITEM* ) override { m_pendingItemProperties = true; }
+    bool TakePendingItemProperties() { return std::exchange( m_pendingItemProperties, false ); }
+
     /**
      * Records the request instead of repainting.
      *
@@ -535,6 +544,7 @@ public:
     KIGFX::HOST_VIEW_CONTROLS& ViewControls() { return *m_viewControls; }
 
 private:
+    bool m_pendingItemProperties = false;
     std::unique_ptr<SCH_SEARCH_DATA> m_searchData = std::make_unique<SCH_SEARCH_DATA>();
     bool m_searchActive = false;
 

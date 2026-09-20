@@ -57,6 +57,7 @@
 
 #![deny(missing_docs)]
 
+mod dialog_window;
 pub mod canvas;
 pub mod commands;
 pub mod demo;
@@ -83,3 +84,19 @@ pub use shell::{SchematicShell, init};
 pub use stats::FrameStats;
 pub use theme::CanvasPalette;
 pub use tools::{TOOLS, Tool};
+
+pub mod properties;
+
+pub mod erc;
+
+mod symbols;
+
+pub mod library_workflows;
+
+mod document_dialogs;
+
+mod simulation;
+
+mod simulation_plot;
+
+mod app_menu;

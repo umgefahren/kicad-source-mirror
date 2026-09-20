@@ -8,3 +8,16 @@
 #
 # The leading underscore is the Mach-O symbol prefix.
 _ksch_*
+
+_ksch_session_library_table
+_ksch_session_save_library_table
+
+_ksch_session_simulation_workflow
+_ksch_session_apply_simulation_workflow
+
+_ksch_session_configure_library
+
+_ksch_session_place_symbol_variant
+_ksch_session_preview_symbol
+
+_ksch_session_exclude_erc

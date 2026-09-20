@@ -23,6 +23,8 @@
 //!   menu test asserts on the menu opening and on the action the menu carries,
 //!   rather than clicking a row that cannot be addressed.
 
+type WorkflowCalls = Rc<RefCell<Vec<(u32, Vec<String>)>>>;
+
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -110,9 +112,33 @@ fn open_with(cx: &mut TestAppContext, document: Option<SharedDocument>) -> Harne
     harness
 }
 
-fn frame(cx: &mut TestAppContext, harness: &Harness) {
-    cx.update_window(harness.window, |_, window, cx| window.render_frame(cx))
-        .expect("window is live");
+fn frame(cx: &mut TestAppContext, _harness: &Harness) {
+    cx.run_until_parked();
+    for handle in cx.update(|cx| cx.windows()) {
+        cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+            .expect("enumerated window is live");
+    }
+    cx.run_until_parked();
+}
+
+/// Resolve controls in their native window, preferring the active dialog when
+/// several workflows use the same control IDs.
+fn window_for(cx: &mut TestAppContext, id: impl Into<ElementId>) -> AnyWindowHandle {
+    let id = id.into();
+    let (mut windows, active) = cx.update(|cx| (cx.windows(), cx.active_window()));
+    windows.sort_by_key(|handle| Some(*handle) != active);
+    for handle in windows {
+        let found = cx
+            .update_window(handle, |_, window, cx| {
+                window.render_frame(cx);
+                window.try_find(id.clone()).is_some()
+            })
+            .unwrap_or(false);
+        if found {
+            return handle;
+        }
+    }
+    panic!("control {id:?} was not found in any live window");
 }
 
 /// Bring a tool-palette button into view.
@@ -155,8 +181,13 @@ fn reveal(cx: &mut TestAppContext, harness: &Harness, id: &'static str) {
 /// Click an element, then let the deferred action dispatch run and redraw.
 fn click(cx: &mut TestAppContext, harness: &Harness, id: impl Into<ElementId>) {
     let id = id.into();
-    cx.update_window(harness.window, move |_, window, cx| window.click(id, cx))
-        .expect("window is live");
+    frame(cx, harness);
+    let target = window_for(cx, id.clone());
+    cx.update_window(target, move |_, window, cx| {
+        window.activate_window();
+        window.click(id, cx);
+    })
+    .expect("window is live");
     cx.run_until_parked();
     frame(cx, harness);
 }
@@ -164,10 +195,29 @@ fn click(cx: &mut TestAppContext, harness: &Harness, id: impl Into<ElementId>) {
 /// Press a key, then settle.
 fn press(cx: &mut TestAppContext, harness: &Harness, key: &str) {
     let key = key.to_string();
-    cx.update_window(harness.window, move |_, window, cx| window.press(&key, cx))
+    let target = cx
+        .update(|cx| {
+            cx.active_window()
+                .filter(|handle| cx.windows().contains(handle))
+        })
+        .unwrap_or(harness.window);
+    cx.update_window(target, move |_, window, cx| window.press(&key, cx))
         .expect("window is live");
     cx.run_until_parked();
     frame(cx, harness);
+}
+
+/// GPUI's helper invokes the native should-close callback, but does not perform
+/// the OS's subsequent removal when that callback accepts the close.
+fn native_close(cx: &mut TestAppContext, handle: AnyWindowHandle) {
+    let mut visual = gpui_kit::VisualTestContext::from_window(handle, cx);
+    assert!(
+        visual.simulate_close(),
+        "unmodified native window accepts close"
+    );
+    cx.update_window(handle, |_, window, _| window.remove_window())
+        .unwrap();
+    cx.run_until_parked();
 }
 
 fn active_tool(cx: &mut TestAppContext, harness: &Harness) -> Tool {
@@ -193,8 +243,6 @@ fn the_shell_renders_every_region(cx: &mut TestAppContext) {
         window.render_frame(cx);
         for id in [
             "schematic-shell",
-            "menu-row",
-            "menu-bar",
             "toolbar",
             "tool-palette",
             "workspace",
@@ -208,6 +256,10 @@ fn the_shell_renders_every_region(cx: &mut TestAppContext) {
             let found = window.find(id);
             assert!(found.visible(), "{id} is not visible");
             assert!(found.bounds().size.width > px(0.), "{id} has no width");
+        }
+        if !cfg!(target_os = "macos") {
+            assert!(window.find("menu-row").visible());
+            assert!(window.find("menu-bar").visible());
         }
         // The canvas actually painted: the background, the grid dots and the
         // stub geometry all land in the scene.
@@ -224,7 +276,10 @@ fn the_shell_renders_every_region(cx: &mut TestAppContext) {
 fn every_tool_button_activates_its_tool(cx: &mut TestAppContext) {
     let harness = open(cx);
     for spec in kicad_sch_ui::TOOLS {
-        if spec.tool == Tool::Select {
+        if matches!(
+            spec.tool,
+            Tool::Select | Tool::PlaceSymbol | Tool::PlacePower | Tool::PlaceImage
+        ) {
             continue;
         }
         harness.sink.clear();
@@ -243,6 +298,159 @@ fn every_tool_button_activates_its_tool(cx: &mut TestAppContext) {
             spec.button_id
         );
     }
+}
+
+#[gpui_kit::test]
+fn symbol_buttons_require_a_live_library_instead_of_activating_empty_tools(
+    cx: &mut TestAppContext,
+) {
+    let harness = open(cx);
+    for tool in [Tool::PlaceSymbol, Tool::PlacePower] {
+        let spec = kicad_sch_ui::TOOLS
+            .iter()
+            .find(|spec| spec.tool == tool)
+            .unwrap();
+        harness.sink.clear();
+        reveal(cx, &harness, spec.button_id);
+        click(cx, &harness, spec.button_id);
+        assert_eq!(active_tool(cx, &harness), Tool::Select);
+        assert!(harness.sink.activated_tools().is_empty());
+        assert!(harness.sink.invoked_actions().is_empty());
+        cx.update(|cx| {
+            assert_eq!(
+                harness.shell.read(cx).status().as_ref(),
+                "Symbol libraries unavailable"
+            );
+        });
+    }
+}
+
+#[gpui_kit::test]
+fn image_button_requires_a_live_decoder_instead_of_an_empty_tool(cx: &mut TestAppContext) {
+    let harness = open(cx);
+    reveal(cx, &harness, "tool-image");
+    click(cx, &harness, "tool-image");
+    assert_eq!(active_tool(cx, &harness), Tool::Select);
+    assert!(harness.sink.activated_tools().is_empty());
+    assert!(harness.sink.invoked_actions().is_empty());
+    cx.update(|cx| {
+        assert!(
+            harness
+                .shell
+                .read(cx)
+                .status()
+                .contains("requires a live schematic")
+        );
+    });
+}
+
+struct ImagePlacementSink {
+    requests: Rc<RefCell<Vec<kicad_sch_ui::properties::ItemProperties>>>,
+    events: Rc<RefCell<Vec<ShellEvent>>>,
+}
+impl kicad_sch_ui::InputSink for ImagePlacementSink {
+    fn handle(&mut self, event: ShellEvent) {
+        self.events.borrow_mut().push(event);
+    }
+    fn image_properties(&mut self) -> Result<kicad_sch_ui::properties::ItemProperties, String> {
+        use kicad_sch_ui::properties::{ItemProperties, PropertyEntry};
+        Ok(ItemProperties {
+            item_id: "image-placement".into(),
+            capabilities: 0,
+            entries: vec![
+                PropertyEntry {
+                    name: "Image file".into(),
+                    value: "image.png".into(),
+                    kind: 0,
+                    choices: vec![],
+                },
+                PropertyEntry {
+                    name: "Scale".into(),
+                    value: "1".into(),
+                    kind: 3,
+                    choices: vec![],
+                },
+                PropertyEntry {
+                    name: "Placement".into(),
+                    value: "Cursor".into(),
+                    kind: 7,
+                    choices: vec!["Cursor".into(), "Coordinates".into()],
+                },
+                PropertyEntry {
+                    name: "Center X (mm)".into(),
+                    value: "0".into(),
+                    kind: 4,
+                    choices: vec![],
+                },
+                PropertyEntry {
+                    name: "Center Y (mm)".into(),
+                    value: "0".into(),
+                    kind: 4,
+                    choices: vec![],
+                },
+            ],
+        })
+    }
+    fn apply_image_properties(
+        &mut self,
+        data: &kicad_sch_ui::properties::ItemProperties,
+    ) -> Result<(), String> {
+        self.requests.borrow_mut().push(data.clone());
+        Ok(())
+    }
+}
+
+#[gpui_kit::test]
+fn gpui_image_options_apply_to_placement_and_restore_canvas_focus(cx: &mut TestAppContext) {
+    let harness = open(cx);
+    let requests = Rc::new(RefCell::new(Vec::new()));
+    let events = Rc::new(RefCell::new(Vec::new()));
+    cx.update(|cx| {
+        harness
+            .shell
+            .read(cx)
+            .canvas()
+            .clone()
+            .update(cx, |canvas, _| {
+                canvas.set_sink(shared_sink(ImagePlacementSink {
+                    requests: requests.clone(),
+                    events: events.clone(),
+                }));
+            });
+    });
+    reveal(cx, &harness, "tool-image");
+    click(cx, &harness, "tool-image");
+    click(cx, &harness, "properties-close");
+    assert!(
+        requests.borrow().is_empty(),
+        "closing must not create an image"
+    );
+    click(cx, &harness, "tool-image");
+    events.borrow_mut().clear();
+    press(cx, &harness, "w");
+    assert_eq!(
+        active_tool(cx, &harness),
+        Tool::Select,
+        "filename input owns typing"
+    );
+    click(cx, &harness, "properties-apply");
+    assert_eq!(requests.borrow().len(), 1);
+    assert_eq!(requests.borrow()[0].item_id, "image-placement");
+    assert!(requests.borrow()[0].entries[0].value.contains('w'));
+    assert_eq!(requests.borrow()[0].entries[2].value, "Cursor");
+    assert!(
+        !events
+            .borrow()
+            .iter()
+            .any(|event| matches!(event, ShellEvent::ToolActivated(_))),
+        "applying options uses the model service, not the wx chooser action"
+    );
+    press(cx, &harness, "w");
+    assert_eq!(
+        active_tool(cx, &harness),
+        Tool::DrawWire,
+        "successful apply restores canvas focus"
+    );
 }
 
 /// The palette buttons have to announce which tool is active, not merely look
@@ -307,8 +515,6 @@ fn toolbar_buttons_dispatch_their_kicad_action(cx: &mut TestAppContext) {
         ("tb-save", "common.Control.save"),
         ("tb-undo", "common.Interactive.undo"),
         ("tb-redo", "common.Interactive.redo"),
-        ("tb-erc", "eeschema.InspectionTool.runERC"),
-        ("tb-annotate", "eeschema.EditorControl.annotate"),
     ] {
         harness.sink.clear();
         click(cx, &harness, button);
@@ -318,6 +524,101 @@ fn toolbar_buttons_dispatch_their_kicad_action(cx: &mut TestAppContext) {
             "{button} reported the wrong action"
         );
     }
+}
+
+#[derive(Clone, Default)]
+struct DocumentCalls {
+    opened: Rc<RefCell<Vec<u32>>>,
+    applied: WorkflowCalls,
+}
+struct DocumentSink {
+    calls: DocumentCalls,
+    recording: RecordingSink,
+}
+impl kicad_sch_ui::input::InputSink for DocumentSink {
+    fn handle(&mut self, event: ShellEvent) {
+        kicad_sch_ui::input::InputSink::handle(&mut self.recording, event);
+    }
+    fn document_workflow(&mut self, kind: u32) -> Result<Vec<(String, String)>, String> {
+        self.calls.opened.borrow_mut().push(kind);
+        assert_eq!(kind, 0);
+        Ok([
+            ("First number", "1"),
+            ("Order", "x"),
+            ("Numbering", "incremental"),
+            ("Reset existing", "no"),
+            ("Scope", "all"),
+        ]
+        .into_iter()
+        .map(|(name, value)| (name.into(), value.into()))
+        .collect())
+    }
+    fn apply_document_workflow(&mut self, kind: u32, values: &[String]) -> Result<(), String> {
+        self.calls
+            .applied
+            .borrow_mut()
+            .push((kind, values.to_vec()));
+        Ok(())
+    }
+}
+fn install_document_sink(cx: &mut TestAppContext, harness: &Harness) -> DocumentCalls {
+    let calls = DocumentCalls::default();
+    cx.update(|cx| {
+        harness
+            .shell
+            .read(cx)
+            .canvas()
+            .clone()
+            .update(cx, |canvas, _| {
+                canvas.set_sink(shared_sink(DocumentSink {
+                    calls: calls.clone(),
+                    recording: harness.sink.clone(),
+                }));
+            });
+    });
+    calls
+}
+
+#[gpui_kit::test]
+fn annotation_toolbar_edits_and_applies_gpui_fields(cx: &mut TestAppContext) {
+    let harness = open(cx);
+    let calls = install_document_sink(cx, &harness);
+    click(cx, &harness, "tb-annotate");
+    assert_eq!(*calls.opened.borrow(), vec![0]);
+    assert!(harness.sink.invoked_actions().is_empty());
+    press(
+        cx,
+        &harness,
+        if cfg!(target_os = "macos") {
+            "cmd-a"
+        } else {
+            "ctrl-a"
+        },
+    );
+    press(cx, &harness, "4");
+    press(cx, &harness, "2");
+    click(cx, &harness, ("document-choice", 33usize));
+    click(cx, &harness, "document-apply");
+    let applied = calls.applied.borrow();
+    assert_eq!(applied.len(), 1);
+    assert_eq!(applied[0].0, 0);
+    assert_eq!(applied[0].1, vec!["42", "y", "incremental", "no", "all"]);
+    drop(applied);
+    click(cx, &harness, "document-close");
+    press(cx, &harness, "w");
+    assert_eq!(active_tool(cx, &harness), Tool::DrawWire);
+}
+
+#[gpui_kit::test]
+fn erc_toolbar_opens_native_panel_without_dispatching_a_wx_dialog(cx: &mut TestAppContext) {
+    let harness = open(cx);
+    harness.sink.clear();
+    click(cx, &harness, "tb-erc");
+    assert!(harness.sink.invoked_actions().is_empty());
+    // This control only exists in the native ERC panel.
+    click(cx, &harness, "erc-close");
+    press(cx, &harness, "w");
+    assert_eq!(active_tool(cx, &harness), Tool::DrawWire);
 }
 
 #[gpui_kit::test]
@@ -669,11 +970,14 @@ fn the_panels_say_they_are_not_connected_to_a_document_model(cx: &mut TestAppCon
         window.render_frame(cx);
         assert!(window.find("hierarchy-note").visible());
         assert!(window.find("properties-note").visible());
-        assert!(window.find("document-name").visible());
+        if !cfg!(target_os = "macos") {
+            assert!(window.find("document-name").visible());
+        }
     })
     .expect("window is live");
 }
 
+#[cfg(not(target_os = "macos"))]
 #[gpui_kit::test]
 fn opening_a_menu_marks_it_and_draws_a_popup(cx: &mut TestAppContext) {
     let harness = open(cx);
@@ -781,6 +1085,7 @@ fn a_right_click_on_the_canvas_reaches_the_host(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 async fn the_command_palette_filters_and_runs_a_command(cx: &mut TestAppContext) {
     let harness = open(cx);
+    let calls = install_document_sink(cx, &harness);
 
     cx.update_window(harness.window, |_, window, cx| {
         window.press("ctrl-shift-p", cx);
@@ -828,14 +1133,23 @@ async fn the_command_palette_filters_and_runs_a_command(cx: &mut TestAppContext)
     .expect("window is live");
     cx.run_until_parked();
 
+    assert_eq!(*calls.opened.borrow(), vec![0]);
     assert!(
-        harness
-            .sink
-            .invoked_actions()
-            .contains(&"eeschema.EditorControl.annotate".to_string()),
-        "the palette should have run the annotate command, got {:?}",
-        harness.sink.invoked_actions()
+        harness.sink.invoked_actions().is_empty(),
+        "annotation must not dispatch a wx dialog action"
     );
+    frame(cx, &harness);
+    let dialog = window_for(cx, "document-apply");
+    assert_ne!(
+        dialog, harness.window,
+        "annotation has its own native window"
+    );
+    cx.update_window(dialog, |_, window, _| {
+        assert!(window.try_find("document-dialog").is_some())
+    })
+    .unwrap();
+    click(cx, &harness, "document-apply");
+    assert_eq!(calls.applied.borrow()[0].1[0], "1");
 }
 
 #[gpui_kit::test]
@@ -1808,5 +2122,442 @@ fn native_close_saves_or_discards_only_after_confirmation(cx: &mut TestAppContex
         cx.run_until_parked();
         assert_eq!(*saves.borrow(), usize::from(answer == "Save"));
         assert!(cx.update_window(harness.window, |_, _, _| ()).is_err());
+    }
+}
+
+struct ItemPropertiesSink(
+    Rc<RefCell<Vec<kicad_sch_ui::properties::ItemProperties>>>,
+    Rc<RefCell<Vec<ShellEvent>>>,
+);
+impl kicad_sch_ui::input::InputSink for ItemPropertiesSink {
+    fn handle(&mut self, event: ShellEvent) {
+        self.1.borrow_mut().push(event);
+    }
+    fn item_properties(&mut self) -> Result<kicad_sch_ui::properties::ItemProperties, String> {
+        use kicad_sch_ui::properties::*;
+        if let Some(data) = self.0.borrow().last() {
+            return Ok(data.clone());
+        }
+        Ok(ItemProperties {
+            item_id: "symbol-1".into(),
+            capabilities: 1,
+            entries: vec![
+                PropertyEntry {
+                    name: "Value".into(),
+                    value: "10k".into(),
+                    kind: 0,
+                    choices: vec![],
+                },
+                PropertyEntry {
+                    name: "Exclude From BOM".into(),
+                    value: "false".into(),
+                    kind: 1,
+                    choices: vec![],
+                },
+                PropertyEntry {
+                    name: "Orientation".into(),
+                    value: "Horizontal".into(),
+                    kind: 7,
+                    choices: vec!["Horizontal".into(), "Vertical".into()],
+                },
+            ],
+        })
+    }
+    fn apply_properties(
+        &mut self,
+        data: &kicad_sch_ui::properties::ItemProperties,
+    ) -> Result<(), String> {
+        self.0.borrow_mut().push(data.clone());
+        Ok(())
+    }
+}
+
+#[gpui_kit::test]
+fn item_properties_edits_apply_and_close_restores_canvas(cx: &mut TestAppContext) {
+    let harness = open(cx);
+    let requests = Rc::new(RefCell::new(Vec::new()));
+    cx.update(|cx| {
+        harness
+            .shell
+            .read(cx)
+            .canvas()
+            .clone()
+            .update(cx, |canvas, _| {
+                canvas.set_sink(shared_sink(ItemPropertiesSink(
+                    requests.clone(),
+                    Rc::new(RefCell::new(Vec::new())),
+                )));
+            });
+    });
+    press(cx, &harness, "e");
+    frame(cx, &harness);
+    press(cx, &harness, "w");
+    click(cx, &harness, "properties-close");
+    assert!(
+        requests.borrow().is_empty(),
+        "closing discards uncommitted edits"
+    );
+    press(cx, &harness, "e");
+    frame(cx, &harness);
+    press(cx, &harness, "w");
+    assert_eq!(active_tool(cx, &harness), Tool::Select);
+    press(cx, &harness, "enter");
+    assert_eq!(
+        requests.borrow().len(),
+        1,
+        "Enter applies the focused input"
+    );
+    assert!(requests.borrow()[0].entries[0].value.contains('w'));
+    click(cx, &harness, "properties-apply");
+    assert_eq!(requests.borrow().len(), 2);
+    assert_eq!(requests.borrow()[0], requests.borrow()[1]);
+    click(cx, &harness, "properties-close");
+    press(cx, &harness, "w");
+    assert_eq!(active_tool(cx, &harness), Tool::DrawWire);
+}
+
+#[gpui_kit::test]
+fn properties_text_editing_shortcuts_do_not_reach_schematic(cx: &mut TestAppContext) {
+    let harness = open(cx);
+    let requests = Rc::new(RefCell::new(Vec::new()));
+    let events = Rc::new(RefCell::new(Vec::new()));
+    cx.update(|cx| {
+        harness
+            .shell
+            .read(cx)
+            .canvas()
+            .clone()
+            .update(cx, |canvas, _| {
+                canvas.set_sink(shared_sink(ItemPropertiesSink(
+                    requests.clone(),
+                    events.clone(),
+                )));
+            });
+    });
+    press(cx, &harness, "e");
+    frame(cx, &harness);
+    events.borrow_mut().clear();
+    let modifier = if cfg!(target_os = "macos") {
+        "cmd"
+    } else {
+        "ctrl"
+    };
+    press(cx, &harness, &format!("{modifier}-a"));
+    for key in ["4", "7", "k"] {
+        press(cx, &harness, key);
+    }
+    press(cx, &harness, "enter");
+    assert_eq!(
+        requests.borrow()[0].entries[0].value,
+        "47k",
+        "Select All must select input text"
+    );
+    // Clipboard and history shortcuts are owned by the input too.
+    for key in ["a", "c", "x", "v", "z", "shift-z"] {
+        press(cx, &harness, &format!("{modifier}-{key}"));
+    }
+    assert!(
+        events
+            .borrow()
+            .iter()
+            .all(|event| matches!(event, ShellEvent::ViewportChanged(_))),
+        "input shortcuts reached schematic (only panel resize notifications are allowed): {:?}",
+        events.borrow()
+    );
+    press(cx, &harness, &format!("{modifier}-a"));
+    press(cx, &harness, "1");
+    press(cx, &harness, "k");
+    press(cx, &harness, "enter");
+    assert_eq!(requests.borrow()[1].entries[0].value, "1k");
+    click(cx, &harness, "properties-close");
+}
+
+#[gpui_kit::test]
+fn item_properties_boolean_editor_applies_typed_value(cx: &mut TestAppContext) {
+    let harness = open(cx);
+    let requests = Rc::new(RefCell::new(Vec::new()));
+    cx.update(|cx| {
+        harness
+            .shell
+            .read(cx)
+            .canvas()
+            .clone()
+            .update(cx, |canvas, _| {
+                canvas.set_sink(shared_sink(ItemPropertiesSink(
+                    requests.clone(),
+                    Rc::new(RefCell::new(Vec::new())),
+                )));
+            });
+    });
+    press(cx, &harness, "e");
+    frame(cx, &harness);
+    click(cx, &harness, ("property-boolean", 1usize));
+    click(cx, &harness, "properties-apply");
+    assert_eq!(requests.borrow()[0].entries[1].value, "true");
+    assert_eq!(requests.borrow()[0].entries[2].value, "Horizontal");
+}
+
+struct LibrarySimulationSink {
+    erc_runs: Rc<RefCell<usize>>,
+    libraries: Rc<RefCell<Vec<Vec<kicad_sch_ui::library_workflows::LibraryRow>>>>,
+    simulations: WorkflowCalls,
+}
+impl kicad_sch_ui::InputSink for LibrarySimulationSink {
+    fn run_erc(&mut self) -> Result<Vec<kicad_sch_ui::erc::ErcViolation>, String> {
+        *self.erc_runs.borrow_mut() += 1;
+        Ok(Vec::new())
+    }
+    fn handle(&mut self, _: ShellEvent) {}
+    fn library_table(
+        &mut self,
+        _: bool,
+    ) -> Result<Vec<kicad_sch_ui::library_workflows::LibraryRow>, String> {
+        Ok(vec![kicad_sch_ui::library_workflows::LibraryRow {
+            name: "ProjectLib".into(),
+            kind: "KiCad".into(),
+            uri: "${KIPRJMOD}/test.kicad_sym".into(),
+            enabled: true,
+            visible: true,
+            ..Default::default()
+        }])
+    }
+    fn save_library_table(
+        &mut self,
+        _: bool,
+        rows: &[kicad_sch_ui::library_workflows::LibraryRow],
+    ) -> Result<(), String> {
+        self.libraries.borrow_mut().push(rows.to_vec());
+        Ok(())
+    }
+    fn simulation_workflow(&mut self, kind: u32) -> Result<Vec<(String, String)>, String> {
+        if kind == 2 {
+            return Ok(vec![("Status".into(), "Finished".into())]);
+        }
+        assert_eq!(kind, 1);
+        Ok(vec![
+            ("Analysis command".into(), ".op".into()),
+            ("Netlist option flags".into(), "240".into()),
+            ("Compatibility".into(), "1".into()),
+        ])
+    }
+    fn apply_simulation_workflow(&mut self, kind: u32, values: &[String]) -> Result<(), String> {
+        self.simulations.borrow_mut().push((kind, values.to_vec()));
+        Ok(())
+    }
+}
+
+#[gpui_kit::test]
+fn gpui_library_and_simulation_controls_commit_owned_values(cx: &mut TestAppContext) {
+    let harness = open(cx);
+    let libraries = Rc::new(RefCell::new(Vec::new()));
+    let simulations = Rc::new(RefCell::new(Vec::new()));
+    cx.update(|cx| {
+        harness
+            .shell
+            .read(cx)
+            .canvas()
+            .clone()
+            .update(cx, |canvas, _| {
+                canvas.set_sink(shared_sink(LibrarySimulationSink {
+                    erc_runs: Rc::new(RefCell::new(0)),
+                    libraries: libraries.clone(),
+                    simulations: simulations.clone(),
+                }));
+            })
+    });
+    cx.update_window(harness.window, |_, window, cx| {
+        window.dispatch_action(
+            Box::new(commands::RunAction::new(
+                "common.SuiteControl.showSymbolLibTable",
+            )),
+            cx,
+        );
+    })
+    .unwrap();
+    frame(cx, &harness);
+    click(cx, &harness, ("library-enabled", 0usize));
+    click(cx, &harness, "library-save");
+    assert_eq!(libraries.borrow().len(), 1);
+    assert!(!libraries.borrow()[0][0].enabled);
+    assert_eq!(libraries.borrow()[0][0].uri, "${KIPRJMOD}/test.kicad_sym");
+    click(cx, &harness, "library-close");
+    cx.update_window(harness.window, |_, window, cx| {
+        window.dispatch_action(
+            Box::new(commands::RunAction::new(
+                "eeschema.EditorControl.showSimulator",
+            )),
+            cx,
+        );
+    })
+    .unwrap();
+    frame(cx, &harness);
+    click(cx, &harness, ("simulation-flag", 0x10usize));
+    click(cx, &harness, "simulation-apply");
+    assert_eq!(
+        simulations.borrow().as_slice(),
+        &[(1, vec![".op".into(), "224".into(), "1".into()])]
+    );
+    click(cx, &harness, ("simulation-property", 0usize));
+    click(cx, &harness, "simulation-results");
+    press(cx, &harness, "ctrl-shift-p");
+    assert!(
+        cx.update(|cx| harness.shell.read(cx).is_palette_open()),
+        "Replacing a focused input panel must keep menu and keyboard actions dispatchable"
+    );
+    press(cx, &harness, "escape");
+    click(cx, &harness, "simulation-close");
+    press(cx, &harness, "w");
+    assert_eq!(active_tool(cx, &harness), Tool::DrawWire);
+}
+
+/// These are distinct native windows, not mutually-exclusive panels in the
+/// editor. Test real text focus, the native close callback and the key binding.
+#[gpui_kit::test]
+fn independent_dialog_windows_preserve_siblings_and_scope_text_shortcuts(cx: &mut TestAppContext) {
+    for use_native_close in [false, true] {
+        let harness = open(cx);
+        let simulations = Rc::new(RefCell::new(Vec::new()));
+        let erc_runs = Rc::new(RefCell::new(0));
+        cx.update(|cx| {
+            harness
+                .shell
+                .read(cx)
+                .canvas()
+                .clone()
+                .update(cx, |canvas, _| {
+                    canvas.set_sink(shared_sink(LibrarySimulationSink {
+                        erc_runs: erc_runs.clone(),
+                        libraries: Rc::new(RefCell::new(Vec::new())),
+                        simulations: simulations.clone(),
+                    }));
+                });
+        });
+        click(cx, &harness, "tb-erc");
+        let erc = window_for(cx, "erc-close");
+        cx.update_window(harness.window, |_, window, cx| {
+            window.activate_window();
+            window.dispatch_action(
+                Box::new(commands::RunAction::new(
+                    "eeschema.EditorControl.showSimulator",
+                )),
+                cx,
+            );
+        })
+        .unwrap();
+        frame(cx, &harness);
+        let simulation = window_for(cx, "simulation-close");
+        assert_ne!(erc, simulation);
+        assert_ne!(erc, harness.window);
+        assert_ne!(simulation, harness.window);
+        assert_eq!(cx.update(|cx| cx.windows().len()), 3);
+        cx.update_window(harness.window, |_, window, _| {
+            assert!(window.try_find("erc-close").is_none());
+            assert!(window.try_find("simulation-close").is_none());
+        })
+        .unwrap();
+
+        click(cx, &harness, ("simulation-property", 0usize));
+        let modifier = if cfg!(target_os = "macos") {
+            "cmd"
+        } else {
+            "ctrl"
+        };
+        press(cx, &harness, &format!("{modifier}-a"));
+        press(cx, &harness, "w");
+        assert_eq!(
+            active_tool(cx, &harness),
+            Tool::Select,
+            "typing W in a dialog cannot start wire placement"
+        );
+        click(cx, &harness, "erc-run");
+        assert_eq!(*erc_runs.borrow(), 1);
+        assert_eq!(
+            window_for(cx, "simulation-close"),
+            simulation,
+            "running ERC preserves the open simulator and its draft"
+        );
+        cx.update_window(harness.window, |_, window, cx| {
+            window.dispatch_action(
+                Box::new(commands::RunAction::new(
+                    "eeschema.EditorControl.showSimulator",
+                )),
+                cx,
+            );
+        })
+        .unwrap();
+        frame(cx, &harness);
+        assert_eq!(
+            window_for(cx, "simulation-close"),
+            simulation,
+            "reopening raises the existing simulator"
+        );
+        click(cx, &harness, "simulation-apply");
+        assert_eq!(
+            simulations.borrow()[0].1[0],
+            "w",
+            "Select All belongs to the input in its own window and ERC cannot reset it"
+        );
+        if use_native_close {
+            native_close(cx, simulation);
+        } else {
+            press(cx, &harness, &format!("{modifier}-w"));
+        }
+        frame(cx, &harness);
+        assert!(cx.update_window(simulation, |_, _, _| ()).is_err());
+        assert!(cx.update_window(harness.window, |_, _, _| ()).is_ok());
+        assert_eq!(
+            window_for(cx, "erc-close"),
+            erc,
+            "closing simulation leaves ERC alive"
+        );
+        click(cx, &harness, "erc-run");
+        assert_eq!(*erc_runs.borrow(), 2, "the sibling remains interactive");
+        click(cx, &harness, "erc-close");
+        press(cx, &harness, "w");
+        assert_eq!(active_tool(cx, &harness), Tool::DrawWire);
+        cx.update_window(harness.window, |_, window, _| window.remove_window())
+            .unwrap();
+        frame(cx, &harness);
+        assert!(cx.update(|cx| cx.windows().is_empty()));
+    }
+}
+
+#[gpui_kit::test]
+fn closing_the_editor_closes_all_owned_dialog_windows(cx: &mut TestAppContext) {
+    let harness = open(cx);
+    cx.update(|cx| {
+        harness
+            .shell
+            .read(cx)
+            .canvas()
+            .clone()
+            .update(cx, |canvas, _| {
+                canvas.set_sink(shared_sink(LibrarySimulationSink {
+                    erc_runs: Rc::new(RefCell::new(0)),
+                    libraries: Rc::new(RefCell::new(Vec::new())),
+                    simulations: Rc::new(RefCell::new(Vec::new())),
+                }));
+            });
+    });
+    click(cx, &harness, "tb-erc");
+    let erc = window_for(cx, "erc-close");
+    cx.update_window(harness.window, |_, window, cx| {
+        window.dispatch_action(
+            Box::new(commands::RunAction::new(
+                "eeschema.EditorControl.showSimulator",
+            )),
+            cx,
+        );
+    })
+    .unwrap();
+    frame(cx, &harness);
+    let simulation = window_for(cx, "simulation-close");
+    native_close(cx, harness.window);
+    frame(cx, &harness);
+    for handle in [harness.window, erc, simulation] {
+        assert!(
+            cx.update_window(handle, |_, _, _| ()).is_err(),
+            "owner and dependents must close together"
+        );
     }
 }

@@ -251,6 +251,9 @@ public:
      */
     virtual void ForceRefreshCanvas() {}
 
+    /// Ask a non-modal frontend to edit an item that the tool is preparing to place.
+    virtual void RequestItemProperties( SCH_ITEM* ) {}
+
     /// Set the pointer's shape, to say what a click here would do.
     virtual void SetCurrentCursor( KICURSOR aCursor ) {}
 

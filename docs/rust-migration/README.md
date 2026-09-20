@@ -18,10 +18,11 @@ such a context bar one, and `common/`'s shared tools are the remaining hold-out.
 Stage 4's input dispatcher and scoped eeschema frame hoist are complete, as is
 M4's registry-backed command presentation. This does not mean complete KiCad
 feature parity: shared tools and model seams still have documented gaps.
-Stage 5 has started with GPUI Find/Replace backed by host search data and undo.
+Stage 5 now has GPUI-kit document, property, library, simulation, setup and ERC
+workflows backed by the C++ host.
 Window close and editor Quit protect unsaved changes; external OS quit cannot
-be vetoed through the current GPUI API. Symbol placement, properties and ERC
-still need dialog workflows, and the wx editor remains the complete editor.
+be vetoed through the current GPUI API. The wx editor remains available; differences in workflow coverage are documented. See
+[`09-dialog-workflows.md`](09-dialog-workflows.md) for exact coverage.
 
 For the design, start with **`01-plan.md`**. For the latest registry milestone,
 hands-on UI checks and next steps, see [`08-action-registry.md`](08-action-registry.md).
@@ -38,6 +39,7 @@ The earlier input and repaint fixes are in [`07-ui-bugfix-pass.md`](07-ui-bugfix
 | `06-what-is-missing.md` | **What this is not, and what an editor still needs.** What the C++ bridge does and does not yet carry, stage by stage, with Stages 1–4b done and the remaining cost measured per tool | Read first if you are judging scope |
 | `07-ui-bugfix-pass.md` | Live verification of input, repainting and editing fixes | UI testing |
 | `08-action-registry.md` | Registry-backed menus/toolbars, live verification, shortcut fixes, close protection, Find/Replace and remaining limitations | Current milestone and follow-up |
+| `09-dialog-workflows.md` | Stage 5 GPUI dialog coverage, verification and workflow limits | Current dialog coverage |
 
 Two more places hold the parts that are code rather than prose:
 
@@ -70,8 +72,9 @@ real data is worse than one admitting what it does not have.
 
 Clicking an item selects it, dragging one moves it, `W` draws a wire, `R` rotates,
 `Del` deletes, `J` places a junction, `L` places a label, ⌘X/⌘V cut and paste, ⌘Z
-undoes and ⌘S saves. What does nothing is every menu item that opens a dialog, and
-`06-what-is-missing.md` says which of those is waiting on what.
+undoes and ⌘S saves. `A`/`P` open symbol choosers, `E` opens text/field properties,
+and Inspect opens ERC. Most other dialog actions remain unavailable; the
+Stage 5 report describes the coverage.
 
 ## The shape of it, in one paragraph
 
@@ -98,8 +101,8 @@ class that still declines a non-frame holder, and `common/`'s shared tools —
 `COMMON_TOOLS`, `ZOOM_TOOL`, `PICKER_TOOL`, `GROUP_TOOL`, `EMBED_TOOL`,
 `COMMON_CONTROL` — need a `TOOLS_HOLDER`-level hoist that is pcbnew's and
 gerbview's decision as much as eeschema's. Beyond that the tools all *run*, but the
-ones whose work is a dialog decline the action: no symbol placement, no properties,
-and no ERC workflow. Find/Replace now uses GPUI controls and the host search-data
+many actions whose work is a specialized dialog still decline it. Symbol/power choosing, text properties and ERC now
+have GPUI workflows. Find/Replace uses GPUI controls and the host search-data
 interface; the wx dialog implementations remain in place for the wx editor.
 `06-what-is-missing.md` Stage 4b says which tool does what, and which host interface
 additions still remain.

@@ -368,6 +368,30 @@ pub enum ShellEvent {
 /// inside gpui's paint phase, where a panic aborts the frame and a block drops
 /// it. A real host queues the event and returns.
 pub trait InputSink {
+    /// Read the current project's setup controls.
+    fn setup_properties(&mut self) -> Result<crate::properties::ItemProperties, String> {
+        Err("Schematic setup requires a live document".into())
+    }
+    /// Validate and save the project's setup controls.
+    fn apply_setup_properties(
+        &mut self,
+        _data: &crate::properties::ItemProperties,
+    ) -> Result<(), String> {
+        Err("Schematic setup requires a live document".into())
+    }
+    /// Toggle a live ERC marker exclusion.
+    fn exclude_erc(&mut self, _id: &str, _excluded: bool) -> Result<(), String> {
+        Err("ERC exclusions unavailable".into())
+    }
+    /// Run native electrical rules checks.
+    fn run_erc(&mut self) -> Result<Vec<crate::erc::ErcViolation>, String> {
+        Err("ERC requires a live schematic".into())
+    }
+    /// Switch to the sheet containing an ERC violation.
+    fn navigate_erc(&mut self, _violation: &crate::erc::ErcViolation) -> Result<(), String> {
+        Err("ERC requires a live schematic".into())
+    }
+
     /// Consume one event.
     fn handle(&mut self, event: ShellEvent);
 
@@ -398,7 +422,164 @@ pub trait InputSink {
         Err("Saving is unavailable for this document".into())
     }
 
-    /// Run Find/Replace through the host model and undo stack.
+    /// Read the selected item's editable text fields.
+    /// Snapshot fields for a native document workflow.
+    fn document_workflow(&mut self, _kind: u32) -> Result<Vec<(String, String)>, String> {
+        Err("Document workflows unavailable".into())
+    }
+    /// Validate and apply a document workflow.
+    fn apply_document_workflow(&mut self, _kind: u32, _values: &[String]) -> Result<(), String> {
+        Err("Document workflows unavailable".into())
+    }
+    /// Read the selected item's typed editable properties.
+    fn item_properties(&mut self) -> Result<crate::properties::ItemProperties, String> {
+        Err("Properties require a live schematic".into())
+    }
+    /// Hierarchical label and sheet pin synchronization.
+    fn sheet_pin_properties(
+        &mut self,
+        _all: bool,
+    ) -> Result<crate::properties::ItemProperties, String> {
+        Err("Sheet synchronization requires a live schematic".into())
+    }
+
+    /// Hierarchical label and sheet pin synchronization.
+    fn apply_sheet_pin_properties(
+        &mut self,
+        _all: bool,
+        _data: &crate::properties::ItemProperties,
+    ) -> Result<(), String> {
+        Err("Sheet synchronization requires a live schematic".into())
+    }
+
+    /// Read or persist application preferences.
+    fn preferences(&mut self) -> Result<crate::properties::ItemProperties, String> {
+        Err("Sheet synchronization requires a live schematic".into())
+    }
+    /// Read validated vector graphics import options.
+    fn graphics_import_properties(&mut self) -> Result<crate::properties::ItemProperties, String> {
+        Err("Sheet synchronization requires a live schematic".into())
+    }
+    /// Read bitmap placement options.
+    fn image_properties(&mut self) -> Result<crate::properties::ItemProperties, String> {
+        Err("Sheet synchronization requires a live schematic".into())
+    }
+
+    /// Read or persist application preferences.
+    fn apply_preferences(
+        &mut self,
+        _data: &crate::properties::ItemProperties,
+    ) -> Result<(), String> {
+        Err("Sheet synchronization requires a live schematic".into())
+    }
+    /// Import SVG/DXF geometry in one undo transaction.
+    fn apply_graphics_import(
+        &mut self,
+        _data: &crate::properties::ItemProperties,
+    ) -> Result<(), String> {
+        Err("Sheet synchronization requires a live schematic".into())
+    }
+    /// Load a bitmap and begin placement or commit at the requested coordinates.
+    fn apply_image_properties(
+        &mut self,
+        _data: &crate::properties::ItemProperties,
+    ) -> Result<(), String> {
+        Err("Sheet synchronization requires a live schematic".into())
+    }
+
+    /// Consume an asynchronous properties request from the active tool.
+    fn take_pending_properties(&mut self) -> bool {
+        false
+    }
+
+    /// Relink a hierarchical sheet file, clearing undo history.
+    fn relink_sheet(&mut self, _item_id: &str, _path: &str) -> Result<(), String> {
+        Err("Sheet relinking requires a live schematic".into())
+    }
+
+    /// Create or delete a selected item custom field.
+    fn edit_custom_field(
+        &mut self,
+        _item_id: &str,
+        _name: &str,
+        _value: Option<&str>,
+    ) -> Result<(), String> {
+        Err("Custom fields require a live schematic".into())
+    }
+
+    /// Apply text fields through the model undo stack.
+    fn apply_properties(
+        &mut self,
+        _data: &crate::properties::ItemProperties,
+    ) -> Result<(), String> {
+        Err("Properties require a live schematic".into())
+    }
+
+    /// Read Database or HTTP library connection settings.
+    fn configure_library(
+        &mut self,
+        _global: bool,
+        _nickname: &str,
+    ) -> Result<Vec<(String, String)>, String> {
+        Err("Library settings require a live schematic".into())
+    }
+    /// Read simulation model, analysis configuration, or vectors.
+    fn simulation_workflow(&mut self, _kind: u32) -> Result<Vec<(String, String)>, String> {
+        Err("Simulation requires a live schematic".into())
+    }
+    /// Apply a model, start analysis, or stop simulation.
+    fn apply_simulation_workflow(&mut self, _kind: u32, _values: &[String]) -> Result<(), String> {
+        Err("Simulation requires a live schematic".into())
+    }
+    /// Read a project or global symbol library table.
+    fn library_table(
+        &mut self,
+        _global: bool,
+    ) -> Result<Vec<crate::library_workflows::LibraryRow>, String> {
+        Err("Library tables require a live schematic".into())
+    }
+    /// Persist a validated symbol library table.
+    fn save_library_table(
+        &mut self,
+        _global: bool,
+        _rows: &[crate::library_workflows::LibraryRow],
+    ) -> Result<(), String> {
+        Err("Library tables require a live schematic".into())
+    }
+    /// Cached symbol library IDs for the chooser.
+    fn symbol_libraries(&mut self) -> Result<Vec<String>, String> {
+        Err("Symbol libraries unavailable".into())
+    }
+    /// Browse one library, or cached symbols when empty.
+    fn browse_symbols(&mut self, _library: &str, _power_only: bool) -> Result<Vec<String>, String> {
+        Err("Symbol libraries unavailable".into())
+    }
+    /// Cached IDs.
+    fn list_symbols(&mut self) -> Result<Vec<String>, String> {
+        Err("Symbol libraries unavailable".into())
+    }
+    /// Record a chooser preview without changing the document.
+    fn preview_symbol(
+        &mut self,
+        _id: &str,
+        _unit: u32,
+        _body: u32,
+    ) -> Result<(kicad_gal::Stream, u32, u32), String> {
+        Err("Symbol preview unavailable".into())
+    }
+    /// Place a chosen unit and body style.
+    fn place_symbol_variant(&mut self, id: &str, unit: u32, body: u32) -> Result<(), String> {
+        if unit == 1 && body == 1 {
+            self.place_symbol(id)
+        } else {
+            Err("Symbol variant unavailable".into())
+        }
+    }
+    /// Begin interactive placement by library ID.
+    fn place_symbol(&mut self, _id: &str) -> Result<(), String> {
+        Err("Symbol placement unavailable".into())
+    }
+    /// Run Find/Replace against the live document.
     fn search(
         &mut self,
         _data: &crate::search::SearchData,

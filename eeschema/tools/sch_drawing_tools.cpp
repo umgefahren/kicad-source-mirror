@@ -153,16 +153,9 @@ int SCH_DRAWING_TOOLS::PlaceSymbol( const TOOL_EVENT& aEvent )
 
     SCH_SYMBOL* symbol = toolParams.m_Symbol;
 
-    // Placing a symbol begins in the library chooser, and continues there after every
-    // placement unless the caller handed us one symbol to drop.  That chooser is a dialog
-    // and PickSymbolFromLibrary(), GetLibSymbol() and Prj() are all the frame's, so without
-    // a window there is no way to answer "which symbol?".  We own the parameterised one, so
-    // free it rather than leak it on the way out.
-    if( !m_frame )
-    {
-        delete symbol;
+    // A GPUI chooser supplies a symbol; only the wx chooser needs a frame.
+    if( !m_frame && !symbol )
         return 0;
-    }
 
     // If we get a parameterised symbol, we probably just want to place that and get out of the placement tool,
     // rather than popping up the chooser afterwards.  A multi-unit symbol may still request that its remaining
@@ -173,13 +166,16 @@ int SCH_DRAWING_TOOLS::PlaceSymbol( const TOOL_EVENT& aEvent )
     std::vector<PICKED_SYMBOL>* historyList = nullptr;
     bool                        ignorePrimePosition = false;
     COMMON_SETTINGS*            common_settings = Pgm().GetCommonSettings();
-    SCHEMATIC_SETTINGS&         schSettings = m_frame->Schematic().Settings();
+    SCHEMATIC_SETTINGS&         schSettings = m_editor->GetSchematic()->Settings();
     SCH_SCREEN*                 screen = m_editor->GetScreen();
     bool                        keepSymbol = false;
     bool                        placeAllUnits = toolParams.m_PlaceAllUnits;
 
     if( m_inDrawingTool )
+    {
+        delete symbol;
         return 0;
+    }
 
     REENTRANCY_GUARD guard( &m_inDrawingTool );
 
@@ -188,8 +184,8 @@ int SCH_DRAWING_TOOLS::PlaceSymbol( const TOOL_EVENT& aEvent )
     VECTOR2I              cursorPos;
 
     // First we need to get all instances of this sheet so we can annotate whatever symbols we place on all copies
-    SCH_SHEET_LIST hierarchy = m_frame->Schematic().Hierarchy();
-    SCH_SHEET_LIST newInstances = hierarchy.FindAllSheetsForScreen( m_frame->GetCurrentSheet().LastScreen() );
+    SCH_SHEET_LIST hierarchy = m_editor->GetSchematic()->Hierarchy();
+    SCH_SHEET_LIST newInstances = hierarchy.FindAllSheetsForScreen( m_editor->GetSchematic()->CurrentSheet().LastScreen() );
     newInstances.SortByPageNumbers();
 
     // Get a list of all references in the schematic to avoid duplicates wherever they're placed
@@ -277,7 +273,7 @@ int SCH_DRAWING_TOOLS::PlaceSymbol( const TOOL_EVENT& aEvent )
                     }
                 }
 
-                m_frame->GetCurrentSheet().UpdateAllScreenReferences();
+                m_editor->GetSchematic()->CurrentSheet().UpdateAllScreenReferences();
             };
 
     Activate();
@@ -299,7 +295,7 @@ int SCH_DRAWING_TOOLS::PlaceSymbol( const TOOL_EVENT& aEvent )
         // Seed the placed-reference list so multi-unit stepping sees this symbol's first unit
         // as taken.  The chooser path seeds it when it builds the symbol; this path bypasses
         // that branch.
-        SCH_REFERENCE placedSymbolReference( symbol, m_frame->GetCurrentSheet() );
+        SCH_REFERENCE placedSymbolReference( symbol, m_editor->GetSchematic()->CurrentSheet() );
         existingRefs.AddItem( placedSymbolReference );
         existingRefs.SortByReferenceOnly();
 
@@ -330,7 +326,8 @@ int SCH_DRAWING_TOOLS::PlaceSymbol( const TOOL_EVENT& aEvent )
 
         if( evt->IsCancelInteractive() || ( symbol && evt->IsAction( &ACTIONS::undo ) ) )
         {
-            m_frame->GetInfoBar()->Dismiss();
+            if( m_frame )
+                m_frame->GetInfoBar()->Dismiss();
 
             if( symbol )
             {
@@ -358,7 +355,8 @@ int SCH_DRAWING_TOOLS::PlaceSymbol( const TOOL_EVENT& aEvent )
 
             if( symbol )
             {
-                m_frame->ShowInfoBarMsg( _( "Press <ESC> to cancel symbol creation." ) );
+                if( m_frame )
+                    m_frame->ShowInfoBarMsg( _( "Press <ESC> to cancel symbol creation." ) );
                 evt->SetPassEvent( false );
                 continue;
             }
@@ -377,6 +375,9 @@ int SCH_DRAWING_TOOLS::PlaceSymbol( const TOOL_EVENT& aEvent )
         {
             if( !symbol )
             {
+                if( !m_frame )
+                    break;
+
                 m_toolMgr->RunAction( ACTIONS::selectionClear );
 
                 SYMBOL_LIBRARY_ADAPTER* libs = PROJECT_SCH::SymbolLibAdapter( &m_frame->Prj() );
@@ -474,13 +475,13 @@ int SCH_DRAWING_TOOLS::PlaceSymbol( const TOOL_EVENT& aEvent )
                     libSymbol->SetGlobalPower();
                 }
 
-                symbol = new SCH_SYMBOL( *libSymbol, &m_frame->GetCurrentSheet(), sel, cursorPos,
-                                         &m_frame->Schematic() );
+                symbol = new SCH_SYMBOL( *libSymbol, &m_editor->GetSchematic()->CurrentSheet(), sel, cursorPos,
+                                         m_editor->GetSchematic() );
                 addSymbol( symbol );
                 annotate();
 
                 // Update the list of references for the next symbol placement.
-                SCH_REFERENCE placedSymbolReference( symbol, m_frame->GetCurrentSheet() );
+                SCH_REFERENCE placedSymbolReference( symbol, m_editor->GetSchematic()->CurrentSheet() );
                 existingRefs.AddItem( placedSymbolReference );
                 existingRefs.SortByReferenceOnly();
 
@@ -522,8 +523,8 @@ int SCH_DRAWING_TOOLS::PlaceSymbol( const TOOL_EVENT& aEvent )
 
                 if( keepSymbol || placeAllUnits )
                 {
-                    SCH_REFERENCE currentReference( symbol, m_frame->GetCurrentSheet() );
-                    SCHEMATIC& schematic = m_frame->Schematic();
+                    SCH_REFERENCE currentReference( symbol, m_editor->GetSchematic()->CurrentSheet() );
+                    SCHEMATIC& schematic = (*m_editor->GetSchematic());
 
                     if( placeAllUnits )
                     {
@@ -575,7 +576,7 @@ int SCH_DRAWING_TOOLS::PlaceSymbol( const TOOL_EVENT& aEvent )
                             annotate();
 
                         // Update the list of references for the next symbol placement.
-                        SCH_REFERENCE placedSymbolReference( symbol, m_frame->GetCurrentSheet() );
+                        SCH_REFERENCE placedSymbolReference( symbol, m_editor->GetSchematic()->CurrentSheet() );
                         existingRefs.AddItem( placedSymbolReference );
                         existingRefs.SortByReferenceOnly();
                     }
@@ -605,7 +606,7 @@ int SCH_DRAWING_TOOLS::PlaceSymbol( const TOOL_EVENT& aEvent )
             {
                 int unit = *evt->GetCommandId() - ID_POPUP_SCH_SELECT_UNIT;
 
-                if( symbol )
+                if( symbol && m_frame )
                 {
                     m_frame->SelectUnit( symbol, unit );
                     m_toolMgr->PostAction( ACTIONS::refreshPreview );
@@ -616,7 +617,7 @@ int SCH_DRAWING_TOOLS::PlaceSymbol( const TOOL_EVENT& aEvent )
             {
                 int bodyStyle = ( *evt->GetCommandId() - ID_POPUP_SCH_SELECT_BODY_STYLE ) + 1;
 
-                if( symbol && symbol->GetBodyStyle() != bodyStyle )
+                if( m_frame && symbol && symbol->GetBodyStyle() != bodyStyle )
                 {
                     m_frame->SelectBodyStyle( symbol, bodyStyle );
                     m_toolMgr->PostAction( ACTIONS::refreshPreview );
@@ -642,7 +643,8 @@ int SCH_DRAWING_TOOLS::PlaceSymbol( const TOOL_EVENT& aEvent )
             symbol->SetPosition( cursorPos );
             m_view->ClearPreview();
             m_view->AddToPreview( symbol, false );   // Add, but not give ownership
-            m_frame->SetMsgPanel( symbol );
+            if( m_frame )
+                m_frame->SetMsgPanel( symbol );
         }
         else if( symbol && evt->IsAction( &ACTIONS::doDelete ) )
         {
@@ -692,11 +694,6 @@ int SCH_DRAWING_TOOLS::PlaceNextSymbolUnit( const TOOL_EVENT& aEvent )
     SCH_SYMBOL* symbol = params.m_Symbol;
     int requestedUnit = params.m_Unit;
 
-    // All this does is hand the next unit to ::PlaceSymbol, which cannot run without the
-    // library chooser's window.  There is nothing to hand it to without one.
-    if( !m_frame )
-        return 0;
-
     // TODO: get from selection
     if( !symbol )
     {
@@ -705,7 +702,7 @@ int SCH_DRAWING_TOOLS::PlaceNextSymbolUnit( const TOOL_EVENT& aEvent )
 
         if( selection.Size() != 1 )
         {
-            m_frame->ShowInfoBarMsg( _( "Select a single symbol to place the next unit." ) );
+            if( m_frame ) m_frame->ShowInfoBarMsg( _( "Select a single symbol to place the next unit." ) );
             return 0;
         }
 
@@ -718,7 +715,7 @@ int SCH_DRAWING_TOOLS::PlaceNextSymbolUnit( const TOOL_EVENT& aEvent )
 
     if( !symbol->IsMultiUnit() )
     {
-        m_frame->ShowInfoBarMsg( _( "This symbol has only one unit." ) );
+        if( m_frame ) m_frame->ShowInfoBarMsg( _( "This symbol has only one unit." ) );
         return 0;
     }
 
@@ -726,7 +723,7 @@ int SCH_DRAWING_TOOLS::PlaceNextSymbolUnit( const TOOL_EVENT& aEvent )
 
     if( missingUnits.empty() )
     {
-        m_frame->ShowInfoBarMsg( _( "All units of this symbol are already placed." ) );
+        if( m_frame ) m_frame->ShowInfoBarMsg( _( "All units of this symbol are already placed." ) );
         return 0;
     }
 
@@ -736,7 +733,7 @@ int SCH_DRAWING_TOOLS::PlaceNextSymbolUnit( const TOOL_EVENT& aEvent )
     {
         if( missingUnits.count( requestedUnit ) == 0 )
         {
-            m_frame->ShowInfoBarMsg( _( "Requested unit already placed." ) );
+            if( m_frame ) m_frame->ShowInfoBarMsg( _( "Requested unit already placed." ) );
             return 0;
         }
 
@@ -749,7 +746,7 @@ int SCH_DRAWING_TOOLS::PlaceNextSymbolUnit( const TOOL_EVENT& aEvent )
     }
 
     std::unique_ptr<SCH_SYMBOL> newSymbol = std::make_unique<SCH_SYMBOL>( *symbol );
-    const SCH_SHEET_PATH&       sheetPath = m_frame->GetCurrentSheet();
+    const SCH_SHEET_PATH&       sheetPath = m_editor->GetSchematic()->CurrentSheet();
 
     // Use SetUnitSelection(int) to update ALL instance references at once.
     // This is important for shared sheets where the same screen is used by multiple
@@ -1524,6 +1521,11 @@ int SCH_DRAWING_TOOLS::SingleClickPlace( const TOOL_EVENT& aEvent )
     }
 
     m_toolMgr->RunAction( ACTIONS::selectionClear );
+    if( !m_frame && ( type == SCH_JUNCTION_T || type == SCH_BUS_WIRE_ENTRY_T ) )
+    {
+        previewItem->SetFlags( IS_NEW | IS_MOVING );
+        m_selectionTool->AddItemToSel( previewItem );
+    }
 
     cursorPos = aEvent.HasPosition() ? aEvent.Position() : controls->GetMousePosition();
 
@@ -1617,7 +1619,10 @@ int SCH_DRAWING_TOOLS::SingleClickPlace( const TOOL_EVENT& aEvent )
                 {
                     SCH_COMMIT commit( m_toolMgr );
                     SCH_LINE_WIRE_BUS_TOOL* lwbTool = m_toolMgr->GetTool<SCH_LINE_WIRE_BUS_TOOL>();
-                    lwbTool->AddJunction( &commit, screen, cursorPos );
+                    auto* junction = lwbTool->AddJunction( &commit, screen, cursorPos );
+                    auto* prototype = static_cast<SCH_JUNCTION*>( previewItem );
+                    junction->SetDiameter( prototype->GetDiameter() );
+                    junction->SetColor( prototype->GetColor() );
 
                     if( SCHEMATIC* schematic = m_editor->GetSchematic() )
                         schematic->CleanUp( &commit );
@@ -1629,6 +1634,7 @@ int SCH_DRAWING_TOOLS::SingleClickPlace( const TOOL_EVENT& aEvent )
                     SCH_ITEM* newItem = static_cast<SCH_ITEM*>( previewItem->Clone() );
                     const_cast<KIID&>( newItem->m_Uuid ) = KIID();
                     newItem->SetPosition( cursorPos );
+                    newItem->ClearFlags( IS_MOVING | SELECTED );
                     newItem->SetFlags( IS_NEW );
                     m_editor->AddToScreen( newItem, screen );
 
@@ -1696,6 +1702,10 @@ int SCH_DRAWING_TOOLS::SingleClickPlace( const TOOL_EVENT& aEvent )
             // Editing the item about to be placed *is* the dialog, so without a window to
             // parent it there is nothing this branch can do.  Placement itself does not
             // need one.
+            else if( evt->IsAction( &SCH_ACTIONS::properties ) && !m_frame )
+            {
+                m_editor->RequestItemProperties( previewItem );
+            }
             else if( evt->IsAction( &SCH_ACTIONS::properties ) && m_frame )
             {
                 switch( type )
@@ -1751,6 +1761,7 @@ int SCH_DRAWING_TOOLS::SingleClickPlace( const TOOL_EVENT& aEvent )
         }
     }
 
+    if( !m_frame ) m_selectionTool->ClearSelection( true );
     delete previewItem;
     m_view->ClearPreview();
 
@@ -1898,11 +1909,9 @@ bool SCH_DRAWING_TOOLS::createNewLabel( const VECTOR2I& aPosition, int aType,
     }
     else
     {
-        // A label the attached wire already names is placed above without asking anything.
-        // Any other one has to be typed into a dialog, and there is no window to put one
-        // in, so this is as far as it goes.
-        delete labelItem;
-        return false;
+        // GPUI edits the selected preview asynchronously before its placement click.
+        labelItem->SetText( "Label" );
+        m_editor->RequestItemProperties( labelItem );
     }
 
     if( aType != LAYER_NETCLASS_REFS )
@@ -1934,11 +1943,6 @@ bool SCH_DRAWING_TOOLS::createNewLabel( const VECTOR2I& aPosition, int aType,
 
 SCH_TEXT* SCH_DRAWING_TOOLS::createNewText( const VECTOR2I& aPosition )
 {
-    // Unlike a label, a free text item has nothing to take its content from but the
-    // properties dialog, so without a window to parent one there is nothing to place.
-    if( !m_frame )
-        return nullptr;
-
     SCHEMATIC*          schematic = getModel<SCHEMATIC>();
     SCHEMATIC_SETTINGS& settings = schematic->Settings();
     SCH_TEXT*           textItem = nullptr;
@@ -1954,13 +1958,19 @@ SCH_TEXT* SCH_DRAWING_TOOLS::createNewText( const VECTOR2I& aPosition )
     textItem->SetTextAngle( m_lastTextAngle );
     textItem->SetFlags( IS_NEW | IS_MOVING );
 
-    DIALOG_TEXT_PROPERTIES dlg( m_frame, textItem );
-
-    // QuasiModal required for syntax help and Scintilla auto-complete
-    if( dlg.ShowQuasiModal() != wxID_OK )
+    if( m_frame )
     {
-        delete textItem;
-        return nullptr;
+        DIALOG_TEXT_PROPERTIES dlg( m_frame, textItem );
+        if( dlg.ShowQuasiModal() != wxID_OK )
+        {
+            delete textItem;
+            return nullptr;
+        }
+    }
+    else
+    {
+        textItem->SetText( "Text" );
+        m_editor->RequestItemProperties( textItem );
     }
 
     m_lastTextBold = textItem->IsBold();
@@ -2833,6 +2843,7 @@ int SCH_DRAWING_TOOLS::DrawTable( const TOOL_EVENT& aEvent )
                 commit.Push( _( "Draw Table" ) );
 
                 m_selectionTool->AddItemToSel( table );
+                if( !m_frame ) m_editor->RequestItemProperties( table );
                 m_toolMgr->PostAction( ACTIONS::activatePointEditor );
             }
             else
@@ -2937,6 +2948,98 @@ int SCH_DRAWING_TOOLS::DrawTable( const TOOL_EVENT& aEvent )
 }
 
 
+int SCH_DRAWING_TOOLS::DrawSheetHost( const TOOL_EVENT& aEvent, const wxString& aSource )
+{
+    if( m_inDrawingTool ) return 0;
+    REENTRANCY_GUARD guard( &m_inDrawingTool );
+    SCOPED_TOOL_PUSHER pushed( m_toolMgr->GetToolHolder(), aEvent );
+    auto* schematic = getModel<SCHEMATIC>();
+    auto* controls = getViewControls();
+    EE_GRID_HELPER grid( m_toolMgr );
+    std::unique_ptr<SCH_SHEET> sheet;
+    VECTOR2I origin;
+    bool configured = false;
+    Activate();
+    if( aEvent.HasPosition() ) m_toolMgr->PrimeTool( aEvent.Position() );
+    const auto preview = [&]()
+    {
+        m_view->ClearPreview();
+        if( sheet ) m_view->AddToPreview( sheet->Clone() );
+    };
+    while( TOOL_EVENT* event = Wait() )
+    {
+        m_editor->SetCurrentCursor( KICURSOR::PENCIL );
+        const VECTOR2I position = grid.Align( controls->GetMousePosition(), GRID_HELPER_GRIDS::GRID_GRAPHICS );
+        if( event->IsCancelInteractive() )
+        {
+            m_selectionTool->ClearSelection( true );
+            if( sheet ) { sheet.reset(); configured = false; preview(); }
+            else break;
+        }
+        else if( event->IsClick( BUT_LEFT ) || event->IsAction( &ACTIONS::cursorClick )
+                 || event->IsAction( &ACTIONS::finishInteractive ) )
+        {
+            if( !sheet )
+            {
+                m_selectionTool->ClearSelection( true );
+                origin = position;
+                sheet = std::make_unique<SCH_SHEET>( schematic->CurrentSheet().Last(), origin );
+                sheet->SetName( "Untitled Sheet" );
+                sheet->SetFileName( aSource.empty() ? wxS( "untitled.kicad_sch" ) : aSource );
+                sheet->SetFlags( IS_NEW | IS_MOVING );
+                auto path = schematic->CurrentSheet();
+                path.push_back( sheet.get() );
+                path.SetPageNumber( schematic->Hierarchy().GetNextPageNumber() );
+                preview();
+            }
+            else if( !configured || !sheet->GetScreen() )
+            {
+                configured = true;
+                m_selectionTool->ClearSelection( true );
+                m_selectionTool->AddItemToSel( sheet.get() );
+                controls->SetAutoPan( false );
+                controls->CaptureCursor( false );
+                m_editor->RequestItemProperties( sheet.get() );
+            }
+            else
+            {
+                sheet->ClearFlags( IS_MOVING );
+                sheet->AutoplaceFields( m_editor->GetScreen(), AUTOPLACE_AUTO );
+                SCH_COMMIT commit( m_toolMgr );
+                m_editor->AddToScreen( sheet.get(), m_editor->GetScreen() );
+                commit.Added( sheet.get(), m_editor->GetScreen() );
+                schematic->RefreshHierarchy();
+                commit.Push( "Draw Sheet" );
+                sheet.release();
+                preview();
+                break;
+            }
+        }
+        else if( sheet && ( event->IsMotion() || event->IsAction( &ACTIONS::refreshPreview ) ) )
+        {
+            if( !configured )
+            {
+                const VECTOR2I extent = position - origin;
+                sheet->Resize( VECTOR2I( std::max( extent.x, schIUScale.MilsToIU( MIN_SHEET_WIDTH ) ),
+                                         std::max( extent.y, schIUScale.MilsToIU( MIN_SHEET_HEIGHT ) ) ) );
+            }
+            preview();
+        }
+        else if( event->IsActivate() )
+        {
+            if( sheet ) event->SetPassEvent( false );
+            else { event->SetPassEvent(); break; }
+        }
+        else event->SetPassEvent();
+    }
+    if( sheet ) m_selectionTool->ClearSelection( true );
+    m_view->ClearPreview();
+    controls->SetAutoPan( false );
+    controls->CaptureCursor( false );
+    m_editor->SetCurrentCursor( KICURSOR::ARROW );
+    return 0;
+}
+
 int SCH_DRAWING_TOOLS::DrawSheet( const TOOL_EVENT& aEvent )
 {
     bool isDrawSheetCopy = aEvent.IsAction( &SCH_ACTIONS::drawSheetFromFile );
@@ -2964,12 +3067,8 @@ int SCH_DRAWING_TOOLS::DrawSheet( const TOOL_EVENT& aEvent )
         filename = designBlock->GetSchematicFile();
     }
 
-    // A sheet is only placed once SCH_EDIT_FRAME::EditSheetProperties() has been through
-    // its dialog to give it a name and a file, and the symbols it brings in are annotated
-    // by the frame as well.  Both are windows, so this action is one.  The parameters are
-    // consumed above so that declining here does not leak them.
     if( !m_frame )
-        return 0;
+        return DrawSheetHost( aEvent, filename );
 
     if( ( isDrawSheetCopy || isDrawSheetFromDesignBlock ) && !wxFileExists( filename ) )
     {

@@ -44,19 +44,21 @@ are fixed and verified. This milestone does not claim every shared tool or
 model operation is complete: `DeleteJunction`, body-style selection and units
 provider seams remain listed below, alongside shared-tool frame dependencies.
 
-**Stage 5 has started, but is not complete.** GPUI Find/Replace supplies search
-terms to the host and uses KiCad's search traversal and undo stack. Unsaved
-window close and editor Quit prompt Save/Discard/Cancel, with failed saves
-keeping the window open. The GPUI API cannot veto external OS quit. Symbol
-placement, properties, ERC and functional document panels remain future work.
+**Stage 5 uses GPUI-kit panels backed by native model services.** Coverage now
+includes schematic properties and placement prompts, document exports and
+maintenance, setup and preferences, library editing, simulation and ERC.
+Unsaved window close and editor Quit prompt Save/Discard/Cancel, with failed
+saves keeping the window open. External OS quit cannot be vetoed by this GPUI API.
+See [`09-dialog-workflows.md`](09-dialog-workflows.md) for the complete workflow
+inventory, verification and explicit differences from the wx editor.
 The known linked golden-render mismatch is recorded in
 [`08-action-registry.md`](08-action-registry.md).
 
 ## Exactly where it stops
 
 The eeschema tool roster conversion is complete except for
-`SCH_DESIGN_BLOCK_CONTROL`. The converted tools still decline work that requires
-a dialog; shared tools in `common/` also retain frame dependencies. See the
+`SCH_DESIGN_BLOCK_CONTROL`. The converted tools still decline unported dialogs;
+shared tools in `common/` also retain frame dependencies. See the
 [per-tool table](#what-each-converted-tool-actually-does) for the distinction
 between initialization and usable behavior.
 
@@ -984,21 +986,18 @@ undone, redone, saved and reloaded.
 
 ## Stage 5 — Dialogs, and who owns `main()`
 
-**Started: GPUI Find/Replace is the first implemented dialog workflow.** It
-uses owned host search data instead of a wx dialog. The shell also protects
-unsaved window close and editor Quit. These do not complete the other dialogs.
+The implementation follows the requested GPUI rebuild strategy. The dialog
+families use Rust/gpui-kit controls and call native services for validation,
+model mutation, library I/O, ERC and simulation. Tools that previously awaited a
+modal properties dialog now expose pending property requests to the GPUI shell.
+No wx dialog bridge is used by these workflows.
 
-**Effort remaining: a project, not a stage.**
-
-124 dialog sources in `eeschema/dialogs/`, all wxWidgets, many opened
-synchronously from inside a tool with `ShowModal()`. A gpui host is async.
-`00-architecture-survey.md` §7.4 lays out the three options; the recommendation
-is to keep them for bring-up and bridge them asynchronously through the tool
-coroutines, which already support suspension, rather than rewrite 124 dialogs.
-
-Keeping them working means a `wxApp` still exists, which is also the point at
-which "wxWidgets has been removed" stops being true in any sense. Removing it
-genuinely means Stage 5 completed, and that is a long way past where this is.
+The original survey counted 124 dialog sources, including generated base files.
+That source count is not a count of independent user workflows. Current coverage
+and intentional differences are maintained in
+[`09-dialog-workflows.md`](09-dialog-workflows.md). The binary still links wx
+utility/runtime code and retains the legacy editor; this stage does not remove
+the wx dependency from KiCad.
 
 ---
 
@@ -1052,6 +1051,6 @@ editor someone would choose: 124 dialog sources, and most of the 61 frame method
 The branch now provides rendering, host input and the converted eeschema editing
 tools, plus registry-backed command presentation. Dialogs, shared-tool frame
 dependencies and the remaining model seams still limit it. Rotate and delete
-and Find/Replace are available; symbol placement, properties and ERC workflows
-are not complete. See [the current follow-up report](08-action-registry.md#follow-up-implementation)
+and Find/Replace are available, as are the symbol, properties and ERC workflows
+described in [the dialog report](09-dialog-workflows.md). See [the earlier follow-up report](08-action-registry.md#follow-up-implementation)
 for the next UI work, and the interface additions listed above for host work.

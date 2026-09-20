@@ -129,7 +129,113 @@ impl Session {
         match self.0 {}
     }
 
+    /// Toggle a live ERC marker exclusion.
+    pub fn exclude_erc(&mut self, _id: &str, _excluded: bool) -> Result<(), Error> {
+        Err(Error::NoHost)
+    }
+    /// Run the native ERC engine.
+    pub fn run_erc(&mut self) -> Result<Vec<crate::ErcViolation>, Error> {
+        Err(Error::NoHost)
+    }
+
     /// Copy search terms to the host and update match highlighting.
+    pub fn item_properties(&mut self) -> Result<crate::ItemProperties, Error> {
+        Err(Error::NoHost)
+    }
+    /// Hierarchical label and sheet pin synchronization.
+    pub fn sheet_pin_properties(&mut self, _all: bool) -> Result<crate::ItemProperties, Error> {
+        Err(Error::NoHost)
+    }
+
+    /// Hierarchical label and sheet pin synchronization.
+    pub fn apply_sheet_pin_properties(
+        &mut self,
+        _all: bool,
+        _data: &crate::ItemProperties,
+    ) -> Result<(), Error> {
+        Err(Error::NoHost)
+    }
+
+    /// Read or persist application preferences.
+    pub fn preferences(&mut self) -> Result<crate::ItemProperties, Error> {
+        Err(Error::NoHost)
+    }
+    pub fn graphics_import_properties(&mut self) -> Result<crate::ItemProperties, Error> {
+        Err(Error::NoHost)
+    }
+    pub fn image_properties(&mut self) -> Result<crate::ItemProperties, Error> {
+        Err(Error::NoHost)
+    }
+
+    /// Read or persist application preferences.
+    pub fn apply_preferences(&mut self, _data: &crate::ItemProperties) -> Result<(), Error> {
+        Err(Error::NoHost)
+    }
+    pub fn apply_graphics_import(&mut self, _data: &crate::ItemProperties) -> Result<(), Error> {
+        Err(Error::NoHost)
+    }
+    pub fn apply_image_properties(&mut self, _data: &crate::ItemProperties) -> Result<(), Error> {
+        Err(Error::NoHost)
+    }
+
+    /// Consume an asynchronous properties request from the active tool.
+    pub fn take_pending_properties(&mut self) -> Result<bool, Error> {
+        Err(Error::NoHost)
+    }
+
+    /// Relink a hierarchical sheet file, clearing undo history.
+    pub fn relink_sheet(&mut self, _item_id: &str, _path: &str) -> Result<(), Error> {
+        Err(Error::NoHost)
+    }
+
+    /// Create or delete a selected item custom field.
+    pub fn edit_custom_field(
+        &mut self,
+        _item_id: &str,
+        _name: &str,
+        _value: Option<&str>,
+    ) -> Result<(), Error> {
+        Err(Error::NoHost)
+    }
+
+    pub fn apply_properties(&mut self, _data: &crate::ItemProperties) -> Result<(), Error> {
+        Err(Error::NoHost)
+    }
+
+    /// Cached library IDs (requires the host).
+    pub fn symbol_libraries(&mut self) -> Result<Vec<String>, Error> {
+        Err(Error::NoHost)
+    }
+    /// Browse a symbol library.
+    pub fn browse_symbols(
+        &mut self,
+        _library: &str,
+        _power_only: bool,
+    ) -> Result<Vec<String>, Error> {
+        Err(Error::NoHost)
+    }
+    /// List cached symbols.
+    pub fn list_symbols(&mut self) -> Result<Vec<String>, Error> {
+        Err(Error::NoHost)
+    }
+    /// Record a chooser preview.
+    pub fn preview_symbol(
+        &mut self,
+        _id: &str,
+        _unit: u32,
+        _body: u32,
+    ) -> Result<(kicad_gal::Stream, u32, u32), Error> {
+        Err(Error::NoHost)
+    }
+    /// Place a chosen unit and body style.
+    pub fn place_symbol_variant(&mut self, _id: &str, _unit: u32, _body: u32) -> Result<(), Error> {
+        Err(Error::NoHost)
+    }
+    /// Begin placement (requires the host).
+    pub fn place_symbol(&mut self, _id: &str) -> Result<(), Error> {
+        Err(Error::NoHost)
+    }
+    /// Configure search.
     pub fn set_search_data(&mut self, _data: &crate::SearchData) -> Result<(), Error> {
         Err(Error::NoHost)
     }
@@ -168,5 +274,68 @@ impl Session {
 impl fmt::Debug for Session {
     fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.0 {}
+    }
+}
+
+impl Session {
+    /// Unavailable without the native host.
+    pub fn document_workflow(&mut self, _kind: u32) -> Result<Vec<(String, String)>, Error> {
+        match self.0 {}
+    }
+    /// Unavailable without the native host.
+    pub fn apply_document_workflow(&mut self, _kind: u32, _values: &[String]) -> Result<(), Error> {
+        match self.0 {}
+    }
+}
+
+impl Session {
+    /// Read a symbol library table.
+    pub fn library_table(&mut self, _global: bool) -> Result<Vec<crate::LibraryRow>, Error> {
+        Err(Error::NoHost)
+    }
+    /// Save a symbol library table.
+    pub fn save_library_table(
+        &mut self,
+        _global: bool,
+        _rows: &[crate::LibraryRow],
+    ) -> Result<(), Error> {
+        Err(Error::NoHost)
+    }
+}
+
+impl Session {
+    /// Read simulation workflow values.
+    pub fn simulation_workflow(&mut self, _kind: u32) -> Result<Vec<(String, String)>, Error> {
+        Err(Error::NoHost)
+    }
+    /// Apply simulation workflow values.
+    pub fn apply_simulation_workflow(
+        &mut self,
+        _kind: u32,
+        _values: &[String],
+    ) -> Result<(), Error> {
+        Err(Error::NoHost)
+    }
+}
+
+impl Session {
+    /// Read schematic setup.
+    pub fn setup_properties(&mut self) -> Result<crate::ItemProperties, Error> {
+        Err(Error::NoHost)
+    }
+    /// Save schematic setup.
+    pub fn apply_setup_properties(&mut self, _data: &crate::ItemProperties) -> Result<(), Error> {
+        Err(Error::NoHost)
+    }
+}
+
+impl Session {
+    /// Read Database or HTTP library connection settings.
+    pub fn configure_library(
+        &mut self,
+        _global: bool,
+        _nickname: &str,
+    ) -> Result<Vec<(String, String)>, Error> {
+        Err(Error::NoHost)
     }
 }

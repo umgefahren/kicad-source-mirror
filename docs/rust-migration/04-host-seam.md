@@ -237,8 +237,10 @@ that, and they are the useful part — the two sides agreeing about every struct
 
 ### 3.0 The runtime, and why the ABI grew one
 
-`KSCH_ABI_VERSION` is 4; this section describes what version 2 added, §3.4 what
-version 3 did, and §3.5 version 4. Version 2's addition is three calls — `ksch_runtime_init`,
+`KSCH_ABI_VERSION` is 5; this section describes what version 2 added, §3.4 what
+version 3 did, and §3.5 version 4. Version 5 adds the typed dialog services
+described in `09-dialog-workflows.md`; property descriptors and ERC marker IDs
+change the ABI, so both host and Rust client must be rebuilt together. Version 2's addition is three calls — `ksch_runtime_init`,
 `ksch_runtime_shutdown`, `ksch_runtime_is_ready` — and they exist because
 everything else in this header is uncallable without them.
 

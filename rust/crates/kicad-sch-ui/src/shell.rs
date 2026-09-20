@@ -12,13 +12,15 @@ use std::rc::Rc;
 
 use gpui_kit::TestSupportExt;
 use gpui_kit::assets::IconName;
-use gpui_kit::base::{Disableable, GlobalState};
+use gpui_kit::base::Disableable;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::command::{Command, CommandGroup, CommandItem, CommandState};
 use gpui_kit::component::dock::{
     DockArea, DockLayout, DockPlacement, DockSkin, Panel, PanelEvent, panel_handle,
 };
-use gpui_kit::component::menu::{AppMenuBar, PopupMenu};
+#[cfg(not(target_os = "macos"))]
+use gpui_kit::component::menu::AppMenuBar;
+use gpui_kit::component::menu::PopupMenu;
 use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::status_bar::StatusBar;
 use gpui_kit::component::theme::{Theme, ThemeMode};
@@ -35,12 +37,19 @@ use crate::commands::{
     ToggleFrameStats, ToggleGrid, ToggleLeftPanel, ToggleRightPanel, ToggleTheme, ToggleUnits,
     ZoomActualSize, ZoomIn, ZoomOut, ZoomToFit, ZoomToObjects,
 };
+use crate::dialog_window::{DialogEntry, DialogKind, DialogWindow};
 use crate::document::SharedDocument;
+use crate::document_dialogs::{DocumentDialog, DocumentRequest};
+use crate::erc::{ErcPanel, ErcRequest};
 use crate::grid::Units;
 use crate::input::{Modifiers, SharedSink, ShellEvent, shared_sink};
+use crate::library_workflows::{LibraryPanel, LibraryRequest};
 use crate::panels::{DesignState, DocumentSource, HierarchyPanel, PropertiesPanel, StreamFacts};
+use crate::properties::{PropertiesPanel as ItemPropertiesPanel, PropertiesRequest};
 use crate::search::{SearchOperation, SearchPanel, SearchRequest};
+use crate::simulation::{SimulationPanel, SimulationRequest};
 use crate::stats::FrameStats;
+use crate::symbols::{SymbolPanel, SymbolRequest};
 use crate::theme::{self, CanvasPalette};
 use crate::tools::TOOLS;
 use kicad_sch_render::SchematicRenderer;
@@ -85,6 +94,11 @@ pub fn install_key_bindings(cx: &mut App) {
     );
     cx.bind_keys(bindings);
     cx.bind_keys([gpui_kit::KeyBinding::new(
+        "escape",
+        CancelTool,
+        Some("SchematicDialog"),
+    )]);
+    cx.bind_keys([gpui_kit::KeyBinding::new(
         if cfg!(target_os = "macos") {
             "cmd-w"
         } else {
@@ -97,13 +111,7 @@ pub fn install_key_bindings(cx: &mut App) {
 
 /// Publish the menu bar so [`AppMenuBar`] can draw it.
 pub fn install_menus(cx: &mut App) {
-    let menus = if let Some(registry) = cx.try_global::<ActionRegistry>() {
-        commands::app_menus_with_registry(registry)
-    } else {
-        commands::app_menus()
-    };
-    let menus = menus.into_iter().map(|menu| menu.owned()).collect();
-    GlobalState::global_mut(cx).set_app_menus(menus);
+    crate::app_menu::install(cx);
 }
 
 /// The canvas, wrapped as a dock panel so the docking machinery can treat it
@@ -311,6 +319,7 @@ impl Render for CanvasPanel {
 /// The schematic editor window.
 pub struct SchematicShell {
     focus_handle: FocusHandle,
+    #[cfg(not(target_os = "macos"))]
     menu_bar: Entity<AppMenuBar>,
     dock: Entity<DockArea>,
     _dock_skin: Rc<DockSkin>,
@@ -323,6 +332,8 @@ pub struct SchematicShell {
     palette_open: bool,
     search_panel: Entity<SearchPanel>,
     search_open: bool,
+    pending_item_properties: bool,
+    dialogs: std::collections::HashMap<DialogKind, DialogEntry>,
     close_pending: bool,
     units: Units,
     theme_mode: ThemeMode,
@@ -411,6 +422,7 @@ impl SchematicShell {
             },
         )
         .detach();
+        #[cfg(not(target_os = "macos"))]
         let menu_bar = AppMenuBar::new(cx);
 
         let (dock, dock_skin) = DockSkin::dock_area("schematic", Some(1), window, cx);
@@ -438,7 +450,14 @@ impl SchematicShell {
 
         // A redraw of the shell has to follow a redraw of the canvas, or the
         // status bar shows last frame's cursor position.
-        cx.observe(&canvas, |_, _, cx| cx.notify()).detach();
+        cx.observe_in(&canvas, window, |this, canvas, window, cx| {
+            if canvas.update(cx, |canvas, _| canvas.take_pending_properties()) {
+                this.open_item_properties(window, cx);
+                this.pending_item_properties = this.dialogs.contains_key(&DialogKind::Properties);
+            }
+            cx.notify();
+        })
+        .detach();
 
         let weak_shell = cx.weak_entity();
         window.on_window_should_close(cx, move |window, cx| {
@@ -449,6 +468,7 @@ impl SchematicShell {
 
         let shell = Self {
             focus_handle: cx.focus_handle(),
+            #[cfg(not(target_os = "macos"))]
             menu_bar,
             dock,
             _dock_skin: dock_skin,
@@ -461,6 +481,8 @@ impl SchematicShell {
             palette_open: false,
             search_panel,
             search_open: false,
+            pending_item_properties: false,
+            dialogs: Default::default(),
             close_pending: false,
             units: Units::Millimetres,
             theme_mode,
@@ -610,14 +632,143 @@ impl SchematicShell {
     // --- action handlers -------------------------------------------------
 
     fn on_run_action(&mut self, action: &RunAction, window: &mut Window, cx: &mut Context<Self>) {
+        if crate::app_menu::route_input_edit(action.id.as_ref(), window, cx) {
+            return;
+        }
         let id = action.id.to_string();
+        let document_kind =
+            match id.as_str() {
+                "eeschema.EditorControl.annotate" => Some(0),
+                "eeschema.EditorControl.incrementAnnotations" => Some(1),
+                "common.Control.pageSettings" | "eeschema.EditorControl.editPageNumber" => Some(2),
+                "eeschema.EditorControl.exportNetlist" => Some(3),
+                "common.Control.plot" => Some(4),
+                "common.Control.print" => Some(5),
+                "eeschema.EditorControl.generateBOM" => Some(6),
+                "eeschema.EditorControl.editSymbolFields"
+                | "eeschema.EditorControl.assignFootprints" => Some(7),
+                "eeschema.InteractiveEdit.changeSymbols"
+                | "eeschema.InteractiveEdit.changeSymbol" => Some(8),
+                "eeschema.InteractiveEdit.updateSymbols"
+                | "eeschema.InteractiveEdit.updateSymbol" => Some(9),
+                "eeschema.EditorControl.remapSymbols" => Some(10),
+                "eeschema.EditorControl.rescueSymbols" => Some(11),
+                "eeschema.EditorControl.editSymbolLibraryLinks" => Some(12),
+                "gpui.Setup.buses" => Some(13),
+                "gpui.Setup.netclasses" => Some(14),
+                "gpui.Setup.netchains" => Some(15),
+                "eeschema.EditorControl.createNetChain" => Some(16),
+                "eeschema.InteractiveEdit.editTextAndGraphics" => Some(17),
+                "gpui.Setup.import" => Some(18),
+                "gpui.MigrateBuses" => Some(19),
+                "common.Control.updateSchematicFromPCB" => Some(20),
+                "gpui.FieldCaseConflicts" => Some(21),
+                "gpui.SchematicDataSources" => Some(22),
+                "eeschema.InteractiveDrawing.importSheet" => Some(23),
+                _ => None,
+            };
+        if let Some(kind) = document_kind {
+            self.open_document_dialog(kind, window, cx);
+            return;
+        }
         match id.as_str() {
+            "common.SuiteControl.showSymbolLibTable" => {
+                self.open_library_table(false, window, cx);
+                return;
+            }
+            "eeschema.EditorControl.showSimulator" => {
+                if !self.raise_dialog(DialogKind::Simulation, cx) {
+                    self.open_simulation(1, window, cx);
+                }
+                return;
+            }
+            "eeschema.InteractiveEdit.symbolProperties" | "common.Control.showSymbolEditor" => {
+                self.open_simulation(3, window, cx);
+                return;
+            }
+            "eeschema.InteractiveEdit.editSymbolPinMaps" => {
+                self.open_simulation(18, window, cx);
+                return;
+            }
+            "eeschema.SymbolLibraryControl.updateSymbolFields" => {
+                self.open_simulation(16, window, cx);
+                return;
+            }
+            "eeschema.SymbolLibraryControl.newSymbol" => {
+                self.open_simulation(4, window, cx);
+                return;
+            }
+            "eeschema.InteractiveEdit.pinTable" => {
+                self.open_simulation(5, window, cx);
+                return;
+            }
+            "eeschema.SymbolLibraryControl.importSymbol" => {
+                self.open_simulation(6, window, cx);
+                return;
+            }
+            "eeschema.InteractiveDrawing.placeImage" => {
+                self.open_image_import(window, cx);
+                return;
+            }
+            "eeschema.EditorControl.importGraphics" | "eeschema.EditorControl.ddImportGraphics" => {
+                self.open_graphics_import(window, cx);
+                return;
+            }
+            "common.SuiteControl.openPreferences" => {
+                self.open_preferences(window, cx);
+                return;
+            }
+            "eeschema.EditorControl.schematicSetup" => {
+                self.open_setup(window, cx);
+                return;
+            }
+            "eeschema.SymbolLibraryControl.showLibraryFieldsTable" => {
+                self.open_simulation(8, window, cx);
+                return;
+            }
+            "eeschema.SymbolLibraryControl.showRelatedLibraryFieldsTable" => {
+                self.open_simulation(9, window, cx);
+                return;
+            }
+            "eeschema.InteractiveDrawing.syncSheetPins"
+            | "eeschema.InteractiveEdit.cleanupSheetPins"
+            | "eeschema.InteractiveDrawing.syncAllSheetsPins" => {
+                self.open_sheet_pin_sync(id.ends_with("syncAllSheetsPins"), window, cx);
+                return;
+            }
+            "gpui.RemoteSymbols.settings" => {
+                self.open_simulation(10, window, cx);
+                return;
+            }
+            "eeschema.InteractiveDrawing.placeSymbol" | "common.Control.showSymbolBrowser" => {
+                self.open_symbols(false, window, cx);
+                return;
+            }
+            "eeschema.InteractiveDrawing.placePowerSymbol" => {
+                self.open_symbols(true, window, cx);
+                return;
+            }
+            "eeschema.InteractiveEdit.properties" | "common.Interactive.properties" => {
+                self.open_item_properties(window, cx);
+                return;
+            }
+            "eeschema.InspectionTool.runERC" => {
+                self.open_erc(window, cx);
+                return;
+            }
             "common.Interactive.find" | "common.Interactive.findAndReplace" => {
                 self.search_open = true;
                 self.palette_open = false;
                 self.search_panel.update(cx, |panel, cx| {
                     panel.open(id.ends_with("findAndReplace"), window, cx)
                 });
+                self.present_dialog(
+                    DialogKind::Search,
+                    "Find and Replace",
+                    self.search_panel.clone().into(),
+                    window,
+                    cx,
+                );
                 cx.notify();
                 return;
             }
@@ -631,6 +782,13 @@ impl SchematicShell {
                     self.search_open = true;
                     self.search_panel
                         .update(cx, |panel, cx| panel.open(false, window, cx));
+                    self.present_dialog(
+                        DialogKind::Search,
+                        "Find and Replace",
+                        self.search_panel.clone().into(),
+                        window,
+                        cx,
+                    );
                 }
                 self.search_panel
                     .update(cx, |panel, cx| panel.execute(operation, cx));
@@ -662,6 +820,7 @@ impl SchematicShell {
             return false;
         }
         if self.canvas.read(cx).modified() != Some(true) {
+            self.close_dialog_windows(cx);
             if quit {
                 cx.quit();
             }
@@ -703,6 +862,7 @@ impl SchematicShell {
                         _ => false,
                     };
                     if should_close {
+                        shell.close_dialog_windows(cx);
                         if quit {
                             cx.quit();
                         } else {
@@ -899,9 +1059,8 @@ impl SchematicShell {
             self.close_palette(window, cx);
             return;
         }
-        if self.search_open {
-            self.search_panel
-                .update(cx, |panel, cx| panel.execute(SearchOperation::Close, cx));
+        if self.pending_item_properties {
+            self.close_dialog(DialogKind::Properties, window, cx);
             return;
         }
         self.canvas.update(cx, |canvas, cx| {
@@ -920,6 +1079,7 @@ impl SchematicShell {
         });
         if request.1 == SearchOperation::Close {
             self.search_open = false;
+            self.close_dialog(DialogKind::Search, window, cx);
             self.canvas_panel
                 .read(cx)
                 .focus_handle(cx)
@@ -958,6 +1118,800 @@ impl SchematicShell {
 
     // --- rendering -------------------------------------------------------
 
+    fn focus_canvas(&self, window: &mut Window, cx: &mut Context<Self>) {
+        self.canvas_panel
+            .read(cx)
+            .focus_handle(cx)
+            .focus(window, cx);
+    }
+
+    fn raise_dialog(&self, kind: DialogKind, cx: &mut Context<Self>) -> bool {
+        let Some(entry) = self.dialogs.get(&kind) else {
+            return false;
+        };
+        let handle = entry.window;
+        cx.defer(move |cx| {
+            let _ = handle.update(cx, |_, window, _| window.activate_window());
+        });
+        true
+    }
+
+    fn present_dialog(
+        &mut self,
+        kind: DialogKind,
+        title: impl Into<SharedString>,
+        content: gpui_kit::AnyView,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let title = title.into();
+        let initial_focus = window.focused(cx).filter(|focus| {
+            focus != &self.focus_handle && focus != &self.canvas_panel.read(cx).focus_handle(cx)
+        });
+        self.focus_canvas(window, cx);
+        if let Some(entry) = self.dialogs.get(&kind) {
+            entry
+                .view
+                .update(cx, |dialog, cx| dialog.replace(content, initial_focus, cx));
+            let handle = entry.window;
+            cx.defer(move |cx| {
+                let _ = handle.update(cx, |_, window, _| {
+                    window.set_window_title(&title);
+                    window.activate_window();
+                });
+            });
+        } else {
+            match DialogWindow::open(kind, title, content, initial_focus, cx.entity(), window, cx) {
+                Ok(entry) => {
+                    let handle = entry.window;
+                    self.dialogs.insert(kind, entry);
+                    cx.defer(move |cx| {
+                        let _ = handle.update(cx, |_, window, _| window.activate_window());
+                    });
+                }
+                Err(error) => self.set_status(format!("Could not open dialog: {error}")),
+            }
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn close_dialog(
+        &mut self,
+        kind: DialogKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(entry) = self.dialogs.remove(&kind) {
+            cx.defer(move |cx| {
+                let _ = entry
+                    .window
+                    .update(cx, |_, window, _| window.remove_window());
+            });
+        }
+        self.dialog_closed(kind, window, cx);
+    }
+
+    pub(crate) fn dialog_closed(
+        &mut self,
+        kind: DialogKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.dialogs.remove(&kind);
+        if kind == DialogKind::Properties && self.pending_item_properties {
+            self.pending_item_properties = false;
+            self.canvas.update(cx, |canvas, cx| {
+                canvas.cancel_tool();
+                cx.notify();
+            });
+        }
+        if kind == DialogKind::Search {
+            self.search_open = false;
+        }
+        self.focus_canvas(window, cx);
+        window.activate_window();
+        cx.notify();
+    }
+
+    fn close_dialog_windows(&mut self, cx: &mut Context<Self>) {
+        for (_, entry) in self.dialogs.drain() {
+            cx.defer(move |cx| {
+                let _ = entry
+                    .window
+                    .update(cx, |_, window, _| window.remove_window());
+            });
+        }
+    }
+
+    fn begin_workflow(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.pending_item_properties {
+            self.close_dialog(DialogKind::Properties, window, cx);
+        }
+        // A replaced panel can own the focused input. Anchor focus in the live
+        // shell before dropping it; otherwise menu actions have no dispatch path.
+        self.focus_handle.focus(window, cx);
+        self.palette_open = false;
+        cx.notify();
+    }
+
+    fn open_document_dialog(&mut self, kind: u32, window: &mut Window, cx: &mut Context<Self>) {
+        if self.raise_dialog(DialogKind::Document(kind), cx) {
+            return;
+        }
+        match self
+            .canvas
+            .update(cx, |canvas, _| canvas.document_workflow(kind))
+        {
+            Err(error) => self.set_status(error),
+            Ok(fields) => {
+                self.begin_workflow(window, cx);
+                let panel = cx.new(|cx| DocumentDialog::new(kind, fields, window, cx));
+                cx.subscribe_in(&panel, window, move |this, panel, request, window, cx| {
+                    match request {
+                        DocumentRequest::Close => {
+                            this.close_dialog(DialogKind::Document(kind), window, cx);
+                            this.focus_canvas(window, cx);
+                        }
+                        DocumentRequest::Apply(values) => {
+                            let result = this.canvas.update(cx, |canvas, cx| {
+                                let result = canvas.apply_document_workflow(kind, values);
+                                cx.notify();
+                                result
+                            });
+                            let report = if result.is_ok() && matches!(kind, 20 | 22) {
+                                this.canvas
+                                    .update(cx, |canvas, _| canvas.document_workflow(kind))
+                                    .ok()
+                                    .and_then(|rows| {
+                                        rows.into_iter().find(|(name, _)| name == "Last report")
+                                    })
+                                    .map(|(_, report)| report)
+                            } else {
+                                None
+                            };
+                            panel.update(cx, |panel, cx| {
+                                panel.feedback(
+                                    match result {
+                                        Ok(()) => report.unwrap_or_else(|| "Completed".into()),
+                                        Err(error) => error,
+                                    },
+                                    cx,
+                                )
+                            });
+                        }
+                    }
+                    cx.notify();
+                })
+                .detach();
+                self.present_dialog(
+                    DialogKind::Document(kind),
+                    crate::document_dialogs::TITLES
+                        .get(kind as usize)
+                        .copied()
+                        .unwrap_or("Schematic"),
+                    panel.into(),
+                    window,
+                    cx,
+                );
+            }
+        }
+        cx.notify();
+    }
+
+    fn open_library_table(&mut self, global: bool, window: &mut Window, cx: &mut Context<Self>) {
+        match self
+            .canvas
+            .update(cx, |canvas, _| canvas.library_table(global))
+        {
+            Err(error) => self.set_status(error),
+            Ok(rows) => {
+                self.begin_workflow(window, cx);
+                let panel = cx.new(|cx| LibraryPanel::new(global, rows, window, cx));
+                cx.subscribe_in(&panel, window, |this, panel, request, window, cx| {
+                    match request {
+                        LibraryRequest::Close => {
+                            this.close_dialog(DialogKind::LibraryTable, window, cx);
+                            this.focus_canvas(window, cx);
+                        }
+                        LibraryRequest::Load(global) => {
+                            this.open_library_table(*global, window, cx)
+                        }
+                        LibraryRequest::Configure(global, name) => {
+                            match this
+                                .canvas
+                                .update(cx, |canvas, _| canvas.configure_library(*global, name))
+                            {
+                                Ok(rows) => this.show_simulation(7, rows, window, cx),
+                                Err(error) => {
+                                    panel.update(cx, |panel, cx| panel.feedback(error, cx))
+                                }
+                            }
+                        }
+                        LibraryRequest::Apply(global, rows) => {
+                            let result = this
+                                .canvas
+                                .update(cx, |canvas, _| canvas.save_library_table(*global, rows));
+                            panel.update(cx, |panel, cx| {
+                                panel.feedback(
+                                    match result {
+                                        Ok(()) => "Library table saved".into(),
+                                        Err(error) => error,
+                                    },
+                                    cx,
+                                )
+                            });
+                        }
+                    }
+                    cx.notify();
+                })
+                .detach();
+                self.present_dialog(
+                    DialogKind::LibraryTable,
+                    "Symbol Libraries",
+                    panel.into(),
+                    window,
+                    cx,
+                );
+            }
+        }
+        cx.notify();
+    }
+
+    fn open_simulation(&mut self, kind: u32, window: &mut Window, cx: &mut Context<Self>) {
+        match self
+            .canvas
+            .update(cx, |canvas, _| canvas.simulation_workflow(kind))
+        {
+            Err(error) => self.set_status(error),
+            Ok(rows) => self.show_simulation(kind, rows, window, cx),
+        }
+        cx.notify();
+    }
+
+    fn show_simulation(
+        &mut self,
+        kind: u32,
+        rows: Vec<(String, String)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.begin_workflow(window, cx);
+        let panel = cx.new(|cx| SimulationPanel::new(kind, rows, window, cx));
+        cx.subscribe_in(&panel, window, move |this, panel, request, window, cx| {
+            match request {
+                SimulationRequest::Close => {
+                    this.close_dialog(DialogKind::simulation(kind), window, cx);
+                    this.focus_canvas(window, cx);
+                }
+                SimulationRequest::Load(kind) => this.open_simulation(*kind, window, cx),
+                SimulationRequest::Apply(kind, values) => {
+                    let result = this.canvas.update(cx, |canvas, cx| {
+                        let result = canvas.apply_simulation_workflow(*kind, values);
+                        cx.notify();
+                        result
+                    });
+                    if result.is_ok()
+                        && matches!(*kind, 3 | 5 | 8 | 9 | 14 | 16 | 17 | 18 | 19 | 20 | 22)
+                    {
+                        this.open_simulation(if *kind == 14 { 17 } else { *kind }, window, cx);
+                        return;
+                    }
+                    panel.update(cx, |panel, cx| {
+                        panel.feedback(
+                            match result {
+                                Ok(()) => "Completed".into(),
+                                Err(error) => error,
+                            },
+                            cx,
+                        )
+                    });
+                }
+            }
+            cx.notify();
+        })
+        .detach();
+        self.present_dialog(
+            DialogKind::simulation(kind),
+            if matches!(DialogKind::simulation(kind), DialogKind::Simulation) {
+                "Simulator"
+            } else {
+                "Symbol Library Editor"
+            },
+            panel.into(),
+            window,
+            cx,
+        );
+        cx.notify();
+    }
+
+    fn open_sheet_pin_sync(&mut self, all: bool, window: &mut Window, cx: &mut Context<Self>) {
+        match self
+            .canvas
+            .update(cx, |canvas, _| canvas.sheet_pin_properties(all))
+        {
+            Err(error) => self.set_status(error),
+            Ok(data) => {
+                self.begin_workflow(window, cx);
+                let empty = data.entries.is_empty();
+                let panel = cx.new(|cx| {
+                    ItemPropertiesPanel::new_with_title(data, "Synchronize Sheet Pins", window, cx)
+                });
+                if empty {
+                    panel.update(cx, |panel, cx| {
+                        panel.feedback("All pins and labels match".into(), cx)
+                    });
+                }
+                cx.subscribe_in(&panel, window, move |this, panel, request, window, cx| {
+                    match request {
+                        PropertiesRequest::Close => {
+                            this.close_dialog(DialogKind::SheetPins, window, cx);
+                            this.focus_canvas(window, cx);
+                        }
+                        PropertiesRequest::Apply(data) => {
+                            match this.canvas.update(cx, |canvas, cx| {
+                                let result = canvas.apply_sheet_pin_properties(all, data);
+                                cx.notify();
+                                result
+                            }) {
+                                Ok(()) => this.open_sheet_pin_sync(all, window, cx),
+                                Err(error) => {
+                                    panel.update(cx, |panel, cx| panel.feedback(error, cx))
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                    cx.notify();
+                })
+                .detach();
+                self.present_dialog(
+                    DialogKind::SheetPins,
+                    "Synchronize Sheet Pins",
+                    panel.into(),
+                    window,
+                    cx,
+                );
+            }
+        }
+        cx.notify();
+    }
+
+    fn open_image_import(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self
+            .canvas
+            .update(cx, |canvas, _| canvas.image_properties())
+        {
+            Err(error) => self.set_status(error),
+            Ok(data) => {
+                self.begin_workflow(window, cx);
+                let panel = cx
+                    .new(|cx| ItemPropertiesPanel::new_with_title(data, "Place Image", window, cx));
+                cx.subscribe_in(&panel, window, |this, panel, request, window, cx| {
+                    match request {
+                        PropertiesRequest::Close => {
+                            this.close_dialog(DialogKind::ImageImport, window, cx);
+                            this.focus_canvas(window, cx);
+                        }
+                        PropertiesRequest::Apply(data) => {
+                            let result = this.canvas.update(cx, |canvas, cx| {
+                                let result = canvas.apply_image_properties(data);
+                                cx.notify();
+                                result
+                            });
+                            if result.is_ok() {
+                                this.close_dialog(DialogKind::ImageImport, window, cx);
+                                this.focus_canvas(window, cx);
+                                this.set_status("Image ready; click to place or Escape to cancel");
+                                cx.notify();
+                                return;
+                            }
+                            panel.update(cx, |panel, cx| {
+                                panel.feedback(
+                                    match result {
+                                        Ok(()) => "Graphics imported; close and move selected items if needed".into(),
+                                        Err(error) => error,
+                                    },
+                                    cx,
+                                )
+                            });
+                        }
+                        _ => {}
+                    }
+                    cx.notify();
+                })
+                .detach();
+                self.present_dialog(
+                    DialogKind::ImageImport,
+                    "Place Image",
+                    panel.into(),
+                    window,
+                    cx,
+                );
+            }
+        }
+        cx.notify();
+    }
+
+    fn open_graphics_import(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self
+            .canvas
+            .update(cx, |canvas, _| canvas.graphics_import_properties())
+        {
+            Err(error) => self.set_status(error),
+            Ok(data) => {
+                self.begin_workflow(window, cx);
+                let panel = cx.new(|cx| {
+                    ItemPropertiesPanel::new_with_title(data, "Import Graphics", window, cx)
+                });
+                cx.subscribe_in(&panel, window, |this, panel, request, window, cx| {
+                    match request {
+                        PropertiesRequest::Close => {
+                            this.close_dialog(DialogKind::GraphicsImport, window, cx);
+                            this.focus_canvas(window, cx);
+                        }
+                        PropertiesRequest::Apply(data) => {
+                            let result = this.canvas.update(cx, |canvas, cx| {
+                                let result = canvas.apply_graphics_import(data);
+                                cx.notify();
+                                result
+                            });
+                            panel.update(cx, |panel, cx| {
+                                panel.feedback(
+                                    match result {
+                                        Ok(()) => "Graphics imported; close and move selected items if needed".into(),
+                                        Err(error) => error,
+                                    },
+                                    cx,
+                                )
+                            });
+                        }
+                        _ => {}
+                    }
+                    cx.notify();
+                })
+                .detach();
+                self.present_dialog(
+                    DialogKind::GraphicsImport,
+                    "Import Graphics",
+                    panel.into(),
+                    window,
+                    cx,
+                );
+            }
+        }
+        cx.notify();
+    }
+
+    fn open_preferences(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.raise_dialog(DialogKind::Preferences, cx) {
+            return;
+        }
+        match self.canvas.update(cx, |canvas, _| canvas.preferences()) {
+            Err(error) => self.set_status(error),
+            Ok(data) => {
+                self.begin_workflow(window, cx);
+                let panel = cx
+                    .new(|cx| ItemPropertiesPanel::new_with_title(data, "Preferences", window, cx));
+                cx.subscribe_in(&panel, window, |this, panel, request, window, cx| {
+                    match request {
+                        PropertiesRequest::Close => {
+                            this.close_dialog(DialogKind::Preferences, window, cx);
+                            this.focus_canvas(window, cx);
+                        }
+                        PropertiesRequest::Apply(data) => {
+                            let result = this.canvas.update(cx, |canvas, cx| {
+                                let result = canvas.apply_preferences(data);
+                                cx.notify();
+                                result
+                            });
+                            panel.update(cx, |panel, cx| {
+                                panel.feedback(
+                                    match result {
+                                        Ok(()) => "Preferences saved".into(),
+                                        Err(error) => error,
+                                    },
+                                    cx,
+                                )
+                            });
+                        }
+                        _ => {}
+                    }
+                    cx.notify();
+                })
+                .detach();
+                self.present_dialog(
+                    DialogKind::Preferences,
+                    "Preferences",
+                    panel.into(),
+                    window,
+                    cx,
+                );
+            }
+        }
+        cx.notify();
+    }
+
+    fn open_setup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.raise_dialog(DialogKind::Setup, cx) {
+            return;
+        }
+        match self
+            .canvas
+            .update(cx, |canvas, _| canvas.setup_properties())
+        {
+            Err(error) => self.set_status(error),
+            Ok(data) => {
+                self.begin_workflow(window, cx);
+                let panel = cx.new(|cx| {
+                    ItemPropertiesPanel::new_with_title(data, "Schematic Setup", window, cx)
+                });
+                cx.subscribe_in(&panel, window, |this, panel, request, window, cx| {
+                    match request {
+                        PropertiesRequest::Close => {
+                            this.close_dialog(DialogKind::Setup, window, cx);
+                            this.focus_canvas(window, cx);
+                        }
+                        PropertiesRequest::Apply(data) => {
+                            let result = this.canvas.update(cx, |canvas, cx| {
+                                let result = canvas.apply_setup_properties(data);
+                                cx.notify();
+                                result
+                            });
+                            panel.update(cx, |panel, cx| {
+                                panel.feedback(
+                                    match result {
+                                        Ok(()) => "Project settings saved".into(),
+                                        Err(error) => error,
+                                    },
+                                    cx,
+                                )
+                            });
+                        }
+                        _ => {}
+                    }
+                    cx.notify();
+                })
+                .detach();
+                self.present_dialog(
+                    DialogKind::Setup,
+                    "Schematic Setup",
+                    panel.into(),
+                    window,
+                    cx,
+                );
+            }
+        }
+        cx.notify();
+    }
+
+    fn open_item_properties(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let data = self.canvas.update(cx, |canvas, _| canvas.item_properties());
+        match data {
+            Err(error) => self.set_status(error),
+            Ok(data) => {
+                self.palette_open = false;
+                let panel = cx.new(|cx| ItemPropertiesPanel::new(data, window, cx));
+                cx.subscribe_in(&panel, window, |this, panel, request, window, cx| {
+                    match request {
+                        PropertiesRequest::SheetFile { item_id, path } => {
+                            let result = this.canvas.update(cx, |canvas, cx| {
+                                let result = canvas.relink_sheet(item_id, path);
+                                cx.notify();
+                                result
+                            });
+                            match result {
+                                Ok(()) => this.open_item_properties(window, cx),
+                                Err(error) => {
+                                    panel.update(cx, |panel, cx| panel.feedback(error, cx))
+                                }
+                            }
+                        }
+                        PropertiesRequest::CustomField {
+                            item_id,
+                            name,
+                            value,
+                        } => {
+                            let result = this.canvas.update(cx, |canvas, cx| {
+                                let result =
+                                    canvas.edit_custom_field(item_id, name, value.as_deref());
+                                cx.notify();
+                                result
+                            });
+                            match result {
+                                Ok(()) => this.open_item_properties(window, cx),
+                                Err(error) => {
+                                    panel.update(cx, |panel, cx| panel.feedback(error, cx))
+                                }
+                            }
+                        }
+                        PropertiesRequest::Close => {
+                            this.close_dialog(DialogKind::Properties, window, cx);
+                            if this.pending_item_properties {
+                                this.pending_item_properties = false;
+                                this.canvas.update(cx, |canvas, cx| {
+                                    canvas.cancel_tool();
+                                    cx.notify();
+                                });
+                            }
+                            this.focus_canvas(window, cx);
+                        }
+                        PropertiesRequest::Apply(data) => {
+                            let result = this.canvas.update(cx, |canvas, cx| {
+                                let result = canvas.apply_properties(data);
+                                cx.notify();
+                                result
+                            });
+                            match result {
+                                Ok(()) => {
+                                    this.set_status("Properties updated");
+                                    if this.pending_item_properties {
+                                        this.pending_item_properties = false;
+                                        this.close_dialog(DialogKind::Properties, window, cx);
+                                        this.focus_canvas(window, cx);
+                                    } else {
+                                        this.open_item_properties(window, cx);
+                                    }
+                                }
+                                Err(error) => {
+                                    panel.update(cx, |panel, cx| panel.feedback(error, cx))
+                                }
+                            }
+                        }
+                    }
+                    cx.notify();
+                })
+                .detach();
+                self.present_dialog(
+                    DialogKind::Properties,
+                    "Item Properties",
+                    panel.into(),
+                    window,
+                    cx,
+                );
+            }
+        }
+        cx.notify();
+    }
+
+    fn open_erc(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.raise_dialog(DialogKind::Erc, cx) {
+            return;
+        }
+        self.begin_workflow(window, cx);
+        let panel = cx.new(|_| ErcPanel::new());
+        cx.subscribe_in(&panel, window, |this, panel, request, window, cx| {
+            match request {
+                ErcRequest::Close => {
+                    this.close_dialog(DialogKind::Erc, window, cx);
+                    this.focus_canvas(window, cx);
+                }
+                ErcRequest::Settings => this.open_setup(window, cx),
+                ErcRequest::Exclude(id, excluded) => {
+                    let results = this.canvas.update(cx, |canvas, cx| {
+                        let results = canvas
+                            .exclude_erc(id, *excluded)
+                            .and_then(|()| canvas.run_erc());
+                        cx.notify();
+                        results
+                    });
+                    panel.update(cx, |panel, cx| panel.set_results(results, cx));
+                }
+                ErcRequest::Run => {
+                    let results = this.canvas.update(cx, |canvas, cx| {
+                        let results = canvas.run_erc();
+                        cx.notify();
+                        results
+                    });
+                    panel.update(cx, |panel, cx| panel.set_results(results, cx));
+                }
+                ErcRequest::Navigate(violation) => {
+                    let result = this.canvas.update(cx, |canvas, cx| {
+                        let result = canvas.navigate_erc(violation);
+                        cx.notify();
+                        result
+                    });
+                    if let Err(error) = result {
+                        this.set_status(error);
+                    }
+                }
+            }
+            cx.notify();
+        })
+        .detach();
+        self.present_dialog(
+            DialogKind::Erc,
+            "Electrical Rules Checker",
+            panel.into(),
+            window,
+            cx,
+        );
+        cx.notify();
+    }
+
+    fn open_symbols(&mut self, power_only: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let symbols = self
+            .canvas
+            .update(cx, |canvas, _| canvas.browse_symbols("", power_only));
+        match symbols {
+            Err(error) => self.set_status(error),
+            Ok(symbols) => {
+                self.palette_open = false;
+                let libraries = self
+                    .canvas
+                    .update(cx, |canvas, _| canvas.symbol_libraries());
+                let panel = cx.new(|cx| SymbolPanel::new(window, cx));
+                panel.update(cx, |panel, cx| {
+                    panel.open(
+                        symbols,
+                        libraries.as_ref().cloned().unwrap_or_default(),
+                        power_only,
+                        window,
+                        cx,
+                    );
+                    if let Err(error) = libraries {
+                        panel.feedback(error, cx);
+                    }
+                });
+                cx.subscribe_in(&panel, window, |this, panel, request, window, cx| {
+                    match request {
+                        SymbolRequest::Browse(library, power_only) => {
+                            let result = this.canvas.update(cx, |canvas, _| {
+                                canvas.browse_symbols(library, *power_only)
+                            });
+                            panel.update(cx, |panel, cx| match result {
+                                Ok(symbols) => panel.set_symbols(symbols, cx),
+                                Err(error) => panel.feedback(error, cx),
+                            });
+                        }
+                        SymbolRequest::Close => {
+                            this.close_dialog(DialogKind::Symbols, window, cx);
+                            this.focus_canvas(window, cx);
+                        }
+                        SymbolRequest::Preview(id, unit, body) => {
+                            let result = this
+                                .canvas
+                                .update(cx, |canvas, _| canvas.preview_symbol(id, *unit, *body));
+                            panel.update(cx, |panel, cx| match result {
+                                Ok((stream, units, bodies)) => {
+                                    panel.set_preview(stream, units, bodies, cx)
+                                }
+                                Err(error) => panel.feedback(error, cx),
+                            });
+                        }
+                        SymbolRequest::Place(id, unit, body) => {
+                            let result = this.canvas.update(cx, |canvas, cx| {
+                                let result = canvas.place_symbol_variant(id, *unit, *body);
+                                cx.notify();
+                                result
+                            });
+                            match result {
+                                Ok(()) => {
+                                    this.close_dialog(DialogKind::Symbols, window, cx);
+                                    this.set_status("Click to place symbol; Escape to cancel");
+                                    this.focus_canvas(window, cx);
+                                }
+                                Err(error) => {
+                                    panel.update(cx, |panel, cx| panel.feedback(error, cx))
+                                }
+                            }
+                        }
+                    }
+                    cx.notify();
+                })
+                .detach();
+                self.present_dialog(
+                    DialogKind::Symbols,
+                    "Choose Symbol",
+                    panel.into(),
+                    window,
+                    cx,
+                );
+            }
+        }
+        cx.notify();
+    }
+
+    #[cfg(not(target_os = "macos"))]
     fn render_menu_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         div()
@@ -1004,6 +1958,11 @@ impl SchematicShell {
                     .text_color(theme.muted_foreground)
                     .child(self.design.read(cx).source().title()),
             )
+    }
+
+    #[cfg(target_os = "macos")]
+    fn render_menu_row(&self, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
     }
 
     fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1511,11 +2470,10 @@ impl Render for SchematicShell {
             .on_action(cx.listener(Self::on_toggle_frame_stats))
             .on_action(cx.listener(Self::on_open_palette))
             .on_action(cx.listener(Self::on_cancel_tool))
-            .child(self.render_menu_row(cx))
-            .child(self.render_toolbar(cx))
-            .when(self.search_open, |this| {
-                this.child(self.search_panel.clone())
+            .when(cfg!(not(target_os = "macos")), |this| {
+                this.child(self.render_menu_row(cx))
             })
+            .child(self.render_toolbar(cx))
             .child(
                 div()
                     .id("workspace")

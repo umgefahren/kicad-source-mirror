@@ -4013,7 +4013,11 @@ void SCH_EDITOR_CONTROL::setTransitions()
 {
     Go( &SCH_EDITOR_CONTROL::New,                     ACTIONS::doNew.MakeEvent() );
     Go( &SCH_EDITOR_CONTROL::Open,                    ACTIONS::open.MakeEvent() );
-    Go( &SCH_EDITOR_CONTROL::Save,                    ACTIONS::save.MakeEvent() );
+    // Only one tool may claim Save: a frameless host supplies SCH_HOST_CONTROL.
+    // A no-op frame handler would consume the action before the host can save,
+    // depending on the tool pointer ordering in TOOL_MANAGER's transition map.
+    if( m_frame )
+        Go( &SCH_EDITOR_CONTROL::Save,                ACTIONS::save.MakeEvent() );
     Go( &SCH_EDITOR_CONTROL::SaveAs,                  ACTIONS::saveAs.MakeEvent() );
     Go( &SCH_EDITOR_CONTROL::SaveCurrSheetCopyAs,     SCH_ACTIONS::saveCurrSheetCopyAs.MakeEvent() );
     Go( &SCH_EDITOR_CONTROL::Revert,                  ACTIONS::revert.MakeEvent() );

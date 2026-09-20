@@ -184,6 +184,7 @@ void EE_GRAPHIC_TOOL::commitItem( SCH_COMMIT& aCommit, std::unique_ptr<SCH_ITEM>
     }
     else
     {
+        if( !m_frame ) m_editor->RequestItemProperties( aItem.get() );
         aCommit.Add( aItem.release(), m_editor->GetScreen() );
         aCommit.Push( aDescription );
     }
@@ -203,11 +204,6 @@ int EE_GRAPHIC_TOOL::DrawShape( const TOOL_EVENT& aEvent )
     SHAPE_T    type = isTextBox ? SHAPE_T::RECTANGLE : aEvent.Parameter<SHAPE_T>();
 
     if( m_inDrawingTool )
-        return 0;
-
-    // A text box is finished in the text properties dialog — that is where its text is
-    // typed.  Without a window to parent it there is nothing this action can do.
-    if( isTextBox && !m_frame )
         return 0;
 
     REENTRANCY_GUARD guard( &m_inDrawingTool );
@@ -368,17 +364,16 @@ int EE_GRAPHIC_TOOL::DrawShape( const TOOL_EVENT& aEvent )
                 if( isTextBox )
                 {
                     SCH_TEXTBOX*           textbox = static_cast<SCH_TEXTBOX*>( item.get() );
-                    // m_frame is non-null here: a text box without one declined above.
-                    DIALOG_TEXT_PROPERTIES dlg( m_frame, textbox );
-
                     getViewControls()->SetAutoPan( false );
                     getViewControls()->CaptureCursor( false );
-
-                    // QuasiModal required for syntax help and Scintilla auto-complete
-                    if( dlg.ShowQuasiModal() != wxID_OK )
+                    if( m_frame )
                     {
-                        cleanup();
-                        continue;
+                        DIALOG_TEXT_PROPERTIES dlg( m_frame, textbox );
+                        if( dlg.ShowQuasiModal() != wxID_OK )
+                        {
+                            cleanup();
+                            continue;
+                        }
                     }
 
                     m_lastTextBold = textbox->IsBold();

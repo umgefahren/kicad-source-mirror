@@ -103,6 +103,10 @@ public:
      */
     void RunQueue( wxWindow* aParent );
 
+    /// Synchronous local data-source management for a non-wx frontend.
+    STATUS InstallDataSourceFromFile( const wxString& aFilePath, bool aReplace, REPORTER& aReporter );
+    STATUS UninstallDataSource( const PCM_PACKAGE& aPackage, REPORTER& aReporter );
+
     /**
      * @brief Installs package from an archive file on disk
      *
@@ -169,6 +173,8 @@ private:
     void deletePackageDirectories( const wxString&                   aPackageId,
                                    const std::forward_list<wxRegEx>& aKeep = {} );
 
+    void reportMessage( const wxString& aMessage, SEVERITY aSeverity );
+    REPORTER* m_nativeReporter = nullptr;
     std::unique_ptr<DIALOG_PCM_PROGRESS>    m_reporter;
     SYNC_QUEUE<PCM_TASK>                    m_download_queue;
     SYNC_QUEUE<PCM_TASK>                    m_install_queue;

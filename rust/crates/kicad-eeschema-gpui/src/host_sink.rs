@@ -55,7 +55,145 @@ pub type SharedSession = Rc<RefCell<Session>>;
 /// against a recorder rather than against a linked C++ host. `Session` implements
 /// it by forwarding, so there is no second implementation in the shipping path.
 pub trait InputTarget {
+    /// Read project setup.
+    fn setup_properties(&mut self) -> Result<kicad_sch_sys::ItemProperties, Error> {
+        Err(Error::NoHost)
+    }
+    /// Save project setup.
+    fn apply_setup_properties(
+        &mut self,
+        _data: &kicad_sch_sys::ItemProperties,
+    ) -> Result<(), Error> {
+        Err(Error::NoHost)
+    }
+    /// Run electrical rules checks.
+    fn exclude_erc(&mut self, _id: &str, _excluded: bool) -> Result<(), Error> {
+        Err(Error::NoHost)
+    }
+    fn run_erc(&mut self) -> Result<Vec<kicad_sch_sys::ErcViolation>, Error> {
+        Err(Error::NoHost)
+    }
+    /// Navigate to a sheet.
+    fn erc_set_sheet(&mut self, _index: u32) -> Result<(), Error> {
+        Err(Error::NoHost)
+    }
+
+    /// Get selected item properties.
+    /// Snapshot fields for a native document workflow.
+    fn document_workflow(&mut self, _kind: u32) -> Result<Vec<(String, String)>, Error> {
+        Err(Error::NoHost)
+    }
+    /// Validate and apply a document workflow.
+    fn apply_document_workflow(&mut self, _kind: u32, _values: &[String]) -> Result<(), Error> {
+        Err(Error::NoHost)
+    }
+    fn item_properties(&mut self) -> Result<kicad_sch_sys::ItemProperties, Error> {
+        Err(Error::NoHost)
+    }
+    /// Read or apply sheet-pin synchronization.
+    /// Read or persist application preferences.
+    fn preferences(&mut self) -> Result<kicad_sch_sys::ItemProperties, Error> {
+        Err(Error::NoHost)
+    }
+    fn graphics_import_properties(&mut self) -> Result<kicad_sch_sys::ItemProperties, Error> {
+        Err(Error::NoHost)
+    }
+    fn image_properties(&mut self) -> Result<kicad_sch_sys::ItemProperties, Error> {
+        Err(Error::NoHost)
+    }
+    fn apply_preferences(&mut self, _data: &kicad_sch_sys::ItemProperties) -> Result<(), Error> {
+        Err(Error::NoHost)
+    }
+    fn apply_graphics_import(
+        &mut self,
+        _data: &kicad_sch_sys::ItemProperties,
+    ) -> Result<(), Error> {
+        Err(Error::NoHost)
+    }
+    fn apply_image_properties(
+        &mut self,
+        _data: &kicad_sch_sys::ItemProperties,
+    ) -> Result<(), Error> {
+        Err(Error::NoHost)
+    }
+    fn sheet_pin_properties(&mut self, _all: bool) -> Result<kicad_sch_sys::ItemProperties, Error> {
+        Err(Error::NoHost)
+    }
+    fn apply_sheet_pin_properties(
+        &mut self,
+        _all: bool,
+        _data: &kicad_sch_sys::ItemProperties,
+    ) -> Result<(), Error> {
+        Err(Error::NoHost)
+    }
+    /// Consume active tool property requests.
+    fn take_pending_properties(&mut self) -> Result<bool, Error> {
+        Ok(false)
+    }
+    /// Relink a hierarchical sheet file.
+    fn relink_sheet(&mut self, _item_id: &str, _path: &str) -> Result<(), Error> {
+        Err(Error::NoHost)
+    }
+    /// Create or remove a custom field.
+    fn edit_custom_field(
+        &mut self,
+        _item_id: &str,
+        _name: &str,
+        _value: Option<&str>,
+    ) -> Result<(), Error> {
+        Err(Error::NoHost)
+    }
+    /// Apply selected item properties.
+    fn apply_properties(&mut self, _data: &kicad_sch_sys::ItemProperties) -> Result<(), Error> {
+        Err(Error::NoHost)
+    }
+    fn configure_library(
+        &mut self,
+        _global: bool,
+        _nickname: &str,
+    ) -> Result<Vec<(String, String)>, Error> {
+        Err(Error::NoHost)
+    }
+    fn simulation_workflow(&mut self, _kind: u32) -> Result<Vec<(String, String)>, Error> {
+        Err(Error::NoHost)
+    }
+    fn apply_simulation_workflow(&mut self, _kind: u32, _values: &[String]) -> Result<(), Error> {
+        Err(Error::NoHost)
+    }
+    fn library_table(&mut self, _global: bool) -> Result<Vec<kicad_sch_sys::LibraryRow>, Error> {
+        Err(Error::NoHost)
+    }
+    fn save_library_table(
+        &mut self,
+        _global: bool,
+        _rows: &[kicad_sch_sys::LibraryRow],
+    ) -> Result<(), Error> {
+        Err(Error::NoHost)
+    }
     /// Configure model search without a wx dialog.
+    fn symbol_libraries(&mut self) -> Result<Vec<String>, Error> {
+        Err(Error::NoHost)
+    }
+    fn browse_symbols(&mut self, _library: &str, _power_only: bool) -> Result<Vec<String>, Error> {
+        Err(Error::NoHost)
+    }
+    fn list_symbols(&mut self) -> Result<Vec<String>, Error> {
+        Err(Error::NoHost)
+    }
+    fn preview_symbol(
+        &mut self,
+        _id: &str,
+        _unit: u32,
+        _body: u32,
+    ) -> Result<(kicad_gal::Stream, u32, u32), Error> {
+        Err(Error::NoHost)
+    }
+    fn place_symbol_variant(&mut self, id: &str, _unit: u32, _body: u32) -> Result<(), Error> {
+        self.place_symbol(id)
+    }
+    fn place_symbol(&mut self, _id: &str) -> Result<(), Error> {
+        Err(Error::NoHost)
+    }
     fn set_search_data(&mut self, _data: &kicad_sch_sys::SearchData) -> Result<(), Error> {
         Err(Error::NoHost)
     }
@@ -78,6 +216,128 @@ pub trait InputTarget {
 }
 
 impl InputTarget for Session {
+    fn preferences(&mut self) -> Result<kicad_sch_sys::ItemProperties, Error> {
+        Session::preferences(self)
+    }
+    fn graphics_import_properties(&mut self) -> Result<kicad_sch_sys::ItemProperties, Error> {
+        Session::graphics_import_properties(self)
+    }
+    fn image_properties(&mut self) -> Result<kicad_sch_sys::ItemProperties, Error> {
+        Session::image_properties(self)
+    }
+    fn apply_preferences(&mut self, data: &kicad_sch_sys::ItemProperties) -> Result<(), Error> {
+        Session::apply_preferences(self, data)
+    }
+    fn apply_graphics_import(&mut self, data: &kicad_sch_sys::ItemProperties) -> Result<(), Error> {
+        Session::apply_graphics_import(self, data)
+    }
+    fn apply_image_properties(
+        &mut self,
+        data: &kicad_sch_sys::ItemProperties,
+    ) -> Result<(), Error> {
+        Session::apply_image_properties(self, data)
+    }
+    fn sheet_pin_properties(&mut self, all: bool) -> Result<kicad_sch_sys::ItemProperties, Error> {
+        Session::sheet_pin_properties(self, all)
+    }
+    fn apply_sheet_pin_properties(
+        &mut self,
+        all: bool,
+        data: &kicad_sch_sys::ItemProperties,
+    ) -> Result<(), Error> {
+        Session::apply_sheet_pin_properties(self, all, data)
+    }
+    fn take_pending_properties(&mut self) -> Result<bool, Error> {
+        Session::take_pending_properties(self)
+    }
+    fn relink_sheet(&mut self, item_id: &str, path: &str) -> Result<(), Error> {
+        Session::relink_sheet(self, item_id, path)
+    }
+    fn edit_custom_field(
+        &mut self,
+        item_id: &str,
+        name: &str,
+        value: Option<&str>,
+    ) -> Result<(), Error> {
+        Session::edit_custom_field(self, item_id, name, value)
+    }
+    fn setup_properties(&mut self) -> Result<kicad_sch_sys::ItemProperties, Error> {
+        Session::setup_properties(self)
+    }
+    fn apply_setup_properties(
+        &mut self,
+        data: &kicad_sch_sys::ItemProperties,
+    ) -> Result<(), Error> {
+        Session::apply_setup_properties(self, data)
+    }
+    fn exclude_erc(&mut self, id: &str, excluded: bool) -> Result<(), Error> {
+        Session::exclude_erc(self, id, excluded)
+    }
+    fn run_erc(&mut self) -> Result<Vec<kicad_sch_sys::ErcViolation>, Error> {
+        Session::run_erc(self)
+    }
+    fn erc_set_sheet(&mut self, index: u32) -> Result<(), Error> {
+        Session::set_sheet(self, index)
+    }
+
+    fn document_workflow(&mut self, kind: u32) -> Result<Vec<(String, String)>, Error> {
+        Session::document_workflow(self, kind)
+    }
+    fn apply_document_workflow(&mut self, kind: u32, values: &[String]) -> Result<(), Error> {
+        Session::apply_document_workflow(self, kind, values)
+    }
+    fn item_properties(&mut self) -> Result<kicad_sch_sys::ItemProperties, Error> {
+        Session::item_properties(self)
+    }
+    fn apply_properties(&mut self, data: &kicad_sch_sys::ItemProperties) -> Result<(), Error> {
+        Session::apply_properties(self, data)
+    }
+    fn configure_library(
+        &mut self,
+        global: bool,
+        nickname: &str,
+    ) -> Result<Vec<(String, String)>, Error> {
+        Session::configure_library(self, global, nickname)
+    }
+    fn simulation_workflow(&mut self, kind: u32) -> Result<Vec<(String, String)>, Error> {
+        Session::simulation_workflow(self, kind)
+    }
+    fn apply_simulation_workflow(&mut self, kind: u32, values: &[String]) -> Result<(), Error> {
+        Session::apply_simulation_workflow(self, kind, values)
+    }
+    fn library_table(&mut self, global: bool) -> Result<Vec<kicad_sch_sys::LibraryRow>, Error> {
+        Session::library_table(self, global)
+    }
+    fn save_library_table(
+        &mut self,
+        global: bool,
+        rows: &[kicad_sch_sys::LibraryRow],
+    ) -> Result<(), Error> {
+        Session::save_library_table(self, global, rows)
+    }
+    fn symbol_libraries(&mut self) -> Result<Vec<String>, Error> {
+        Session::symbol_libraries(self)
+    }
+    fn browse_symbols(&mut self, library: &str, power_only: bool) -> Result<Vec<String>, Error> {
+        Session::browse_symbols(self, library, power_only)
+    }
+    fn list_symbols(&mut self) -> Result<Vec<String>, Error> {
+        Session::list_symbols(self)
+    }
+    fn preview_symbol(
+        &mut self,
+        id: &str,
+        unit: u32,
+        body: u32,
+    ) -> Result<(kicad_gal::Stream, u32, u32), Error> {
+        Session::preview_symbol(self, id, unit, body)
+    }
+    fn place_symbol_variant(&mut self, id: &str, unit: u32, body: u32) -> Result<(), Error> {
+        Session::place_symbol_variant(self, id, unit, body)
+    }
+    fn place_symbol(&mut self, id: &str) -> Result<(), Error> {
+        Session::place_symbol(self, id)
+    }
     fn set_search_data(&mut self, data: &kicad_sch_sys::SearchData) -> Result<(), Error> {
         Session::set_search_data(self, data)
     }
@@ -309,6 +569,546 @@ impl HostInputSink {
 }
 
 impl InputSink for HostInputSink {
+    fn setup_properties(&mut self) -> Result<kicad_sch_ui::properties::ItemProperties, String> {
+        let data = self
+            .session
+            .try_borrow_mut()
+            .map_err(|_| "Document is busy")?
+            .setup_properties()
+            .map_err(|e| e.to_string())?;
+        Ok(kicad_sch_ui::properties::ItemProperties {
+            item_id: data.item_id,
+            capabilities: data.capabilities,
+            entries: data
+                .entries
+                .into_iter()
+                .map(|entry| kicad_sch_ui::properties::PropertyEntry {
+                    name: entry.name,
+                    value: entry.value,
+                    kind: entry.kind,
+                    choices: entry.choices,
+                })
+                .collect(),
+        })
+    }
+    fn apply_setup_properties(
+        &mut self,
+        data: &kicad_sch_ui::properties::ItemProperties,
+    ) -> Result<(), String> {
+        let data = kicad_sch_sys::ItemProperties {
+            item_id: data.item_id.clone(),
+            capabilities: data.capabilities,
+            entries: data
+                .entries
+                .iter()
+                .map(|entry| kicad_sch_sys::PropertyEntry {
+                    name: entry.name.clone(),
+                    value: entry.value.clone(),
+                    kind: entry.kind,
+                    choices: entry.choices.clone(),
+                })
+                .collect(),
+        };
+        self.session
+            .try_borrow_mut()
+            .map_err(|_| "Document is busy")?
+            .apply_setup_properties(&data)
+            .map_err(|e| e.to_string())?;
+        self.absorb(InputOutcome {
+            handled: true,
+            redraw: true,
+        });
+        Ok(())
+    }
+    fn exclude_erc(&mut self, id: &str, excluded: bool) -> Result<(), String> {
+        self.session
+            .try_borrow_mut()
+            .map_err(|e| e.to_string())?
+            .exclude_erc(id, excluded)
+            .map_err(|e| e.to_string())?;
+        self.dirty = true;
+        Ok(())
+    }
+    fn run_erc(&mut self) -> Result<Vec<kicad_sch_ui::erc::ErcViolation>, String> {
+        let result = self
+            .session
+            .try_borrow_mut()
+            .map_err(|_| "Document is busy")?
+            .run_erc()
+            .map_err(|e| e.to_string())?;
+        self.absorb(InputOutcome {
+            handled: true,
+            redraw: true,
+        });
+        Ok(result
+            .into_iter()
+            .map(|v| kicad_sch_ui::erc::ErcViolation {
+                marker_id: v.marker_id,
+                message: v.message,
+                severity: v.severity,
+                sheet_index: v.sheet_index,
+                x: v.x,
+                y: v.y,
+            })
+            .collect())
+    }
+    fn navigate_erc(&mut self, violation: &kicad_sch_ui::erc::ErcViolation) -> Result<(), String> {
+        self.session
+            .try_borrow_mut()
+            .map_err(|_| "Document is busy")?
+            .erc_set_sheet(violation.sheet_index)
+            .map_err(|e| e.to_string())?;
+        self.absorb(InputOutcome {
+            handled: true,
+            redraw: true,
+        });
+        Ok(())
+    }
+
+    fn document_workflow(&mut self, kind: u32) -> Result<Vec<(String, String)>, String> {
+        self.session
+            .try_borrow_mut()
+            .map_err(|_| "Document is busy")?
+            .document_workflow(kind)
+            .map_err(|error| error.to_string())
+    }
+    fn apply_document_workflow(&mut self, kind: u32, values: &[String]) -> Result<(), String> {
+        self.session
+            .try_borrow_mut()
+            .map_err(|_| "Document is busy")?
+            .apply_document_workflow(kind, values)
+            .map_err(|error| error.to_string())?;
+        self.absorb(InputOutcome {
+            handled: true,
+            redraw: true,
+        });
+        Ok(())
+    }
+    fn item_properties(&mut self) -> Result<kicad_sch_ui::properties::ItemProperties, String> {
+        let data = self
+            .session
+            .try_borrow_mut()
+            .map_err(|_| "Document is busy")?
+            .item_properties()
+            .map_err(|error| error.to_string())?;
+        Ok(kicad_sch_ui::properties::ItemProperties {
+            item_id: data.item_id,
+            capabilities: data.capabilities,
+            entries: data
+                .entries
+                .into_iter()
+                .map(|entry| kicad_sch_ui::properties::PropertyEntry {
+                    name: entry.name,
+                    value: entry.value,
+                    kind: entry.kind,
+                    choices: entry.choices,
+                })
+                .collect(),
+        })
+    }
+    fn sheet_pin_properties(
+        &mut self,
+        all: bool,
+    ) -> Result<kicad_sch_ui::properties::ItemProperties, String> {
+        let data = self
+            .session
+            .try_borrow_mut()
+            .map_err(|_| "Document is busy")?
+            .sheet_pin_properties(all)
+            .map_err(|error| error.to_string())?;
+        Ok(kicad_sch_ui::properties::ItemProperties {
+            item_id: data.item_id,
+            capabilities: 0,
+            entries: data
+                .entries
+                .into_iter()
+                .map(|entry| kicad_sch_ui::properties::PropertyEntry {
+                    name: entry.name,
+                    value: entry.value,
+                    kind: entry.kind,
+                    choices: entry.choices,
+                })
+                .collect(),
+        })
+    }
+    fn apply_sheet_pin_properties(
+        &mut self,
+        all: bool,
+        data: &kicad_sch_ui::properties::ItemProperties,
+    ) -> Result<(), String> {
+        let data = kicad_sch_sys::ItemProperties {
+            item_id: data.item_id.clone(),
+            capabilities: 0,
+            entries: data
+                .entries
+                .iter()
+                .map(|entry| kicad_sch_sys::PropertyEntry {
+                    name: entry.name.clone(),
+                    value: entry.value.clone(),
+                    kind: entry.kind,
+                    choices: entry.choices.clone(),
+                })
+                .collect(),
+        };
+        self.session
+            .try_borrow_mut()
+            .map_err(|_| "Document is busy")?
+            .apply_sheet_pin_properties(all, &data)
+            .map_err(|error| error.to_string())?;
+        self.absorb(InputOutcome {
+            handled: true,
+            redraw: true,
+        });
+        Ok(())
+    }
+    fn preferences(&mut self) -> Result<kicad_sch_ui::properties::ItemProperties, String> {
+        let data = self
+            .session
+            .try_borrow_mut()
+            .map_err(|_| "Document is busy")?
+            .preferences()
+            .map_err(|error| error.to_string())?;
+        Ok(kicad_sch_ui::properties::ItemProperties {
+            item_id: data.item_id,
+            capabilities: 0,
+            entries: data
+                .entries
+                .into_iter()
+                .map(|entry| kicad_sch_ui::properties::PropertyEntry {
+                    name: entry.name,
+                    value: entry.value,
+                    kind: entry.kind,
+                    choices: entry.choices,
+                })
+                .collect(),
+        })
+    }
+    fn graphics_import_properties(
+        &mut self,
+    ) -> Result<kicad_sch_ui::properties::ItemProperties, String> {
+        let data = self
+            .session
+            .try_borrow_mut()
+            .map_err(|_| "Document is busy")?
+            .graphics_import_properties()
+            .map_err(|error| error.to_string())?;
+        Ok(kicad_sch_ui::properties::ItemProperties {
+            item_id: data.item_id,
+            capabilities: 0,
+            entries: data
+                .entries
+                .into_iter()
+                .map(|entry| kicad_sch_ui::properties::PropertyEntry {
+                    name: entry.name,
+                    value: entry.value,
+                    kind: entry.kind,
+                    choices: entry.choices,
+                })
+                .collect(),
+        })
+    }
+    fn image_properties(&mut self) -> Result<kicad_sch_ui::properties::ItemProperties, String> {
+        let data = self
+            .session
+            .try_borrow_mut()
+            .map_err(|_| "Document is busy")?
+            .image_properties()
+            .map_err(|error| error.to_string())?;
+        Ok(kicad_sch_ui::properties::ItemProperties {
+            item_id: data.item_id,
+            capabilities: 0,
+            entries: data
+                .entries
+                .into_iter()
+                .map(|entry| kicad_sch_ui::properties::PropertyEntry {
+                    name: entry.name,
+                    value: entry.value,
+                    kind: entry.kind,
+                    choices: entry.choices,
+                })
+                .collect(),
+        })
+    }
+    fn apply_preferences(
+        &mut self,
+        data: &kicad_sch_ui::properties::ItemProperties,
+    ) -> Result<(), String> {
+        let data = kicad_sch_sys::ItemProperties {
+            item_id: data.item_id.clone(),
+            capabilities: 0,
+            entries: data
+                .entries
+                .iter()
+                .map(|entry| kicad_sch_sys::PropertyEntry {
+                    name: entry.name.clone(),
+                    value: entry.value.clone(),
+                    kind: entry.kind,
+                    choices: entry.choices.clone(),
+                })
+                .collect(),
+        };
+        self.session
+            .try_borrow_mut()
+            .map_err(|_| "Document is busy")?
+            .apply_preferences(&data)
+            .map_err(|error| error.to_string())?;
+        self.absorb(InputOutcome {
+            handled: true,
+            redraw: true,
+        });
+        Ok(())
+    }
+    fn apply_graphics_import(
+        &mut self,
+        data: &kicad_sch_ui::properties::ItemProperties,
+    ) -> Result<(), String> {
+        let data = kicad_sch_sys::ItemProperties {
+            item_id: data.item_id.clone(),
+            capabilities: 0,
+            entries: data
+                .entries
+                .iter()
+                .map(|entry| kicad_sch_sys::PropertyEntry {
+                    name: entry.name.clone(),
+                    value: entry.value.clone(),
+                    kind: entry.kind,
+                    choices: entry.choices.clone(),
+                })
+                .collect(),
+        };
+        self.session
+            .try_borrow_mut()
+            .map_err(|_| "Document is busy")?
+            .apply_graphics_import(&data)
+            .map_err(|error| error.to_string())?;
+        self.absorb(InputOutcome {
+            handled: true,
+            redraw: true,
+        });
+        Ok(())
+    }
+    fn apply_image_properties(
+        &mut self,
+        data: &kicad_sch_ui::properties::ItemProperties,
+    ) -> Result<(), String> {
+        let data = kicad_sch_sys::ItemProperties {
+            item_id: data.item_id.clone(),
+            capabilities: 0,
+            entries: data
+                .entries
+                .iter()
+                .map(|entry| kicad_sch_sys::PropertyEntry {
+                    name: entry.name.clone(),
+                    value: entry.value.clone(),
+                    kind: entry.kind,
+                    choices: entry.choices.clone(),
+                })
+                .collect(),
+        };
+        self.session
+            .try_borrow_mut()
+            .map_err(|_| "Document is busy")?
+            .apply_image_properties(&data)
+            .map_err(|error| error.to_string())?;
+        self.absorb(InputOutcome {
+            handled: true,
+            redraw: true,
+        });
+        Ok(())
+    }
+    fn take_pending_properties(&mut self) -> bool {
+        self.session
+            .try_borrow_mut()
+            .ok()
+            .and_then(|mut session| session.take_pending_properties().ok())
+            .unwrap_or(false)
+    }
+    fn relink_sheet(&mut self, item_id: &str, path: &str) -> Result<(), String> {
+        self.session
+            .try_borrow_mut()
+            .map_err(|_| "Document is busy")?
+            .relink_sheet(item_id, path)
+            .map_err(|error| error.to_string())?;
+        self.absorb(InputOutcome {
+            handled: true,
+            redraw: true,
+        });
+        Ok(())
+    }
+    fn edit_custom_field(
+        &mut self,
+        item_id: &str,
+        name: &str,
+        value: Option<&str>,
+    ) -> Result<(), String> {
+        self.session
+            .try_borrow_mut()
+            .map_err(|_| "Document is busy")?
+            .edit_custom_field(item_id, name, value)
+            .map_err(|error| error.to_string())?;
+        self.absorb(InputOutcome {
+            handled: true,
+            redraw: true,
+        });
+        Ok(())
+    }
+    fn apply_properties(
+        &mut self,
+        data: &kicad_sch_ui::properties::ItemProperties,
+    ) -> Result<(), String> {
+        let data = kicad_sch_sys::ItemProperties {
+            item_id: data.item_id.clone(),
+            capabilities: data.capabilities,
+            entries: data
+                .entries
+                .iter()
+                .map(|entry| kicad_sch_sys::PropertyEntry {
+                    name: entry.name.clone(),
+                    value: entry.value.clone(),
+                    kind: entry.kind,
+                    choices: entry.choices.clone(),
+                })
+                .collect(),
+        };
+        self.session
+            .try_borrow_mut()
+            .map_err(|_| "Document is busy")?
+            .apply_properties(&data)
+            .map_err(|error| error.to_string())?;
+        self.absorb(InputOutcome {
+            handled: true,
+            redraw: true,
+        });
+        Ok(())
+    }
+
+    fn configure_library(
+        &mut self,
+        global: bool,
+        nickname: &str,
+    ) -> Result<Vec<(String, String)>, String> {
+        self.session
+            .try_borrow_mut()
+            .map_err(|e| e.to_string())?
+            .configure_library(global, nickname)
+            .map_err(|e| e.to_string())
+    }
+    fn simulation_workflow(&mut self, kind: u32) -> Result<Vec<(String, String)>, String> {
+        self.session
+            .try_borrow_mut()
+            .map_err(|e| e.to_string())?
+            .simulation_workflow(kind)
+            .map_err(|e| e.to_string())
+    }
+    fn apply_simulation_workflow(&mut self, kind: u32, values: &[String]) -> Result<(), String> {
+        self.session
+            .try_borrow_mut()
+            .map_err(|e| e.to_string())?
+            .apply_simulation_workflow(kind, values)
+            .map_err(|e| e.to_string())?;
+        self.absorb(InputOutcome {
+            handled: true,
+            redraw: true,
+        });
+        Ok(())
+    }
+    fn library_table(
+        &mut self,
+        global: bool,
+    ) -> Result<Vec<kicad_sch_ui::library_workflows::LibraryRow>, String> {
+        self.session
+            .try_borrow_mut()
+            .map_err(|e| e.to_string())?
+            .library_table(global)
+            .map(|rows| {
+                rows.into_iter()
+                    .map(|r| kicad_sch_ui::library_workflows::LibraryRow {
+                        name: r.name,
+                        kind: r.kind,
+                        uri: r.uri,
+                        options: r.options,
+                        description: r.description,
+                        enabled: r.enabled,
+                        visible: r.visible,
+                    })
+                    .collect()
+            })
+            .map_err(|e| e.to_string())
+    }
+    fn save_library_table(
+        &mut self,
+        global: bool,
+        rows: &[kicad_sch_ui::library_workflows::LibraryRow],
+    ) -> Result<(), String> {
+        let rows: Vec<_> = rows
+            .iter()
+            .map(|r| kicad_sch_sys::LibraryRow {
+                name: r.name.clone(),
+                kind: r.kind.clone(),
+                uri: r.uri.clone(),
+                options: r.options.clone(),
+                description: r.description.clone(),
+                enabled: r.enabled,
+                visible: r.visible,
+            })
+            .collect();
+        self.session
+            .try_borrow_mut()
+            .map_err(|e| e.to_string())?
+            .save_library_table(global, &rows)
+            .map_err(|e| e.to_string())
+    }
+    fn symbol_libraries(&mut self) -> Result<Vec<String>, String> {
+        self.session
+            .try_borrow_mut()
+            .map_err(|e| e.to_string())?
+            .symbol_libraries()
+            .map_err(|e| e.to_string())
+    }
+    fn browse_symbols(&mut self, library: &str, power_only: bool) -> Result<Vec<String>, String> {
+        self.session
+            .try_borrow_mut()
+            .map_err(|e| e.to_string())?
+            .browse_symbols(library, power_only)
+            .map_err(|e| e.to_string())
+    }
+    fn list_symbols(&mut self) -> Result<Vec<String>, String> {
+        self.session
+            .try_borrow_mut()
+            .map_err(|e| e.to_string())?
+            .list_symbols()
+            .map_err(|e| e.to_string())
+    }
+    fn preview_symbol(
+        &mut self,
+        id: &str,
+        unit: u32,
+        body: u32,
+    ) -> Result<(kicad_gal::Stream, u32, u32), String> {
+        self.session
+            .try_borrow_mut()
+            .map_err(|e| e.to_string())?
+            .preview_symbol(id, unit, body)
+            .map_err(|e| e.to_string())
+    }
+    fn place_symbol_variant(&mut self, id: &str, unit: u32, body: u32) -> Result<(), String> {
+        self.session
+            .try_borrow_mut()
+            .map_err(|e| e.to_string())?
+            .place_symbol_variant(id, unit, body)
+            .map_err(|e| e.to_string())?;
+        self.dirty = true;
+        Ok(())
+    }
+    fn place_symbol(&mut self, id: &str) -> Result<(), String> {
+        self.session
+            .try_borrow_mut()
+            .map_err(|e| e.to_string())?
+            .place_symbol(id)
+            .map_err(|e| e.to_string())?;
+        self.dirty = true;
+        Ok(())
+    }
     fn search(
         &mut self,
         data: &kicad_sch_ui::search::SearchData,

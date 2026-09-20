@@ -583,3 +583,62 @@ pub struct SearchResult {
     /// Number of items replaced by the last operation.
     pub replaced: u32,
 }
+
+/// An owned electrical rules violation with its sheet and schematic position.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ErcViolation {
+    /// Stable identity of the live ERC marker.
+    pub marker_id: String,
+    /// Localized description from the native ERC engine.
+    pub message: String,
+    /// KiCad report severity bit (0x20 error, 0x10 warning).
+    pub severity: u32,
+    /// Index in the sorted sheet hierarchy.
+    pub sheet_index: u32,
+    /// Horizontal position in internal units.
+    pub x: f64,
+    /// Vertical position in internal units.
+    pub y: f64,
+}
+
+/// Editable text fields of a selected schematic item.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ItemProperties {
+    /// Model capabilities: bit 0 custom fields; bit 1 hierarchical sheet relinking.
+    pub capabilities: u32,
+    /// Stable identity, checked again on apply.
+    pub item_id: String,
+    /// Fields in host order.
+    pub entries: Vec<PropertyEntry>,
+}
+/// A named editable text value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PropertyEntry {
+    /// Display name.
+    pub name: String,
+    /// Editable value.
+    pub value: String,
+    /// Explicit host editor kind (text, boolean, integer, number, mm, degrees, color, choice).
+    pub kind: u32,
+    /// Allowed values for choice editors.
+    pub choices: Vec<String>,
+}
+
+/// One editable symbol library table row.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LibraryRow {
+    /// Unique nickname.
+    pub name: String,
+    /// KiCad plugin type (KiCad, Legacy, Database, etc.).
+    pub kind: String,
+    /// File or remote resource location, including environment substitutions.
+    pub uri: String,
+    /// Plugin options.
+    pub options: String,
+    /// User description.
+    pub description: String,
+    /// Whether the library is enabled.
+    pub enabled: bool,
+    /// Whether it appears in choosers.
+    pub visible: bool,
+}
