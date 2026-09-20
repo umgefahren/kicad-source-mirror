@@ -94,6 +94,8 @@ not used as correctness evidence.
 - Full native suite: **1,776 cases, no errors**, including the host cases, after
   correcting project binding in the four library fixtures. Optional external
   importer corpora were absent; those corpus-dependent checks reported skips.
+- Remote integration: rebuilt `qa_eeschema` and passed both updated action-handling
+  cases, including the added host/ABI zoom-to-fit assertions.
 - `kicad_sch_host`, `qa_eeschema`, `eeschema_gpui` builds and
   `git diff --check`: passing.
 

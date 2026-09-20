@@ -782,6 +782,7 @@ BOOST_AUTO_TEST_CASE( AnUnhandledActionIsReportedRatherThanAsserted )
     // And the ones that do have a tool behind them now, so that "unhandled" above means
     // something other than "this never reports handled".
     BOOST_CHECK( host.RunActionByName( "common.InteractiveSelection" ) );
+    BOOST_CHECK( host.RunActionByName( "common.Control.zoomFitScreen" ) );
 }
 
 
@@ -2645,9 +2646,11 @@ BOOST_AUTO_TEST_CASE( AnActionNoToolHandlesIsReportedRatherThanAnError )
                        KSCH_OK );
     BOOST_CHECK( ( flags & KSCH_INPUT_HANDLED ) == 0u );
 
-    // And two that do have a tool behind them, so that "unhandled" above means something
-    // other than "this never reports handled".
+    // And three that do have a tool behind them, so that "unhandled" above means something
+    // other than "this never reports handled". The zoom is step 2's: COMMON_TOOLS runs
+    // here now, so the view can be moved from the tool framework over the ABI.
     for( const char* name : { "common.InteractiveSelection",
+                              "common.Control.zoomFitScreen",
                               "eeschema.InteractiveDrawingLineWireBus.drawWires" } )
     {
         BOOST_CHECK_EQUAL( ksch_session_run_action( session, name, &flags ), KSCH_OK );
