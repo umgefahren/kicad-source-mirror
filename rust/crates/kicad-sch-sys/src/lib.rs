@@ -541,3 +541,45 @@ mod tests {
         assert!(matches!(error, Error::NoHost));
     }
 }
+
+/// Search terms owned by the frontend and copied into the host.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SearchData {
+    /// Text to find (UTF-8).
+    pub find: String,
+    /// Replacement text (UTF-8).
+    pub replace: String,
+    /// Match text case exactly.
+    pub match_case: bool,
+    /// Match whole words rather than substrings.
+    pub whole_word: bool,
+    /// Restrict search to the current sheet.
+    pub current_sheet_only: bool,
+    /// Restrict search to selected items.
+    pub selected_only: bool,
+    /// Allow replacing symbol references.
+    pub replace_references: bool,
+    /// Include every symbol field.
+    pub search_all_fields: bool,
+    /// Include pin names and numbers.
+    pub search_all_pins: bool,
+    /// Restrict matches to replaceable text.
+    pub replace_mode: bool,
+    /// Whether the search UI is open; false clears highlights.
+    pub active: bool,
+}
+
+/// Outcome of the latest host Find/Replace operation.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SearchResult {
+    /// Whether the last navigation found an item.
+    pub found: bool,
+    /// Whether navigation wrapped past the end.
+    pub wrapped: bool,
+    /// Match center X in schematic internal units.
+    pub center_x: f64,
+    /// Match center Y in schematic internal units.
+    pub center_y: f64,
+    /// Number of items replaced by the last operation.
+    pub replaced: u32,
+}

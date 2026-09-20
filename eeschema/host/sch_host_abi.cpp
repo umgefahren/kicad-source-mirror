@@ -42,6 +42,9 @@
 #include <wx/string.h>
 
 #include "sch_host.h"
+#include <tools/sch_find_replace_tool.h>
+#include <tool/tool_manager.h>
+#include <sch_item.h>
 
 
 /**
@@ -1092,4 +1095,54 @@ extern "C" ksch_status ksch_action_find( const char* aNameUtf8, ksch_action* aOu
 
                       return KSCH_ERR_OUT_OF_RANGE;
                   } );
+}
+
+extern "C" ksch_status ksch_session_set_search_data( ksch_session* session,
+                                                       const ksch_search_data* data )
+{
+    if( !session || !data || !data->find || !data->replace )
+        return KSCH_ERR_INVALID_ARG;
+    return guard( session, [&]() -> ksch_status
+    {
+        if( !session->m_Host.IsLoaded() )
+            return KSCH_ERR_NO_DOCUMENT;
+        SCH_SEARCH_DATA terms;
+        terms.findString = wxString::FromUTF8( data->find );
+        terms.replaceString = wxString::FromUTF8( data->replace );
+        terms.matchCase = data->match_case != 0;
+        terms.matchMode = data->whole_word ? EDA_SEARCH_MATCH_MODE::WHOLEWORD
+                                          : EDA_SEARCH_MATCH_MODE::PLAIN;
+        terms.searchCurrentSheetOnly = data->current_sheet_only != 0;
+        terms.searchSelectedOnly = data->selected_only != 0;
+        terms.replaceReferences = data->replace_references != 0;
+        terms.searchAllFields = data->search_all_fields != 0;
+        terms.searchAllPins = data->search_all_pins != 0;
+        terms.searchAndReplace = data->replace_mode != 0;
+        session->m_Host.SetSearchData( terms, data->active != 0 );
+        return KSCH_OK;
+    } );
+}
+
+extern "C" ksch_status ksch_session_search_result( ksch_session* session,
+                                                     ksch_search_result* result )
+{
+    if( !session || !result )
+        return KSCH_ERR_INVALID_ARG;
+    return guard( session, [&]() -> ksch_status
+    {
+        if( !session->m_Host.IsLoaded() )
+            return KSCH_ERR_NO_DOCUMENT;
+        *result = {};
+        auto* tool = session->m_Host.GetToolManager()->GetTool<SCH_FIND_REPLACE_TOOL>();
+        result->wrapped = tool->Wrapped();
+        result->replaced = tool->Replaced();
+        if( tool->GetLastFoundItem() )
+        {
+            result->found = 1;
+            const VECTOR2I center = tool->LastFoundCenter();
+            result->center_x = center.x;
+            result->center_y = center.y;
+        }
+        return KSCH_OK;
+    } );
 }

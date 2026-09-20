@@ -7,7 +7,7 @@ and tools exactly where they are.
 
 **If you are evaluating what this actually delivers, read
 [`06-what-is-missing.md`](06-what-is-missing.md) first.** What exists is a schematic
-editor for **everything eeschema can do without opening a dialog**: it opens real
+editor with a working canvas and the converted eeschema tools: it opens real
 `.kicad_sch` files through the C++ host, redraws from the live document, and a user
 can select items by clicking or dragging a box, move, rotate, mirror and delete
 them, draw wires, place junctions, no-connects, labels and sheet pins, cut and
@@ -15,11 +15,13 @@ paste, undo and redo any of it, and save a file that KiCad reopens — all with 
 `wxFrame` anywhere on the path. Every tool class in `eeschema/tools/` now runs in
 such a context bar one, and `common/`'s shared tools are the remaining hold-out.
 
-What it cannot do is anything that *is* a dialog, which is most of what an editor
-is: placing a symbol, editing any item's properties, ERC, find and replace. All 124
-dialogs are untouched, so **wxWidgets has not been removed from anything** and the
-wx editor is still the only complete way to edit a schematic. That document says
-exactly which tools run, what each one can and cannot do there, and why.
+Stage 4's input dispatcher and scoped eeschema frame hoist are complete, as is
+M4's registry-backed command presentation. This does not mean complete KiCad
+feature parity: shared tools and model seams still have documented gaps.
+Stage 5 has started with GPUI Find/Replace backed by host search data and undo.
+Window close and editor Quit protect unsaved changes; external OS quit cannot
+be vetoed through the current GPUI API. Symbol placement, properties and ERC
+still need dialog workflows, and the wx editor remains the complete editor.
 
 For the design, start with **`01-plan.md`**. For the latest registry milestone,
 hands-on UI checks and next steps, see [`08-action-registry.md`](08-action-registry.md).
@@ -35,7 +37,7 @@ The earlier input and repaint fixes are in [`07-ui-bugfix-pass.md`](07-ui-bugfix
 | `05-porting-guide.md` | **How to do this again for pcbnew.** What is reusable unchanged, what is genuinely different about a board editor, and the traps — including the two designs we got wrong and had to redo | Read before starting the next editor |
 | `06-what-is-missing.md` | **What this is not, and what an editor still needs.** What the C++ bridge does and does not yet carry, stage by stage, with Stages 1–4b done and the remaining cost measured per tool | Read first if you are judging scope |
 | `07-ui-bugfix-pass.md` | Live verification of input, repainting and editing fixes | UI testing |
-| `08-action-registry.md` | Registry-backed menus/toolbars, live verification, known shortcut-display defects and next work | Current milestone and follow-up |
+| `08-action-registry.md` | Registry-backed menus/toolbars, live verification, shortcut fixes, close protection, Find/Replace and remaining limitations | Current milestone and follow-up |
 
 Two more places hold the parts that are code rather than prose:
 
@@ -85,21 +87,22 @@ and it is the C++ one.
 ## Honest status
 
 This step delivers the rendering and presentation seam, the input path over it, and
-the editing loop for eeschema's whole tool roster. Concretely: the Rust application
+the editing loop for the converted eeschema tool roster. Concretely: the Rust application
 opens a `.kicad_sch`, draws it, re-records it from the live document whenever the
 view moves *or a tool changes something*, and a user can select, move, rotate,
 mirror, delete, draw wires, place junctions and labels, cut and paste, undo, redo
 and save.
 
-**What is missing is every dialog.** `SCH_DESIGN_BLOCK_CONTROL` is the one tool
+**Most dialog workflows remain missing.** `SCH_DESIGN_BLOCK_CONTROL` is the one tool
 class that still declines a non-frame holder, and `common/`'s shared tools —
 `COMMON_TOOLS`, `ZOOM_TOOL`, `PICKER_TOOL`, `GROUP_TOOL`, `EMBED_TOOL`,
 `COMMON_CONTROL` — need a `TOOLS_HOLDER`-level hoist that is pcbnew's and
 gerbview's decision as much as eeschema's. Beyond that the tools all *run*, but the
 ones whose work is a dialog decline the action: no symbol placement, no properties,
-no ERC, no find and replace. All 124 dialogs are untouched.
-`06-what-is-missing.md` Stage 4b says which tool does what, and what the next four
-interface additions would buy.
+and no ERC workflow. Find/Replace now uses GPUI controls and the host search-data
+interface; the wx dialog implementations remain in place for the wx editor.
+`06-what-is-missing.md` Stage 4b says which tool does what, and which host interface
+additions still remain.
 
 Four predictions this branch falsified rather than confirmed, because they are the
 useful part:

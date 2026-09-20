@@ -466,6 +466,8 @@ void SCH_HOST::AddToScreen( EDA_ITEM* aItem, SCH_SCREEN* aScreen )
 
 void SCH_HOST::RemoveFromScreen( EDA_ITEM* aItem, SCH_SCREEN* aScreen )
 {
+    // A cached match can be a child field of the item being removed.
+    m_toolManager->GetTool<SCH_FIND_REPLACE_TOOL>()->ResetSearch();
     wxCHECK( aItem, /* void */ );
 
     SCH_SCREEN* screen = aScreen ? aScreen : GetScreen();
@@ -642,12 +644,14 @@ void SCH_HOST::SaveCopyInUndoList( const PICKED_ITEMS_LIST& aItemsList, UNDO_RED
 
 bool SCH_HOST::Undo()
 {
+    m_toolManager->GetTool<SCH_FIND_REPLACE_TOOL>()->ResetSearch();
     return SCH_UNDO_REDO::Undo( *this );
 }
 
 
 bool SCH_HOST::Redo()
 {
+    m_toolManager->GetTool<SCH_FIND_REPLACE_TOOL>()->ResetSearch();
     return SCH_UNDO_REDO::Redo( *this );
 }
 
@@ -942,6 +946,7 @@ bool SCH_HOST::LoadFile( const wxString& aFileName )
 
 void SCH_HOST::Unload()
 {
+    m_searchActive = false;
     // The tools must stop referring to the document before it goes. Restating the
     // environment with a null model is what SCH_EDIT_FRAME's equivalent does not need
     // to do, because its schematic outlives its tools.
@@ -1287,4 +1292,33 @@ kgds_stream_view SCH_HOST::Render()
 kgds_stream_view SCH_HOST::PublishLastFrame() const
 {
     return m_gal->Publish();
+}
+
+void SCH_HOST::SetSearchData( const SCH_SEARCH_DATA& aData, bool aActive )
+{
+    // Copy because wxRegEx is not assignable. Preserve the navigation cursor
+    // when only replacement text changes (Replace and Find Next relies on it).
+    const bool restart = m_searchActive != aActive
+        || m_searchData->findString != aData.findString
+        || m_searchData->matchCase != aData.matchCase
+        || m_searchData->matchMode != aData.matchMode
+        || m_searchData->searchCurrentSheetOnly != aData.searchCurrentSheetOnly
+        || m_searchData->searchSelectedOnly != aData.searchSelectedOnly
+        || m_searchData->searchAllFields != aData.searchAllFields
+        || m_searchData->searchAllPins != aData.searchAllPins
+        || m_searchData->searchAndReplace != aData.searchAndReplace
+        || m_searchData->replaceReferences != aData.replaceReferences;
+    m_searchData = std::make_unique<SCH_SEARCH_DATA>( aData );
+    m_searchActive = aActive;
+    auto* tool = m_toolManager->GetTool<SCH_FIND_REPLACE_TOOL>();
+    if( restart )
+        tool->ResetSearch();
+    // Closing the search clears brightening while the terms are still available.
+    if( !aActive )
+    {
+        m_searchActive = true;
+        m_searchData->findString.clear();
+    }
+    tool->UpdateFind( ACTIONS::updateFind.MakeEvent() );
+    m_searchActive = aActive;
 }

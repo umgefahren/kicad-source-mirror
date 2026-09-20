@@ -52,7 +52,7 @@ fn main() {
     // already gone to stderr by then.
     let checks: &[(&str, fn())] = &[
         (
-            "registry metadata is owned, sorted and available without a session",
+            "registry metadata is owned and retains shortcuts after session initialization",
             live::registry_metadata_is_owned,
         ),
         (
@@ -147,7 +147,9 @@ fn main() {
 #[cfg(ksch_linked)]
 mod live {
     pub fn registry_metadata_is_owned() {
-        let first = kicad_sch_sys::actions().expect("registry before runtime initialization");
+        let _session = Session::open(&kitchen_sink())
+            .expect("session initialization before registry snapshot");
+        let first = kicad_sch_sys::actions().expect("registry after runtime initialization");
         assert!(
             first.len() > 100,
             "the actual KiCad registry must be linked"
@@ -159,7 +161,19 @@ mod live {
             .expect("schematic wire action");
         assert!(!wire.friendly_name.is_empty());
         assert_eq!(wire.icon_name, "add_line");
-        assert!(!wire.hotkey_name.is_empty());
+        assert_eq!(wire.hotkey_name, "W");
+        let save = first
+            .iter()
+            .find(|action| action.name == "common.Control.save")
+            .expect("save action");
+        assert_eq!(
+            save.hotkey_name,
+            if cfg!(target_os = "macos") {
+                "Cmd+S"
+            } else {
+                "Ctrl+S"
+            }
+        );
         assert_eq!(first, kicad_sch_sys::actions().unwrap());
     }
 

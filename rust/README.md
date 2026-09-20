@@ -155,10 +155,24 @@ actions are omitted from menus and disabled in toolbars. Shell operations such
 as zoom and panel visibility remain local, and replay mode retains the standalone
 catalogue. A registered action is not a guarantee that its dialog is available.
 The snapshot is fixed on first registry access and does not refresh after later
-hotkey or locale changes. The live check found missing wire shortcut hints and
-Control hints on macOS where Command also works; see
+hotkey or locale changes. Menu and palette actions resolve the wire shortcut even though toolbar and
+hotkey dispatch carry different invocation payloads. macOS presents Command
+shortcuts while retaining Control aliases; see
 [`08-action-registry.md`](../docs/rust-migration/08-action-registry.md) for
 verification results and follow-up work.
+
+Find/Replace opens a GPUI panel with next/previous navigation, case and whole-word
+matching, sheet/selection scope, optional fields and pins, and replacement controls.
+Search data crosses the host ABI into KiCad’s existing search tool; replacements
+use its normal undo stack. Enter finds next, Shift-Enter finds previous, and Escape
+closes the panel and restores canvas focus. Replay mode reports that search needs
+a live schematic.
+
+Window close and the editor’s Quit action prompt to Save, Discard, or Cancel when
+the host reports unsaved changes. A failed save keeps the window open. GPUI’s
+public application-termination hook cannot veto an OS-level quit request; this
+protection covers window close and editor menu/keyboard Quit, not forced process
+termination or an external OS quit request.
 
 Drag with the middle or secondary mouse button to pan. A secondary click without
 dragging opens the context menu on release.

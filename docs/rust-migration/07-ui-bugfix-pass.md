@@ -1,7 +1,7 @@
 # Computer Use verification — 2026-09-19
 
-For the subsequent registry-backed menus and toolbars check, including current
-shortcut-display defects, see [`08-action-registry.md`](08-action-registry.md).
+For the subsequent registry-backed menus and toolbars check, including subsequent
+shortcut fixes, close protection and Find/Replace, see [`08-action-registry.md`](08-action-registry.md).
 
 This pass exercised the macOS GPUI application through Computer Use, using a copy
 of `demos/ecc83/ecc83-pp_v2.kicad_sch` at `/tmp/gpui-ui-test.kicad_sch`.

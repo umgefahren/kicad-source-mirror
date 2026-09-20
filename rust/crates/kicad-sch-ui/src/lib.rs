@@ -64,6 +64,7 @@ pub mod document;
 pub mod grid;
 pub mod input;
 pub mod panels;
+pub mod search;
 pub mod shell;
 pub mod stats;
 pub mod theme;

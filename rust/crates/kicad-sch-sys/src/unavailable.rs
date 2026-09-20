@@ -129,6 +129,16 @@ impl Session {
         match self.0 {}
     }
 
+    /// Copy search terms to the host and update match highlighting.
+    pub fn set_search_data(&mut self, _data: &crate::SearchData) -> Result<(), Error> {
+        Err(Error::NoHost)
+    }
+
+    /// Read the result after dispatching a Find/Replace action.
+    pub fn search_result(&mut self) -> Result<crate::SearchResult, Error> {
+        Err(Error::NoHost)
+    }
+
     /// Unreachable: no `Session` can exist in this build.
     pub fn run_action(&mut self, _name: &str) -> Result<InputOutcome, Error> {
         match self.0 {}

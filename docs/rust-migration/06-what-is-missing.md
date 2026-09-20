@@ -3,17 +3,17 @@
 This document exists because the previous ones describe what was built, and a
 reader can finish them with the wrong impression of what that adds up to.
 
-**What exists today is a schematic editor for everything eeschema can do without
-opening a dialog.** A user can open a real `.kicad_sch`, select items by clicking
+**What exists today is a schematic editor with a working canvas and converted
+eeschema editing tools.** A user can open a real `.kicad_sch`, select items by clicking
 or dragging a box, move them, rotate and mirror and delete them, draw wires,
 place junctions, no-connects, labels and sheet pins, cut and paste, undo and redo
 any of it, and save a file that KiCad reopens.
 
-**What it cannot do is anything that is a dialog**, and that is most of what an
-editor is: placing a symbol needs the library chooser, editing an item's
-properties needs its properties dialog, ERC needs `DIALOG_ERC`, find needs
-somewhere to type into. All 124 of those are still wxWidgets, so **wxWidgets has
-not been removed from anything** and the wx schematic editor is still the only
+**Most dialog workflows still need porting**: placing a symbol needs the library
+chooser, editing an item’s properties needs its properties dialog, and ERC needs
+`DIALOG_ERC`. Find/Replace
+now has GPUI controls backed by the host search-data interface. The remaining
+dialogs still use wxWidgets, so **wxWidgets has not been removed** and the wx schematic editor is still the only
 complete way to edit a schematic. The dialogs are Stage 5, and Stage 5 is a
 project rather than a stage.
 
@@ -35,6 +35,23 @@ project rather than a stage.
 > because the action *is* a dialog. See
 > [what each converted tool actually does](#what-each-converted-tool-actually-does).
 
+## Stage 4 completion and Stage 5 progress
+
+**Stage 4 is complete within its defined scope**: host input dispatch (4a), the
+eeschema frame hoist (4b, excluding the dialog-only design-block tool), and
+M4's action-registry menus/toolbars are implemented. W and native macOS hints
+are fixed and verified. This milestone does not claim every shared tool or
+model operation is complete: `DeleteJunction`, body-style selection and units
+provider seams remain listed below, alongside shared-tool frame dependencies.
+
+**Stage 5 has started, but is not complete.** GPUI Find/Replace supplies search
+terms to the host and uses KiCad's search traversal and undo stack. Unsaved
+window close and editor Quit prompt Save/Discard/Cancel, with failed saves
+keeping the window open. The GPUI API cannot veto external OS quit. Symbol
+placement, properties, ERC and functional document panels remain future work.
+The known linked golden-render mismatch is recorded in
+[`08-action-registry.md`](08-action-registry.md).
+
 ## Exactly where it stops
 
 The eeschema tool roster conversion is complete except for
@@ -46,7 +63,7 @@ between initialization and usable behavior.
 Live menus, toolbars and the command palette now resolve action metadata from
 the C++ registry. This does not expose handler availability or dynamic checked
 state. The [registry milestone report](08-action-registry.md) records the live
-verification, shortcut-display defects and recommended next steps.
+verification and the shortcut, unsaved-close and Find/Replace follow-ups.
 
 So the pipeline now is:
 
@@ -72,13 +89,13 @@ Worth being clear about, because it changes the size of what remains:
 |---|---|
 | `RECORDING_GAL` + `DRAW_STREAM` | Complete. 30 tests in `qa_common` |
 | The draw-stream ABI | Frozen, layout-asserted on both sides, sync-tested |
-| `SCH_HOST` | Loads, renders, enumerates sheets, zooms, and is a `TOOLS_HOLDER`; 15 tests, plus 12 on its ABI and 2 on the action registry |
-| The C ABI | 33 entry points, three of them the runtime; implemented, and bound from Rust |
+| `SCH_HOST` | Loads, renders, enumerates sheets, zooms, and is a `TOOLS_HOLDER`; 52 host-suite tests including ABI, registry, search and undo |
+| The C ABI | 36 entry points, three of them the runtime; implemented, and bound from Rust |
 | `kicad-gal` | Validating decoder, 58 tests |
 | `kicad-sch-render` | Stream → gpui primitives, 89 tests |
-| `kicad-sch-ui` | Shell, 82 tests, the interaction ones against real hit testing |
+| `kicad-sch-ui` | Shell, 55 unit and 41 interaction tests, plus 2 toolbar checks and a doctest |
 | Action registry | Owned Rust metadata drives live menus, toolbars and the command palette; primary/alternate shortcut names cross the ABI as strings |
-| `kicad-sch-sys` | The ABI linked from Rust, 14 checks against the live host |
+| `kicad-sch-sys` | The ABI linked from Rust; 17 live checks pass, with one known golden-render mismatch |
 | Live re-render | The canvas asks the session for the frame it is about to paint |
 | A non-frame `TOOLS_HOLDER` | Defined rather than undefined: 16 checked casts in eeschema, 7 more entry points in `common/`, 11 tests |
 | `HOST_VIEW_CONTROLS` | A `VIEW_CONTROLS` that is told where the pointer is instead of polling the OS |
@@ -884,10 +901,10 @@ the model work runs, the dialogs decline.
 | `SCH_EDIT_TOOL` | rotate, mirror, swap, repeat, delete, autoplace, justify, lock, label/text conversion | every properties dialog |
 | `SCH_EDITOR_CONTROL` | clipboard, undo, redo, appearance toggles | 44 actions; the File menu, netlists, annotation, cross-probing |
 | `SCH_INSPECTION_TOOL` | **nothing** | see below |
-| `SCH_FIND_REPLACE_TOOL` | **nothing** | see below |
+| `SCH_FIND_REPLACE_TOOL` | find next/previous, replace/replace-all through host search data | wx dialog entry points; GPUI owns its own panel |
 
-The last two convert cleanly and then decline everything, and saying why is more
-useful than the conversion:
+The inspection tool still declines work that lives in dialogs. Find/Replace now
+has the search-data seam that was missing in the initial conversion:
 
 * **`SCH_INSPECTION_TOOL` computes nothing.** There is no compute/report seam here
   to hoist. ERC lives inside `DIALOG_ERC`, which owns the `ERC_TESTER` run and the
@@ -895,12 +912,10 @@ useful than the conversion:
   `SCHEMATIC_HOLDER` is not; the marker actions walk the dialog's list rather than
   the document. A headless caller drives `ERC_TESTER` and `CheckLibSymbol()`
   itself, and does not come through this tool.
-* **`SCH_FIND_REPLACE_TOOL` is blocked on one thing.** `EDA_SEARCH_DATA` is owned
-  by `EDA_DRAW_FRAME` and filled in by `DIALOG_SCH_FIND`; neither the interface nor
-  the tool has a copy, so there is nowhere for search terms to come from. The walk
-  over screens, sheets and items is document work and is fully converted, so the
-  day the terms can arrive from somewhere other than a wxDialog, `FindNext`,
-  `ReplaceAndFindNext` and `ReplaceAll` work unchanged.
+* **`SCH_FIND_REPLACE_TOOL` accepts host-owned terms.** The GPUI panel sends
+  owned search data through the C ABI to `SCHEMATIC_HOLDER::GetHostSearchData()`.
+  The existing tool traverses sheets, selects matches and commits replacements;
+  Rust receives coordinates, wrap status and replacement counts.
 
 ### What the next person should add, in order
 
@@ -911,8 +926,8 @@ is a judgement about the interface rather than a mechanical conversion:
    `eeschema/bus-wire-junction.cpp` that use only `GetScreen()`, `AddToScreen`,
    `RemoveFromScreen` and the selection tool, all already on the interface. Without
    it a headless delete leaves stale junctions and unmerged wires.
-2. **A search-data seam** for `SCH_FIND_REPLACE_TOOL`, as above. It is the
-   difference between that tool registering and that tool working.
+2. **A search-data seam** for `SCH_FIND_REPLACE_TOOL` — now implemented with
+   GPUI Find/Replace; see above.
 3. **`SelectBodyStyle( SCH_SYMBOL*, int, SCH_COMMIT* )`** —
    `eeschema/picksymbol.cpp:200`, uses only `GetScreen()` and the tool manager.
 4. **A units provider** — `GetUserUnits()` or a `UNITS_PROVIDER*`. `CheckLibSymbol()`
@@ -969,7 +984,11 @@ undone, redone, saved and reloaded.
 
 ## Stage 5 — Dialogs, and who owns `main()`
 
-**Effort: a project, not a stage.**
+**Started: GPUI Find/Replace is the first implemented dialog workflow.** It
+uses owned host search data instead of a wx dialog. The shell also protects
+unsaved window close and editor Quit. These do not complete the other dialogs.
+
+**Effort remaining: a project, not a stage.**
 
 124 dialog sources in `eeschema/dialogs/`, all wxWidgets, many opened
 synchronously from inside a tool with `ShowModal()`. A gpui host is async.
@@ -1033,6 +1052,6 @@ editor someone would choose: 124 dialog sources, and most of the 61 frame method
 The branch now provides rendering, host input and the converted eeschema editing
 tools, plus registry-backed command presentation. Dialogs, shared-tool frame
 dependencies and the remaining model seams still limit it. Rotate and delete
-are available; symbol placement, properties, ERC and find-and-replace workflows
-are not complete. See [the current follow-up order](08-action-registry.md#next-work)
+and Find/Replace are available; symbol placement, properties and ERC workflows
+are not complete. See [the current follow-up report](08-action-registry.md#follow-up-implementation)
 for the next UI work, and the interface additions listed above for host work.

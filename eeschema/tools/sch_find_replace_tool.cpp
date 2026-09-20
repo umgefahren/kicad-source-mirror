@@ -34,9 +34,8 @@
 
 EDA_SEARCH_DATA* SCH_FIND_REPLACE_TOOL::searchData() const
 {
-    // EDA_DRAW_FRAME owns the search terms and DIALOG_SCH_FIND fills them in; there is
-    // no copy of them on SCHEMATIC_HOLDER and none on this tool. See ::runsWithoutAFrame.
-    return m_frame ? &m_frame->GetFindReplaceData() : nullptr;
+    // wx keeps its dialog-owned terms; other editors provide terms through the holder.
+    return m_frame ? &m_frame->GetFindReplaceData() : m_editor->GetHostSearchData();
 }
 
 
@@ -79,9 +78,7 @@ int SCH_FIND_REPLACE_TOOL::UpdateFind( const TOOL_EVENT& aEvent )
 {
     EDA_SEARCH_DATA* searchTerms = searchData();
 
-    // No window, no search terms, and so nothing to brighten or un-brighten. The events
-    // this is bound to are selection changes, which arrive regardless. Past here there
-    // is a frame, which is what lets the "is the find dialog open?" tests below stand.
+    // Selection events arrive even when no search is active.
     if( !searchTerms )
         return 0;
 
@@ -96,7 +93,7 @@ int SCH_FIND_REPLACE_TOOL::UpdateFind( const TOOL_EVENT& aEvent )
                 // We may get triggered when the dialog is not opened due to binding
                 // SelectedItemsModified we also get triggered when the find dialog is
                 // closed....so we need to double check the dialog is open.
-                if( m_frame->GetFindReplaceDialog() != nullptr
+                if( ( !m_frame || m_frame->GetFindReplaceDialog() != nullptr )
                         && !data.findString.IsEmpty()
                         && aItem->Matches( data, aSheet )
                         && ( !selectedOnly || aItem->IsSelected() ) )
@@ -155,7 +152,7 @@ int SCH_FIND_REPLACE_TOOL::UpdateFind( const TOOL_EVENT& aEvent )
              || aEvent.Matches( EVENTS::UnselectedEvent )
              || aEvent.Matches( EVENTS::ClearedEvent ) )
     {
-        if( !m_frame->GetFindReplaceDialog() )
+        if( m_frame && !m_frame->GetFindReplaceDialog() )
         {
             if( m_foundItemHighlighted )
             {
@@ -289,10 +286,10 @@ SCH_ITEM* SCH_FIND_REPLACE_TOOL::nextMatch( SCH_SCREEN* aScreen, SCH_SHEET_PATH*
 
 int SCH_FIND_REPLACE_TOOL::FindNext( const TOOL_EVENT& aEvent )
 {
+    m_replaced = 0;
     EDA_SEARCH_DATA* searchTerms = searchData();
 
-    // The walk below is all document — screens, sheets and items — but what to look for
-    // is the dialog's, so there is nothing to search for without a window.
+    // An inactive frontend supplies no search terms.
     if( !searchTerms )
         return 0;
 
@@ -339,6 +336,7 @@ int SCH_FIND_REPLACE_TOOL::FindNext( const TOOL_EVENT& aEvent )
     }
 
     bool wrappedAround = false;
+    m_wrapped = false;
 
     for( int attempt = 0; attempt < 2; ++attempt )
     {
@@ -407,6 +405,8 @@ int SCH_FIND_REPLACE_TOOL::FindNext( const TOOL_EVENT& aEvent )
 
     if( item )
     {
+        m_wrapped = wrappedAround;
+        m_lastFoundCenter = item->GetBoundingBox().GetCenter();
         m_afterItem = item;
         m_afterItemScreen = m_editor->GetScreen();
 
@@ -499,11 +499,11 @@ int SCH_FIND_REPLACE_TOOL::ReplaceAndFindNext( const TOOL_EVENT& aEvent )
 {
     EDA_SEARCH_DATA* searchTerms = searchData();
 
-    // The replacement text is part of the search data, so this declines for the same
-    // reason ::FindNext does: there is nowhere for a headless caller to put it yet.
+    // An inactive frontend supplies no search terms.
     if( !searchTerms )
         return 0;
 
+    m_replaced = 0;
     EDA_SEARCH_DATA& data = *searchTerms;
     EDA_ITEM*        item = getCurrentMatch();
     SCH_SHEET_PATH*  currentSheet = getCurrentSheet();
@@ -524,6 +524,7 @@ int SCH_FIND_REPLACE_TOOL::ReplaceAndFindNext( const TOOL_EVENT& aEvent )
                 currentSheet->UpdateAllScreenReferences();
 
             commit.Push( wxS( "Find and Replace" ) );
+            ++m_replaced;
         }
         else
         {
@@ -533,8 +534,13 @@ int SCH_FIND_REPLACE_TOOL::ReplaceAndFindNext( const TOOL_EVENT& aEvent )
             m_editor->RecalculateConnections( nullptr, NO_CLEANUP );
         }
 
-        FindNext( ACTIONS::findNext.MakeEvent() );
     }
+
+    // A frontend may invoke Replace & Next before finding its first match.
+    // In that case navigation should still begin, without changing any item.
+    const unsigned replaced = m_replaced;
+    FindNext( ACTIONS::findNext.MakeEvent() );
+    m_replaced = replaced;
 
     return 0;
 }
@@ -544,9 +550,7 @@ int SCH_FIND_REPLACE_TOOL::ReplaceAll( const TOOL_EVENT& aEvent )
 {
     EDA_SEARCH_DATA* searchTerms = searchData();
 
-    // The whole of the replace-all walk below is the document's, and the commit it
-    // pushes works on a holder that is not a frame. What it has no route to is *what*
-    // to replace with; see ::runsWithoutAFrame.
+    // The same commit and sheet traversal serve wx and host editors.
     if( !searchTerms )
         return 0;
 
@@ -572,6 +576,7 @@ int SCH_FIND_REPLACE_TOOL::ReplaceAll( const TOOL_EVENT& aEvent )
     }
 
     SCH_COMMIT commit( m_toolMgr );
+    m_replaced = 0;
 
     if( data.findString.IsEmpty() )
         return FindAndReplace( ACTIONS::find.MakeEvent() );
@@ -584,7 +589,10 @@ int SCH_FIND_REPLACE_TOOL::ReplaceAll( const TOOL_EVENT& aEvent )
                 commit.Modify( aItem, aSheet->LastScreen(), RECURSE_MODE::NO_RECURSE );
 
                 if( aItem->Replace( aData, aSheet ) )
+                {
+                    ++m_replaced;
                     m_editor->UpdateItem( aItem, false, true );
+                }
             };
 
     if( currentSheetOnly || selectedOnly )
@@ -663,4 +671,20 @@ void SCH_FIND_REPLACE_TOOL::setTransitions()
     Go( &SCH_FIND_REPLACE_TOOL::UpdateFind,            EVENTS::SelectedEvent );
     Go( &SCH_FIND_REPLACE_TOOL::UpdateFind,            EVENTS::UnselectedEvent );
     Go( &SCH_FIND_REPLACE_TOOL::UpdateFind,            EVENTS::ClearedEvent );
+}
+
+void SCH_FIND_REPLACE_TOOL::ResetSearch()
+{
+    m_afterItem = nullptr;
+    m_afterItemScreen = nullptr;
+    m_lastSearchString.clear();
+    m_wrapped = false;
+    m_replaced = 0;
+}
+
+void SCH_FIND_REPLACE_TOOL::Reset( RESET_REASON aReason )
+{
+    SCH_TOOL_BASE<SCH_BASE_FRAME>::Reset( aReason );
+    ResetSearch();
+    m_foundItemHighlighted = false;
 }

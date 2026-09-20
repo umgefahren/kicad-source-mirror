@@ -74,13 +74,22 @@ gpui_kit::actions!(
 /// `no_json` because these are never built from a keymap file in this
 /// process — the shell constructs them from [`MENUS`] — and it spares the
 /// crate a `serde` and `schemars` dependency.
-#[derive(Clone, Debug, Default, PartialEq, gpui_kit::Action)]
+#[derive(Clone, Debug, Default, gpui_kit::Action)]
 #[action(namespace = kicad, no_json)]
 pub struct RunAction {
     /// The KiCad action name, for example `eeschema.EditorControl.save`.
     pub id: SharedString,
     /// Tool shortcut, when invoked at the canvas cursor rather than from chrome.
     pub hotkey: Option<SharedString>,
+}
+
+// Keyboard invocation carries cursor-dispatch metadata, but it is still the
+// same command as a menu or palette invocation. GPUI uses action equality to
+// discover shortcut hints; including that metadata hid every tool shortcut.
+impl PartialEq for RunAction {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
 }
 
 impl RunAction {
@@ -280,7 +289,7 @@ impl ActionRegistry {
             .unwrap_or_else(|| label_of(spec).to_string());
         let key = match info {
             Some(info) => (!info.hotkey.is_empty()).then(|| info.hotkey.clone()),
-            None => key_of(spec).map(str::to_string),
+            None => key_of(spec).map(platform_default_key),
         };
         Some(ResolvedCommand {
             label,
@@ -385,6 +394,19 @@ fn normalize_hotkey(value: &str) -> String {
     };
     modifiers.push_str(&key.to_lowercase());
     modifiers
+}
+
+/// Use the native modifier for standalone defaults and shell-owned shortcuts.
+/// Host shortcuts have already been translated by KiCad and are left intact.
+pub fn platform_default_key(key: &str) -> String {
+    if cfg!(target_os = "macos") {
+        if key == "ctrl-y" {
+            return "cmd-shift-z".to_string();
+        }
+        key.replacen("ctrl-", "cmd-", 1)
+    } else {
+        key.to_string()
+    }
 }
 
 /// Build native menus from layout slots present in the live registry.
@@ -537,7 +559,33 @@ pub fn key_bindings_with_registry(registry: &ActionRegistry) -> (Vec<KeyBinding>
         Ok(binding) => bindings.push(binding),
         Err(_) => rejected.push("escape".to_string()),
     }
+    prefer_primary_hints(&mut bindings);
     (bindings, rejected)
+}
+
+// Native macOS menus use the first matching binding; GPUI components use the
+// last. Repeat the primary after alternate/compatibility bindings so both show
+// the same hint. The duplicate dispatches exactly the same action and payload.
+fn prefer_primary_hints(bindings: &mut Vec<KeyBinding>) {
+    let mut primaries: Vec<KeyBinding> = Vec::new();
+    for binding in bindings.iter() {
+        if !primaries
+            .iter()
+            .any(|primary| primary.action().partial_eq(binding.action()))
+        {
+            primaries.push(binding.clone());
+        }
+    }
+    for primary in primaries {
+        if bindings
+            .iter()
+            .filter(|binding| binding.action().partial_eq(primary.action()))
+            .count()
+            > 1
+        {
+            bindings.push(primary);
+        }
+    }
 }
 
 /// An entry in a menu.
@@ -1021,81 +1069,20 @@ fn collect(path: &str, items: &'static [MenuEntry], out: &mut Vec<(String, Comma
 /// Returns the bindings it could build and the keystroke strings it could not
 /// parse; a caller that wants to be strict can assert the second is empty, and
 /// the unit test below does exactly that. Nothing here silently disappears.
-pub fn key_bindings() -> (Vec<KeyBinding>, Vec<&'static str>) {
-    let mut bindings = Vec::new();
-    let mut rejected = Vec::new();
-    // Escape is reserved before the loop starts. It is the one keystroke with
-    // two claimants — cancelling the tool, and the Inspect menu's "Clear Net
-    // Highlighting" — and cancelling has to win, or Escape stops being an
-    // escape. Seeding the set is how the loop is told not to hand it out.
-    let mut bound: Vec<&'static str> = vec!["escape"];
-
-    for (_, spec) in all_commands() {
-        let Some(keys) = key_of(&spec) else { continue };
-        // The first entry to claim a keystroke keeps it. Two menus listing the
-        // same command — "Generate BOM" appears under both File and Tools — is
-        // normal, and a second binding for the same keys would shadow nothing
-        // but would make the keymap dump confusing.
-        if bound.contains(&keys) {
-            continue;
-        }
-        // Keep Control aliases, but expose the platform's standard Command shortcuts
-        // on macOS. Raw host key events cannot substitute for shell actions (save, quit).
-        #[cfg(target_os = "macos")]
-        if keys.starts_with("ctrl-") {
-            let native = if keys == "ctrl-y" {
-                "cmd-shift-z".to_string()
-            } else {
-                keys.replacen("ctrl-", "cmd-", 1)
-            };
-            match KeyBinding::load(
-                &native,
-                spec.action(),
-                context_for(&native),
-                false,
-                None,
-                &gpui_kit::DummyKeyboardMapper,
-            ) {
-                Ok(binding) => bindings.push(binding),
-                Err(_) => rejected.push(keys),
-            }
-        }
-        let action = match spec.kind {
-            CommandKind::Tool(tool) => Box::new(RunAction {
-                id: tool.id().as_str().into(),
-                hotkey: Some(keys.into()),
-            }) as Box<dyn Action>,
-            _ => spec.action(),
-        };
-        match KeyBinding::load(
-            keys,
-            action,
-            context_for(keys),
-            false,
-            None,
-            &gpui_kit::DummyKeyboardMapper,
-        ) {
-            Ok(binding) => {
-                bound.push(keys);
-                bindings.push(binding);
-            }
-            Err(_) => rejected.push(keys),
-        }
-    }
-
-    match KeyBinding::load(
-        "escape",
-        ShellCommand::CancelTool.action(),
-        context_for("escape"),
-        false,
-        None,
-        &gpui_kit::DummyKeyboardMapper,
-    ) {
-        Ok(binding) => bindings.push(binding),
-        Err(_) => rejected.push("escape"),
-    }
-
-    (bindings, rejected)
+pub fn key_bindings() -> (Vec<KeyBinding>, Vec<String>) {
+    // Replay uses the same registration and hint ordering as a live session.
+    let registry = ActionRegistry::new(
+        all_commands()
+            .into_iter()
+            .map(|(_, spec)| ActionInfo {
+                name: spec.reported_id().to_string(),
+                label: label_of(&spec).to_string(),
+                hotkey: key_of(&spec).map(platform_default_key).unwrap_or_default(),
+                ..Default::default()
+            })
+            .collect(),
+    );
+    key_bindings_with_registry(&registry)
 }
 
 /// The context predicate a keystroke is bound under.
@@ -1135,6 +1122,75 @@ pub fn tool_for_action(id: &str) -> Option<Tool> {
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    #[test]
+    fn tool_hint_matches_menu_action_without_losing_cursor_payload() {
+        let registry = ActionRegistry::new(vec![ActionInfo {
+            name: Tool::DrawWire.id().as_str().into(),
+            label: "Draw Wires".into(),
+            hotkey: "W".into(),
+            ..Default::default()
+        }]);
+        let (bindings, rejected) = key_bindings_with_registry(&registry);
+        assert!(rejected.is_empty());
+        let menu_action = RunAction::new(Tool::DrawWire.id().as_str());
+        let binding = bindings
+            .iter()
+            .find(|binding| binding.action().partial_eq(&menu_action))
+            .unwrap();
+        assert_eq!(binding.keystrokes()[0].inner().key, "w");
+        assert_eq!(
+            binding
+                .action()
+                .as_any()
+                .downcast_ref::<RunAction>()
+                .unwrap()
+                .hotkey
+                .as_deref(),
+            Some("w")
+        );
+        assert_ne!(menu_action, RunAction::new(Tool::DrawBus.id().as_str()));
+    }
+
+    #[test]
+    fn primary_hint_wins_for_both_first_and_last_binding_consumers() {
+        let registry = ActionRegistry::new(vec![ActionInfo {
+            name: "common.Control.save".into(),
+            hotkey: if cfg!(target_os = "macos") {
+                "Cmd+S"
+            } else {
+                "Ctrl+S"
+            }
+            .into(),
+            hotkey_alt: "F2".into(),
+            ..Default::default()
+        }]);
+        let (bindings, rejected) = key_bindings_with_registry(&registry);
+        assert!(rejected.is_empty());
+        let action = RunAction::new("common.Control.save");
+        let matching: Vec<_> = bindings
+            .iter()
+            .filter(|binding| binding.action().partial_eq(&action))
+            .collect();
+        assert_eq!(
+            matching.first().unwrap().keystrokes(),
+            matching.last().unwrap().keystrokes()
+        );
+        assert_eq!(matching.first().unwrap().keystrokes()[0].inner().key, "s");
+        if cfg!(target_os = "macos") {
+            assert!(
+                matching.first().unwrap().keystrokes()[0]
+                    .inner()
+                    .modifiers
+                    .platform
+            );
+            assert!(
+                matching
+                    .iter()
+                    .any(|binding| binding.keystrokes()[0].inner().modifiers.control)
+            );
+        }
+    }
 
     #[test]
     fn registry_metadata_controls_labels_keys_and_availability() {
@@ -1197,7 +1253,7 @@ mod tests {
                     .filter(|action| action.id.as_ref() == Tool::DrawWire.id().as_str())
             })
             .collect();
-        assert_eq!(wire.len(), 2);
+        assert_eq!(wire.len(), 3);
         assert!(
             wire.iter()
                 .any(|action| action.hotkey.as_deref() == Some("shift-w"))

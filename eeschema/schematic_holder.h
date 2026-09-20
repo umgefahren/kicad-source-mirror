@@ -37,6 +37,7 @@ class SCH_GLOBALLABEL;
 class SCH_SHEET_PATH;
 
 struct SCH_SELECTION_FILTER_OPTIONS;
+struct EDA_SEARCH_DATA;
 
 enum class KICURSOR;
 enum class UNDO_REDO;
@@ -74,6 +75,9 @@ class SCHEMATIC_HOLDER
 {
 public:
     virtual ~SCHEMATIC_HOLDER() = default;
+
+    /// Optional search terms supplied by a non-wx editor. Null means no active search.
+    virtual EDA_SEARCH_DATA* GetHostSearchData() { return nullptr; }
 
     // ------------------------------------------------------------------ the document
 

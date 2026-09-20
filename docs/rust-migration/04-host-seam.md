@@ -388,6 +388,27 @@ rather than a fire-and-forget action.
 
 ---
 
+### 3.6 Host search data
+
+`ksch_session_set_search_data` copies UTF-8 find/replacement strings and matching
+options into `SCH_HOST`. `SCHEMATIC_HOLDER::GetHostSearchData()` exposes active
+terms to `SCH_FIND_REPLACE_TOOL`; wx frames retain their existing dialog-owned
+terms. Criteria changes restart navigation; replacement-text-only changes keep
+the current match. Setting `active=0` clears highlighting and deactivates search.
+
+The frontend runs the existing `common.Interactive.findNext`, `findPrevious`,
+`replaceAndFindNext` and `replaceAll` actions, then calls
+`ksch_session_search_result` for found/wrapped flags, replacement item count and
+match-center coordinates in schematic internal units. Replacements use
+`SCH_COMMIT` and the normal undo stack. The host clears cached matches before
+undo, redo, item removal and document teardown.
+
+Rust exposes these as `Session::set_search_data` and `Session::search_result`.
+The GPUI shell has presentation-independent search data and operations on its
+`InputSink`; the binary adapter maps them to the session. The canvas centers on
+the returned match and requests a new host frame. Rebuild the C++ library and
+Rust application together when using these additional ABI functions.
+
 ## 4. `kicad-sch-dump`
 
 ```

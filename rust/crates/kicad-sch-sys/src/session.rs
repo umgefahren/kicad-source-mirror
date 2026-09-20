@@ -318,6 +318,50 @@ impl Session {
         Ok(outcome(flags))
     }
 
+    /// Copy search terms to the host and update match highlighting.
+    pub fn set_search_data(&mut self, data: &crate::SearchData) -> Result<(), Error> {
+        let string = |value: &str| {
+            CString::new(value).map_err(|_| Error::Failed {
+                status: Status::InvalidArg,
+                message: "search text may not contain a NUL".into(),
+            })
+        };
+        let find = string(&data.find)?;
+        let replace = string(&data.replace)?;
+        let raw = ffi::ksch_search_data {
+            find: find.as_ptr(),
+            replace: replace.as_ptr(),
+            match_case: data.match_case as u32,
+            whole_word: data.whole_word as u32,
+            current_sheet_only: data.current_sheet_only as u32,
+            selected_only: data.selected_only as u32,
+            replace_references: data.replace_references as u32,
+            search_all_fields: data.search_all_fields as u32,
+            search_all_pins: data.search_all_pins as u32,
+            replace_mode: data.replace_mode as u32,
+            active: data.active as u32,
+        };
+        // SAFETY: all strings remain alive for the call; the host copies them.
+        self.check(unsafe { ffi::ksch_session_set_search_data(self.raw.as_ptr(), &raw) })
+    }
+
+    /// Read the result after dispatching a Find/Replace action.
+    pub fn search_result(&mut self) -> Result<crate::SearchResult, Error> {
+        let mut raw = MaybeUninit::<ffi::ksch_search_result>::uninit();
+        // SAFETY: live session and writable output, initialized on success.
+        self.check(unsafe {
+            ffi::ksch_session_search_result(self.raw.as_ptr(), raw.as_mut_ptr())
+        })?;
+        let raw = unsafe { raw.assume_init() };
+        Ok(crate::SearchResult {
+            found: raw.found != 0,
+            wrapped: raw.wrapped != 0,
+            center_x: raw.center_x,
+            center_y: raw.center_y,
+            replaced: raw.replaced,
+        })
+    }
+
     /// Undo the newest command.
     ///
     /// Deliberately not `run_action("common.Interactive.undo")`: that action belongs to

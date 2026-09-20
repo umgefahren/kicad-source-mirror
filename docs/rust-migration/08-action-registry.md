@@ -49,21 +49,36 @@ before verifying the new registry labels and the new temporary filename.
 | Toolbar zoom in/out | Zoom changes from 156% to 195% and back |
 | Secondary click on canvas | Context menu shows registry commands |
 
-Two presentation defects remain visible: the wire shortcut is absent from the
-menu/palette display, and some macOS shortcut hints show Control even though
-Command shortcuts work. These observations do not establish the cause; follow-up
-should inspect metadata after session initialization and how GPUI matches menu
-actions to keybindings. Not every registered command or drawing tool was tested.
+The follow-up fixes address both observed presentation defects. Tool action
+identity now ignores its invocation payload, so the menu/palette Draw Wires action
+matches its W binding. Preferred platform bindings bracket compatibility aliases
+because GPUI's menu and tooltip resolvers search in opposite orders.
 
-## Next work
+## Follow-up implementation
 
-1. Correct shortcut presentation, with a live-session regression for metadata
-   after initialization and a UI check that W and native Command hints appear.
-2. Add unsaved-close protection before expanding File workflows. The current
-   shell can close a modified document without prompting.
-3. Start Stage 5 with a bounded dialog workflow: expose search data through
-   `SCHEMATIC_HOLDER` and add a GPUI Find/Replace UI. The document traversal is
-   already converted; search terms still belong to the wx frame/dialog.
+Window close and editor Quit now prompt Save, Discard, or Cancel for a modified
+host document. Save errors keep the editor open. The current GPUI public API
+cannot veto external application termination; OS-level quit remains a framework
+limitation.
+
+Find/Replace has a GPUI panel and an owned search-data ABI. The host exposes
+search terms through `SCHEMATIC_HOLDER`, runs `SCH_FIND_REPLACE_TOOL`, and returns
+match coordinates, wrap status and replacement counts. Replacements use the
+existing schematic commit/undo mechanism. The panel supports case/whole-word
+matching, sheet/selection scope, fields/pins, next/previous and replace/all.
+
+Follow-up validation: 52 C++ host tests pass, including Unicode replacement,
+sheet scope, case/whole-word options, wrap detection and undo. The standalone
+Rust run passes 21 binary, 5 sys, 55 UI unit, 41 UI interaction, 2 toolbar and
+2 documentation tests; Clippy passes with warnings denied. Linked sys passes
+3 unit and 17 live tests, with only the previously recorded group-87 golden
+render mismatch failing.
+
+The rebuilt macOS app was checked with `/tmp/gpui-find-replace-check.kicad_sch`:
+W appears beside Draw Wires, Edit shows Command hints, Command-Option-F opens
+the panel, finding ECC83 centers its value, replacement marks the host modified,
+and undo restores the value. Command-W opens Save/Discard/Cancel; Cancel keeps
+the window open, and Save closes it after writing the temporary file.
 
 The host-side interface priorities remain in `06-what-is-missing.md`, notably
 `DeleteJunction` for correct wire/junction cleanup. Symbol placement and

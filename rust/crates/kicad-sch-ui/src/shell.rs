@@ -39,10 +39,19 @@ use crate::document::SharedDocument;
 use crate::grid::Units;
 use crate::input::{Modifiers, SharedSink, ShellEvent, shared_sink};
 use crate::panels::{DesignState, DocumentSource, HierarchyPanel, PropertiesPanel, StreamFacts};
+use crate::search::{SearchOperation, SearchPanel, SearchRequest};
 use crate::stats::FrameStats;
 use crate::theme::{self, CanvasPalette};
 use crate::tools::TOOLS;
 use kicad_sch_render::SchematicRenderer;
+
+gpui_kit::actions!(
+    schematic,
+    [
+        /// Close the active editor window after protecting unsaved changes.
+        CloseWindow
+    ]
+);
 
 /// Initialise gpui-kit, the theme, the key map and the menu bar.
 ///
@@ -68,14 +77,22 @@ pub fn install_key_bindings(cx: &mut App) {
     let (bindings, rejected) = if let Some(registry) = cx.try_global::<ActionRegistry>() {
         commands::key_bindings_with_registry(registry)
     } else {
-        let (bindings, rejected) = commands::key_bindings();
-        (bindings, rejected.into_iter().map(str::to_owned).collect())
+        commands::key_bindings()
     };
     debug_assert!(
         rejected.is_empty(),
         "unparsable default keystrokes: {rejected:?}"
     );
     cx.bind_keys(bindings);
+    cx.bind_keys([gpui_kit::KeyBinding::new(
+        if cfg!(target_os = "macos") {
+            "cmd-w"
+        } else {
+            "ctrl-w"
+        },
+        CloseWindow,
+        None,
+    )]);
 }
 
 /// Publish the menu bar so [`AppMenuBar`] can draw it.
@@ -304,6 +321,9 @@ pub struct SchematicShell {
     properties: Entity<PropertiesPanel>,
     command_state: Entity<CommandState>,
     palette_open: bool,
+    search_panel: Entity<SearchPanel>,
+    search_open: bool,
+    close_pending: bool,
     units: Units,
     theme_mode: ThemeMode,
     stats: FrameStats,
@@ -382,6 +402,15 @@ impl SchematicShell {
         let hierarchy = cx.new(|cx| HierarchyPanel::new(design.clone(), cx));
         let properties = cx.new(|cx| PropertiesPanel::new(design.clone(), cx));
         let command_state = cx.new(|cx| CommandState::new(window, cx));
+        let search_panel = cx.new(|cx| SearchPanel::new(window, cx));
+        cx.subscribe_in(
+            &search_panel,
+            window,
+            |this, _, request: &SearchRequest, window, cx| {
+                this.run_search(request, window, cx);
+            },
+        )
+        .detach();
         let menu_bar = AppMenuBar::new(cx);
 
         let (dock, dock_skin) = DockSkin::dock_area("schematic", Some(1), window, cx);
@@ -411,6 +440,13 @@ impl SchematicShell {
         // status bar shows last frame's cursor position.
         cx.observe(&canvas, |_, _, cx| cx.notify()).detach();
 
+        let weak_shell = cx.weak_entity();
+        window.on_window_should_close(cx, move |window, cx| {
+            weak_shell
+                .update(cx, |shell, cx| shell.request_close(false, window, cx))
+                .unwrap_or(true)
+        });
+
         let shell = Self {
             focus_handle: cx.focus_handle(),
             menu_bar,
@@ -423,6 +459,9 @@ impl SchematicShell {
             properties,
             command_state,
             palette_open: false,
+            search_panel,
+            search_open: false,
+            close_pending: false,
             units: Units::Millimetres,
             theme_mode,
             stats: FrameStats::default(),
@@ -570,8 +609,36 @@ impl SchematicShell {
 
     // --- action handlers -------------------------------------------------
 
-    fn on_run_action(&mut self, action: &RunAction, _window: &mut Window, cx: &mut Context<Self>) {
+    fn on_run_action(&mut self, action: &RunAction, window: &mut Window, cx: &mut Context<Self>) {
         let id = action.id.to_string();
+        match id.as_str() {
+            "common.Interactive.find" | "common.Interactive.findAndReplace" => {
+                self.search_open = true;
+                self.palette_open = false;
+                self.search_panel.update(cx, |panel, cx| {
+                    panel.open(id.ends_with("findAndReplace"), window, cx)
+                });
+                cx.notify();
+                return;
+            }
+            "common.Interactive.findNext" | "common.Interactive.findPrevious" => {
+                let operation = if id.ends_with("findPrevious") {
+                    SearchOperation::Previous
+                } else {
+                    SearchOperation::Next
+                };
+                if !self.search_open {
+                    self.search_open = true;
+                    self.search_panel
+                        .update(cx, |panel, cx| panel.open(false, window, cx));
+                }
+                self.search_panel
+                    .update(cx, |panel, cx| panel.execute(operation, cx));
+                cx.notify();
+                return;
+            }
+            _ => {}
+        }
         if let Some(tool) = commands::tool_for_action(&id) {
             self.canvas.update(cx, |canvas, cx| {
                 if let Some(hotkey) = &action.hotkey {
@@ -589,9 +656,75 @@ impl SchematicShell {
         cx.notify();
     }
 
-    fn on_quit(&mut self, _: &Quit, _window: &mut Window, cx: &mut Context<Self>) {
-        self.report(commands::ShellCommand::Quit, cx);
-        cx.quit();
+    /// Ask before losing changes. Returns true only for an immediately safe close.
+    fn request_close(&mut self, quit: bool, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.close_pending {
+            return false;
+        }
+        if self.canvas.read(cx).modified() != Some(true) {
+            if quit {
+                cx.quit();
+            }
+            return true;
+        }
+        self.close_pending = true;
+        let answer = window.prompt(
+            gpui_kit::PromptLevel::Warning,
+            "Save changes before closing?",
+            Some("Your unsaved changes will be lost if you discard them."),
+            &["Save", "Cancel", "Discard"],
+            cx,
+        );
+        cx.spawn_in(window, async move |shell, cx| {
+            let answer = answer.await.ok();
+            let _ = cx.update(|window, cx| {
+                let _ = shell.update(cx, |shell, cx| {
+                    shell.close_pending = false;
+                    let should_close = match answer {
+                        Some(0) => match shell.canvas.update(cx, |canvas, cx| {
+                            let result = canvas.save_document();
+                            cx.notify();
+                            result
+                        }) {
+                            Ok(()) => true,
+                            Err(error) => {
+                                shell.set_status(error.clone());
+                                drop(window.prompt(
+                                    gpui_kit::PromptLevel::Critical,
+                                    "Could not save the schematic",
+                                    Some(&error),
+                                    &["OK"],
+                                    cx,
+                                ));
+                                false
+                            }
+                        },
+                        Some(2) => true,
+                        _ => false,
+                    };
+                    if should_close {
+                        if quit {
+                            cx.quit();
+                        } else {
+                            window.remove_window();
+                        }
+                    }
+                    cx.notify();
+                });
+            });
+        })
+        .detach();
+        false
+    }
+
+    fn on_close_window(&mut self, _: &CloseWindow, window: &mut Window, cx: &mut Context<Self>) {
+        if self.request_close(false, window, cx) {
+            window.remove_window();
+        }
+    }
+
+    fn on_quit(&mut self, _: &Quit, window: &mut Window, cx: &mut Context<Self>) {
+        self.request_close(true, window, cx);
     }
 
     fn on_zoom_in(&mut self, _: &ZoomIn, _window: &mut Window, cx: &mut Context<Self>) {
@@ -766,11 +899,60 @@ impl SchematicShell {
             self.close_palette(window, cx);
             return;
         }
+        if self.search_open {
+            self.search_panel
+                .update(cx, |panel, cx| panel.execute(SearchOperation::Close, cx));
+            return;
+        }
         self.canvas.update(cx, |canvas, cx| {
             canvas.cancel_tool();
             cx.notify();
         });
         self.set_status("Select tool");
+        cx.notify();
+    }
+
+    fn run_search(&mut self, request: &SearchRequest, window: &mut Window, cx: &mut Context<Self>) {
+        let result = self.canvas.update(cx, |canvas, cx| {
+            let result = canvas.search(&request.0, request.1);
+            cx.notify();
+            result
+        });
+        if request.1 == SearchOperation::Close {
+            self.search_open = false;
+            self.canvas_panel
+                .read(cx)
+                .focus_handle(cx)
+                .focus(window, cx);
+        } else {
+            let message = match result {
+                Err(error) => error,
+                Ok(result) if request.1 == SearchOperation::ReplaceAll => {
+                    format!("Replaced {} items", result.replaced)
+                }
+                Ok(result) if result.found => {
+                    let prefix = if result.replaced > 0 {
+                        format!("Replaced {} items. ", result.replaced)
+                    } else {
+                        String::new()
+                    };
+                    format!(
+                        "{prefix}{}",
+                        if result.wrapped {
+                            "Search wrapped; match found"
+                        } else {
+                            "Match found"
+                        }
+                    )
+                }
+                Ok(result) if result.replaced > 0 => {
+                    format!("Replaced {} items. No further match", result.replaced)
+                }
+                Ok(_) => "No match found".into(),
+            };
+            self.search_panel
+                .update(cx, |panel, cx| panel.feedback(message, cx));
+        }
         cx.notify();
     }
 
@@ -1314,6 +1496,7 @@ impl Render for SchematicShell {
             .bg(theme.background)
             .on_action(cx.listener(Self::on_run_action))
             .on_action(cx.listener(Self::on_quit))
+            .on_action(cx.listener(Self::on_close_window))
             .on_action(cx.listener(Self::on_zoom_in))
             .on_action(cx.listener(Self::on_zoom_out))
             .on_action(cx.listener(Self::on_zoom_to_fit))
@@ -1330,6 +1513,9 @@ impl Render for SchematicShell {
             .on_action(cx.listener(Self::on_cancel_tool))
             .child(self.render_menu_row(cx))
             .child(self.render_toolbar(cx))
+            .when(self.search_open, |this| {
+                this.child(self.search_panel.clone())
+            })
             .child(
                 div()
                     .id("workspace")
@@ -1362,6 +1548,7 @@ fn action_presentation(
     fallback_description: &str,
     fallback_key: Option<&str>,
 ) -> ActionPresentation {
+    let fallback_key = fallback_key.map(commands::platform_default_key);
     let (label, description, key, available) = match cx.try_global::<ActionRegistry>() {
         Some(registry) => match registry.get(id) {
             Some(info) => (
@@ -1377,7 +1564,12 @@ fn action_presentation(
                 false,
             ),
         },
-        None => (fallback_label, fallback_description, fallback_key, true),
+        None => (
+            fallback_label,
+            fallback_description,
+            fallback_key.as_deref(),
+            true,
+        ),
     };
     let mut tooltip = match key {
         Some(key) => format!("{label} ({})", pretty_key(key)),

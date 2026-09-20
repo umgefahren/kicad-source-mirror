@@ -1204,6 +1204,76 @@ std::unique_ptr<SCH_HOST> hostWithALabel()
  * Note what is *not* here: a frame. The commit goes through the same `SCH_COMMIT` every
  * eeschema edit goes through, and the undo it records goes on the same stacks.
  */
+BOOST_AUTO_TEST_CASE( HostSearchRespectsScopeAndMatchOptions )
+{
+    SCH_HOST host;
+    BOOST_REQUIRE( host.LoadFile( eeschemaFixture( "issue10926_1.kicad_sch" ) ) );
+    BOOST_REQUIRE_GE( host.GetSheetHierarchy().size(), 2u );
+    BOOST_REQUIRE( host.SetCurrentSheetIndex( 1 ) );
+    auto* label = new SCH_LABEL( VECTOR2I( 100000, 100000 ), "ScopeNeedle" );
+    host.AddToScreen( label );
+    BOOST_REQUIRE( host.SetCurrentSheetIndex( 0 ) );
+    SCH_SEARCH_DATA terms;
+    terms.findString = "ScopeNeedle";
+    terms.searchCurrentSheetOnly = true;
+    host.SetSearchData( terms, true );
+    auto* tool = host.GetToolManager()->GetTool<SCH_FIND_REPLACE_TOOL>();
+    host.RunActionByName( "common.Interactive.findNext" );
+    BOOST_CHECK( tool->GetLastFoundItem() == nullptr );
+    terms.searchCurrentSheetOnly = false;
+    host.SetSearchData( terms, true );
+    host.RunActionByName( "common.Interactive.findNext" );
+    BOOST_REQUIRE( tool->GetLastFoundItem() == label );
+    BOOST_CHECK_EQUAL( host.GetCurrentSheetIndex(), 1u );
+    terms.findString = "scopeneedle";
+    terms.matchCase = true;
+    host.SetSearchData( terms, true );
+    host.RunActionByName( "common.Interactive.findNext" );
+    BOOST_CHECK( tool->GetLastFoundItem() == nullptr );
+    terms.matchCase = false;
+    host.SetSearchData( terms, true );
+    host.RunActionByName( "common.Interactive.findNext" );
+    BOOST_CHECK( tool->GetLastFoundItem() == label );
+    terms.findString = "Scope";
+    terms.matchMode = EDA_SEARCH_MATCH_MODE::WHOLEWORD;
+    host.SetSearchData( terms, true );
+    host.RunActionByName( "common.Interactive.findNext" );
+    BOOST_CHECK( tool->GetLastFoundItem() == nullptr );
+}
+
+BOOST_AUTO_TEST_CASE( HostSearchFindsReplacesAndUndoes )
+{
+    auto host = hostWithALabel();
+    SCH_LABEL* label = firstLabel( *host );
+    label->SetText( wxT( "host_search_unique" ) );
+    SCH_SEARCH_DATA terms;
+    terms.findString = wxT( "host_search_unique" );
+    terms.replaceString = wxT( "host_replaced_unique" );
+    terms.searchAndReplace = true;
+    terms.searchCurrentSheetOnly = true;
+    host->SetSearchData( terms, true );
+    BOOST_REQUIRE( host->RunActionByName( "common.Interactive.replaceAndFindNext" ) );
+    auto* tool = host->GetToolManager()->GetTool<SCH_FIND_REPLACE_TOOL>();
+    BOOST_REQUIRE( tool->GetLastFoundItem() == label );
+    BOOST_CHECK_EQUAL( tool->Replaced(), 0u );
+    BOOST_CHECK_EQUAL( label->GetText(), wxString( "host_search_unique" ) );
+    BOOST_REQUIRE( host->RunActionByName( "common.Interactive.findNext" ) );
+    BOOST_CHECK( tool->Wrapped() );
+    BOOST_REQUIRE( host->RunActionByName( "common.Interactive.replaceAndFindNext" ) );
+    BOOST_CHECK_EQUAL( label->GetText(), wxString( "host_replaced_unique" ) );
+    BOOST_CHECK_EQUAL( tool->Replaced(), 1u );
+    BOOST_CHECK( host->IsModified() );
+    BOOST_REQUIRE( host->Undo() );
+    BOOST_CHECK_EQUAL( label->GetText(), wxString( "host_search_unique" ) );
+    host->SetSearchData( terms, true );
+    BOOST_REQUIRE( host->RunActionByName( "common.Interactive.replaceAll" ) );
+    BOOST_CHECK_EQUAL( label->GetText(), wxString( "host_replaced_unique" ) );
+    BOOST_REQUIRE( host->Undo() );
+    BOOST_CHECK_EQUAL( label->GetText(), wxString( "host_search_unique" ) );
+    host->SetSearchData( terms, false );
+    BOOST_CHECK( host->GetHostSearchData() == nullptr );
+}
+
 BOOST_AUTO_TEST_CASE( AnEditIsRecordedUndoneAndRedone )
 {
     std::unique_ptr<SCH_HOST> host = hostWithALabel();
@@ -1746,6 +1816,49 @@ BOOST_AUTO_TEST_SUITE_END()
 
 
 BOOST_AUTO_TEST_SUITE( SchHostAbi )
+
+BOOST_AUTO_TEST_CASE( SearchAbiCopiesUtf8AndReportsResults )
+{
+    std::unique_ptr<ksch_session, decltype(&ksch_session_destroy)> session(
+            ksch_session_create(), ksch_session_destroy );
+    BOOST_REQUIRE( session );
+    ksch_search_result result{};
+    ksch_search_data data{};
+    data.find = "B0";
+    data.replace = "Grüße_測試";
+    data.active = data.replace_mode = data.whole_word = data.current_sheet_only = 1;
+    BOOST_CHECK_EQUAL( ksch_session_set_search_data( session.get(), &data ),
+                       KSCH_ERR_NO_DOCUMENT );
+    BOOST_REQUIRE_EQUAL( ksch_session_load_file( session.get(),
+            eeschemaFixture( "api_kitchen_sink.kicad_sch" ).utf8_str().data() ), KSCH_OK );
+    BOOST_REQUIRE_EQUAL( ksch_session_set_search_data( session.get(), &data ), KSCH_OK );
+    BOOST_REQUIRE_EQUAL( ksch_session_run_action( session.get(),
+            "common.Interactive.findNext", nullptr ), KSCH_OK );
+    BOOST_REQUIRE_EQUAL( ksch_session_search_result( session.get(), &result ), KSCH_OK );
+    BOOST_CHECK_EQUAL( result.found, 1u );
+    BOOST_REQUIRE_EQUAL( ksch_session_run_action( session.get(),
+            "common.Interactive.replaceAndFindNext", nullptr ), KSCH_OK );
+    BOOST_REQUIRE_EQUAL( ksch_session_search_result( session.get(), &result ), KSCH_OK );
+    BOOST_CHECK_EQUAL( result.replaced, 1u );
+    data.find = "Grüße_測試";
+    BOOST_REQUIRE_EQUAL( ksch_session_set_search_data( session.get(), &data ), KSCH_OK );
+    BOOST_REQUIRE_EQUAL( ksch_session_run_action( session.get(),
+            "common.Interactive.findNext", nullptr ), KSCH_OK );
+    BOOST_REQUIRE_EQUAL( ksch_session_search_result( session.get(), &result ), KSCH_OK );
+    BOOST_CHECK_EQUAL( result.found, 1u );
+    int undone = 0;
+    BOOST_REQUIRE_EQUAL( ksch_session_undo( session.get(), &undone ), KSCH_OK );
+    BOOST_REQUIRE_EQUAL( undone, 1 );
+    BOOST_REQUIRE_EQUAL( ksch_session_run_action( session.get(),
+            "common.Interactive.findNext", nullptr ), KSCH_OK );
+    BOOST_REQUIRE_EQUAL( ksch_session_search_result( session.get(), &result ), KSCH_OK );
+    BOOST_CHECK_EQUAL( result.found, 0u );
+    data.active = 0;
+    BOOST_REQUIRE_EQUAL( ksch_session_set_search_data( session.get(), &data ), KSCH_OK );
+    BOOST_REQUIRE_EQUAL( ksch_session_search_result( session.get(), &result ), KSCH_OK );
+    BOOST_CHECK_EQUAL( result.found, 0u );
+}
+
 
 
 /**

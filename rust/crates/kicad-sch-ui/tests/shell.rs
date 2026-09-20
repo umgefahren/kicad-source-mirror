@@ -1513,7 +1513,12 @@ fn live_registry_controls_toolbar_and_tool_palette(cx: &mut TestAppContext) {
             name: "common.Control.save".into(),
             label: "Save from host".into(),
             description: "Host save help".into(),
-            hotkey: "Ctrl+S".into(),
+            hotkey: if cfg!(target_os = "macos") {
+                "Cmd+S"
+            } else {
+                "Ctrl+S"
+            }
+            .into(),
             ..Default::default()
         },
         commands::ActionInfo {
@@ -1529,6 +1534,26 @@ fn live_registry_controls_toolbar_and_tool_palette(cx: &mut TestAppContext) {
     cx.update_window(harness.window, |_, window, _| {
         assert_eq!(window.find("tb-save").label(), Some("Save from host"));
         assert_eq!(window.find("tool-wire").label(), Some("Wire from host"));
+        let wire =
+            window.bindings_for_action(&commands::RunAction::new(Tool::DrawWire.id().as_str()));
+        assert_eq!(
+            wire.last().expect("wire shortcut hint").keystrokes()[0]
+                .inner()
+                .key,
+            "w"
+        );
+        let save = window.bindings_for_action(&commands::RunAction::new("common.Control.save"));
+        assert_eq!(
+            save.first().unwrap().keystrokes(),
+            save.last().unwrap().keystrokes()
+        );
+        assert_eq!(
+            save.last().unwrap().keystrokes()[0]
+                .inner()
+                .modifiers
+                .platform,
+            cfg!(target_os = "macos")
+        );
     })
     .unwrap();
 
@@ -1555,4 +1580,233 @@ fn live_registry_controls_toolbar_and_tool_palette(cx: &mut TestAppContext) {
         assert_eq!(state.matched_count(), 1, "palette searches the host label");
     })
     .unwrap();
+}
+
+/// A dirty document whose save fails, to exercise the close dialog against
+/// the same host interface used by the real editor.
+struct UnsavedSink(Rc<RefCell<usize>>);
+
+impl kicad_sch_ui::input::InputSink for UnsavedSink {
+    fn handle(&mut self, _: ShellEvent) {}
+    fn modified(&self) -> Option<bool> {
+        Some(true)
+    }
+    fn save_document(&mut self) -> Result<(), String> {
+        *self.0.borrow_mut() += 1;
+        Err("Disk is full".into())
+    }
+}
+
+#[gpui_kit::test]
+fn cancel_and_failed_save_keep_the_unsaved_editor_open(cx: &mut TestAppContext) {
+    let harness = open(cx);
+    let saves = Rc::new(RefCell::new(0));
+    cx.update(|cx| {
+        harness
+            .shell
+            .read(cx)
+            .canvas()
+            .clone()
+            .update(cx, |canvas, _| {
+                canvas.set_sink(shared_sink(UnsavedSink(saves.clone())));
+            });
+    });
+    cx.simulate_keystrokes(
+        harness.window,
+        if cfg!(target_os = "macos") {
+            "cmd-w"
+        } else {
+            "ctrl-w"
+        },
+    );
+    cx.run_until_parked();
+    assert!(cx.has_pending_prompt());
+    cx.simulate_prompt_answer("Cancel");
+    cx.run_until_parked();
+    assert_eq!(*saves.borrow(), 0);
+    frame(cx, &harness);
+
+    let quit = |cx: &mut TestAppContext| {
+        cx.update_window(harness.window, |_, window, cx| {
+            window.dispatch_action(Box::new(commands::Quit), cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+    };
+    quit(cx);
+    assert!(cx.has_pending_prompt());
+    cx.simulate_prompt_answer("Cancel");
+    cx.run_until_parked();
+    assert_eq!(*saves.borrow(), 0);
+    frame(cx, &harness);
+
+    quit(cx);
+    assert!(cx.has_pending_prompt());
+    cx.simulate_prompt_answer("Save");
+    cx.run_until_parked();
+    assert_eq!(*saves.borrow(), 1);
+    assert!(cx.has_pending_prompt());
+    cx.simulate_prompt_answer("OK");
+    cx.run_until_parked();
+    frame(cx, &harness);
+    cx.update(|cx| assert_eq!(harness.shell.read(cx).status().as_ref(), "Disk is full"));
+    // The cancelled attempt and failure must both allow a fresh close request.
+    quit(cx);
+    assert!(cx.has_pending_prompt());
+    cx.simulate_prompt_answer("Cancel");
+    cx.run_until_parked();
+}
+
+#[derive(Clone)]
+struct SearchSink(
+    Rc<
+        RefCell<
+            Vec<(
+                kicad_sch_ui::search::SearchData,
+                kicad_sch_ui::search::SearchOperation,
+            )>,
+        >,
+    >,
+);
+
+impl kicad_sch_ui::input::InputSink for SearchSink {
+    fn handle(&mut self, _: ShellEvent) {}
+    fn search(
+        &mut self,
+        data: &kicad_sch_ui::search::SearchData,
+        operation: kicad_sch_ui::search::SearchOperation,
+    ) -> Result<kicad_sch_ui::search::SearchResult, String> {
+        self.0.borrow_mut().push((data.clone(), operation));
+        Ok(kicad_sch_ui::search::SearchResult {
+            found: true,
+            center_x: 1234.,
+            center_y: 5678.,
+            ..Default::default()
+        })
+    }
+}
+
+#[gpui_kit::test]
+fn find_replace_uses_host_data_and_keeps_typing_out_of_the_canvas(cx: &mut TestAppContext) {
+    use kicad_sch_ui::search::SearchOperation;
+    let harness = open(cx);
+    let requests = Rc::new(RefCell::new(Vec::new()));
+    cx.update(|cx| {
+        harness
+            .shell
+            .read(cx)
+            .canvas()
+            .clone()
+            .update(cx, |canvas, _| {
+                canvas.set_sink(shared_sink(SearchSink(requests.clone())));
+            });
+    });
+    cx.update_window(harness.window, |_, window, cx| {
+        window.dispatch_action(
+            Box::new(commands::RunAction::new(
+                "common.Interactive.findAndReplace",
+            )),
+            cx,
+        );
+    })
+    .unwrap();
+    cx.run_until_parked();
+    frame(cx, &harness);
+    click(cx, &harness, "find-next");
+    assert!(
+        requests.borrow().is_empty(),
+        "empty queries never reach the host"
+    );
+    // Opening Find focuses its real text input. W must enter text, not start wire placement.
+    cx.update_window(harness.window, |_, window, cx| {
+        window.dispatch_action(
+            Box::new(commands::RunAction::new(
+                "common.Interactive.findAndReplace",
+            )),
+            cx,
+        );
+    })
+    .unwrap();
+    cx.run_until_parked();
+    frame(cx, &harness);
+    press(cx, &harness, "w");
+    assert_eq!(active_tool(cx, &harness), Tool::Select);
+    press(cx, &harness, "enter");
+    assert_eq!(requests.borrow()[0].0.find, "w");
+    assert!(requests.borrow()[0].0.replace_mode);
+    assert_eq!(requests.borrow()[0].1, SearchOperation::Next);
+    cx.update(|cx| {
+        assert_eq!(
+            harness.shell.read(cx).canvas().read(cx).camera().center(),
+            [1234., 5678.]
+        );
+    });
+    click(cx, &harness, "find-case");
+    click(cx, &harness, "find-replace-all");
+    assert_eq!(requests.borrow()[1].1, SearchOperation::ReplaceAll);
+    assert!(requests.borrow()[1].0.match_case);
+    assert_eq!(
+        requests.borrow()[1].0.replace,
+        "",
+        "empty replacement deletes matching text"
+    );
+    click(cx, &harness, "find-close");
+    assert_eq!(requests.borrow()[2].1, SearchOperation::Close);
+    assert!(!requests.borrow()[2].0.active);
+    press(cx, &harness, "w");
+    assert_eq!(
+        active_tool(cx, &harness),
+        Tool::DrawWire,
+        "closing restores canvas focus"
+    );
+}
+
+struct SavableSink {
+    saves: Rc<RefCell<usize>>,
+    modified: bool,
+}
+impl kicad_sch_ui::input::InputSink for SavableSink {
+    fn handle(&mut self, _: ShellEvent) {}
+    fn modified(&self) -> Option<bool> {
+        Some(self.modified)
+    }
+    fn save_document(&mut self) -> Result<(), String> {
+        *self.saves.borrow_mut() += 1;
+        self.modified = false;
+        Ok(())
+    }
+}
+
+#[gpui_kit::test]
+fn native_close_saves_or_discards_only_after_confirmation(cx: &mut TestAppContext) {
+    for answer in ["Save", "Discard"] {
+        let harness = open(cx);
+        let saves = Rc::new(RefCell::new(0));
+        cx.update(|cx| {
+            harness
+                .shell
+                .read(cx)
+                .canvas()
+                .clone()
+                .update(cx, |canvas, _| {
+                    canvas.set_sink(shared_sink(SavableSink {
+                        saves: saves.clone(),
+                        modified: true,
+                    }));
+                });
+        });
+        let mut visual = gpui_kit::VisualTestContext::from_window(harness.window, cx);
+        assert!(
+            !visual.simulate_close(),
+            "dirty window must veto initial close"
+        );
+        cx.run_until_parked();
+        assert!(cx.has_pending_prompt());
+        // A repeated close while the dialog is up cannot open a second prompt.
+        assert!(!visual.simulate_close());
+        cx.simulate_prompt_answer(answer);
+        cx.run_until_parked();
+        assert_eq!(*saves.borrow(), usize::from(answer == "Save"));
+        assert!(cx.update_window(harness.window, |_, _, _| ()).is_err());
+    }
 }

@@ -13,6 +13,7 @@
 #define KICAD_EESCHEMA_HOST_SCH_HOST_H
 
 #include <cstddef>
+#include <eda_search_data.h>
 #include <memory>
 #include <vector>
 
@@ -153,6 +154,10 @@ public:
 
     /// Drop the loaded document, leaving the session reusable.
     void Unload();
+
+    EDA_SEARCH_DATA* GetHostSearchData() override
+    { return m_searchActive ? m_searchData.get() : nullptr; }
+    void SetSearchData( const SCH_SEARCH_DATA& aData, bool aActive );
 
     bool IsLoaded() const { return m_schematic != nullptr; }
 
@@ -530,6 +535,9 @@ public:
     KIGFX::HOST_VIEW_CONTROLS& ViewControls() { return *m_viewControls; }
 
 private:
+    std::unique_ptr<SCH_SEARCH_DATA> m_searchData = std::make_unique<SCH_SEARCH_DATA>();
+    bool m_searchActive = false;
+
     /// Build the tool framework: view controls, manager, actions, dispatcher.
     /// Called once, from the constructor, after buildCanvas().
     void setupTools();

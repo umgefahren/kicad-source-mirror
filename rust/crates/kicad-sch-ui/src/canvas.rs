@@ -310,6 +310,38 @@ impl CanvasState {
         self.sink.try_borrow().ok()?.modified()
     }
 
+    /// Save through the host, retaining the document if saving fails.
+    pub fn save_document(&mut self) -> Result<(), String> {
+        let result = self
+            .sink
+            .try_borrow_mut()
+            .map_err(|_| "The document is busy; try saving again".to_string())?
+            .save_document();
+        self.mark_document_dirty();
+        result
+    }
+
+    /// Search the host model and center the canvas on the match.
+    pub fn search(
+        &mut self,
+        data: &crate::search::SearchData,
+        operation: crate::search::SearchOperation,
+    ) -> Result<crate::search::SearchResult, String> {
+        let result = self
+            .sink
+            .try_borrow_mut()
+            .map_err(|_| "Document is busy")?
+            .search(data, operation)?;
+        if result.found && operation != crate::search::SearchOperation::Close {
+            self.renderer
+                .borrow_mut()
+                .camera_mut()
+                .set_center([result.center_x, result.center_y]);
+        }
+        self.invalidate_view();
+        Ok(result)
+    }
+
     /// Point the events somewhere else. Used by tests and by the host once it
     /// attaches.
     pub fn set_sink(&mut self, sink: SharedSink) {

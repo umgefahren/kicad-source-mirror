@@ -393,6 +393,20 @@ pub trait InputSink {
         None
     }
 
+    /// Save synchronously and report failures so closing never discards a failed save.
+    fn save_document(&mut self) -> Result<(), String> {
+        Err("Saving is unavailable for this document".into())
+    }
+
+    /// Run Find/Replace through the host model and undo stack.
+    fn search(
+        &mut self,
+        _data: &crate::search::SearchData,
+        _operation: crate::search::SearchOperation,
+    ) -> Result<crate::search::SearchResult, String> {
+        Err("Find/Replace requires a live schematic".into())
+    }
+
     /// How many items the host reports as selected.
     ///
     /// The shell has no selection of its own — the C++ selection tool owns it — so

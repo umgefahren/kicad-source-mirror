@@ -42,29 +42,14 @@ public:
 
     ~SCH_FIND_REPLACE_TOOL() { }
 
-    /**
-     * Runs on an editing context that is not a wxFrame.
-     *
-     * The searching and replacing themselves are the document's — the screen, the sheet
-     * list and the items are all reached through SCHEMATIC_HOLDER — but the *terms* are
-     * not: EDA_SEARCH_DATA is owned by EDA_DRAW_FRAME and filled in by DIALOG_SCH_FIND,
-     * and neither this tool nor SCHEMATIC_HOLDER has a copy. ::m_lastSearchString is a
-     * cache for deciding when to restart a search, not a search term.
-     *
-     * So every action here declines without a window, at the one line that asks for the
-     * search data: ::FindAndReplace (which *is* the dialog), ::FindNext, ::HasMatch,
-     * ::ReplaceAndFindNext, ::ReplaceAll and ::UpdateFind. What this buys today is that
-     * the tool registers and answers events instead of being absent — the ones bound to
-     * the selection arrive whether or not anyone is finding anything — and that the rest
-     * of the body already goes through the document, so giving the search terms a
-     * non-wx route is the only thing left to do.
-     *
-     * Beyond the terms, three smaller things are windows and stay guarded: the find
-     * dialog itself (which doubles as "is a search in progress"), ::FindNext scrolling
-     * the canvas to what it found, and its "Reached end of sheet"/"No matches found"
-     * status text.
-     */
+    /// Search terms may be supplied by either the wx frame or a host holder.
     bool runsWithoutAFrame() const override { return true; }
+
+    void ResetSearch();
+    void Reset( RESET_REASON aReason ) override;
+    bool Wrapped() const { return m_wrapped; }
+    unsigned Replaced() const { return m_replaced; }
+    VECTOR2I LastFoundCenter() const { return m_lastFoundCenter; }
 
     int FindAndReplace( const TOOL_EVENT& aEvent );
 
@@ -95,12 +80,7 @@ private:
                          EDA_SEARCH_DATA& aData, bool reverse );
     EDA_ITEM* getCurrentMatch();
 
-    /**
-     * What is being searched for, or **null** when there is no window holding it.
-     *
-     * This is the one thing in this tool that has no route through SCHEMATIC_HOLDER; see
-     * ::runsWithoutAFrame. Every action starts by asking for it and declines on null.
-     */
+    /// Active search terms from the wx frame or the host holder.
     EDA_SEARCH_DATA* searchData() const;
 
     /// The schematic being edited, or null for the symbol editor and the symbol viewer.
@@ -110,6 +90,9 @@ private:
     SCH_SHEET_PATH* getCurrentSheet() const;
 
 private:
+    VECTOR2I m_lastFoundCenter;
+    bool m_wrapped = false;
+    unsigned m_replaced = 0;
     SCH_ITEM*   m_afterItem = nullptr;
     SCH_SCREEN* m_afterItemScreen = nullptr;
     wxString    m_lastSearchString;

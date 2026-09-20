@@ -865,6 +865,27 @@ KISCH_API ksch_status ksch_action_hotkey_names( uint32_t aIndex, const char** aP
  */
 KISCH_API ksch_status ksch_action_find( const char* aNameUtf8, ksch_action* aOut );
 
+/** Search settings. UTF-8 strings are borrowed only for the call. Boolean fields are 0/1.
+ * Updating search criteria restarts navigation; replacement-text-only changes preserve it.
+ * Set active=0 when closing the UI to clear highlights. */
+typedef struct ksch_search_data
+{
+    const char* find;
+    const char* replace;
+    uint32_t match_case, whole_word, current_sheet_only, selected_only;
+    uint32_t replace_references, search_all_fields, search_all_pins, replace_mode, active;
+} ksch_search_data;
+
+typedef struct ksch_search_result
+{
+    uint32_t found, wrapped, replaced;
+    double center_x, center_y;
+} ksch_search_result;
+
+KISCH_API ksch_status ksch_session_set_search_data( ksch_session*, const ksch_search_data* );
+/** Read the last navigation result after running the existing Find/Replace actions. */
+KISCH_API ksch_status ksch_session_search_result( ksch_session*, ksch_search_result* );
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

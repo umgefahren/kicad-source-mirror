@@ -55,6 +55,14 @@ pub type SharedSession = Rc<RefCell<Session>>;
 /// against a recorder rather than against a linked C++ host. `Session` implements
 /// it by forwarding, so there is no second implementation in the shipping path.
 pub trait InputTarget {
+    /// Configure model search without a wx dialog.
+    fn set_search_data(&mut self, _data: &kicad_sch_sys::SearchData) -> Result<(), Error> {
+        Err(Error::NoHost)
+    }
+    /// Read the latest model search result.
+    fn search_result(&mut self) -> Result<kicad_sch_sys::SearchResult, Error> {
+        Err(Error::NoHost)
+    }
     /// Give one event to the tool framework.
     fn dispatch_input(&mut self, event: &InputEvent<'_>) -> Result<InputOutcome, Error>;
     /// Run an action by its dotted name.
@@ -70,6 +78,12 @@ pub trait InputTarget {
 }
 
 impl InputTarget for Session {
+    fn set_search_data(&mut self, data: &kicad_sch_sys::SearchData) -> Result<(), Error> {
+        Session::set_search_data(self, data)
+    }
+    fn search_result(&mut self) -> Result<kicad_sch_sys::SearchResult, Error> {
+        Session::search_result(self)
+    }
     fn dispatch_input(&mut self, event: &InputEvent<'_>) -> Result<InputOutcome, Error> {
         Session::dispatch_input(self, event)
     }
@@ -295,6 +309,54 @@ impl HostInputSink {
 }
 
 impl InputSink for HostInputSink {
+    fn search(
+        &mut self,
+        data: &kicad_sch_ui::search::SearchData,
+        operation: kicad_sch_ui::search::SearchOperation,
+    ) -> Result<kicad_sch_ui::search::SearchResult, String> {
+        let mut session = self
+            .session
+            .try_borrow_mut()
+            .map_err(|_| "Document is busy")?;
+        let data = kicad_sch_sys::SearchData {
+            find: data.find.clone(),
+            replace: data.replace.clone(),
+            match_case: data.match_case,
+            whole_word: data.whole_word,
+            current_sheet_only: data.current_sheet_only,
+            selected_only: data.selected_only,
+            replace_references: data.replace_references,
+            search_all_fields: data.search_all_fields,
+            search_all_pins: data.search_all_pins,
+            replace_mode: data.replace_mode,
+            active: data.active,
+        };
+        session
+            .set_search_data(&data)
+            .map_err(|error| error.to_string())?;
+        if let Some(action) = operation.action() {
+            let outcome = session
+                .run_action(action)
+                .map_err(|error| error.to_string())?;
+            if !outcome.handled {
+                return Err("Search action is unavailable in this host".into());
+            }
+        }
+        let result = session.search_result().map_err(|error| error.to_string())?;
+        drop(session);
+        self.absorb(InputOutcome {
+            handled: true,
+            redraw: true,
+        });
+        Ok(kicad_sch_ui::search::SearchResult {
+            found: result.found,
+            wrapped: result.wrapped,
+            center_x: result.center_x,
+            center_y: result.center_y,
+            replaced: result.replaced,
+        })
+    }
+
     fn handle(&mut self, event: ShellEvent) {
         match &event {
             ShellEvent::PointerMove {
@@ -423,6 +485,37 @@ impl InputSink for HostInputSink {
         self.status.as_deref()
     }
 
+    fn save_document(&mut self) -> Result<(), String> {
+        let result: Result<EditorState, String> = (|| {
+            let mut session = self
+                .session
+                .try_borrow_mut()
+                .map_err(|_| "The document is busy; try saving again".to_string())?;
+            session.save().map_err(|error| format!("save: {error}"))?;
+            let state = session
+                .editor_state()
+                .map_err(|error| format!("editor state: {error}"))?;
+            if state.modified {
+                return Err("The document still has unsaved changes".into());
+            }
+            Ok(state)
+        })();
+        match result {
+            Ok(state) => {
+                self.modified = state.modified;
+                self.selection_count = state.selection_count as usize;
+                self.dirty = true;
+                self.last_failure = None;
+                self.status = Some("Saved".into());
+                Ok(())
+            }
+            Err(error) => {
+                self.fail(error.clone());
+                Err(error)
+            }
+        }
+    }
+
     fn modified(&self) -> Option<bool> {
         Some(self.modified)
     }
@@ -466,6 +559,7 @@ mod tests {
     /// `InputEvent` derives `Debug` — and reads well in a failure.
     #[derive(Default)]
     struct Recorder {
+        search_data: Option<kicad_sch_sys::SearchData>,
         events: Vec<String>,
         actions: Vec<String>,
         outcome: InputOutcome,
@@ -476,6 +570,20 @@ mod tests {
     }
 
     impl InputTarget for Recorder {
+        fn set_search_data(&mut self, data: &kicad_sch_sys::SearchData) -> Result<(), Error> {
+            self.search_data = Some(data.clone());
+            Ok(())
+        }
+        fn search_result(&mut self) -> Result<kicad_sch_sys::SearchResult, Error> {
+            Ok(kicad_sch_sys::SearchResult {
+                found: true,
+                center_x: 12.,
+                center_y: 34.,
+                replaced: 2,
+                ..Default::default()
+            })
+        }
+
         fn dispatch_input(&mut self, event: &InputEvent<'_>) -> Result<InputOutcome, Error> {
             self.events.push(format!("{event:?}"));
             Ok(self.outcome)
@@ -545,12 +653,104 @@ mod tests {
         }
     }
 
+    #[test]
+    fn search_configures_the_host_before_dispatch_and_refreshes_modified_state() {
+        use kicad_sch_ui::search::{SearchData, SearchOperation};
+        let mut fixture = Fixture::with(
+            InputOutcome {
+                handled: true,
+                redraw: true,
+            },
+            EditorState {
+                modified: true,
+                ..Default::default()
+            },
+        );
+        let data = SearchData {
+            find: "Ω".into(),
+            replace: String::new(),
+            match_case: true,
+            whole_word: true,
+            current_sheet_only: true,
+            selected_only: true,
+            replace_references: true,
+            search_all_fields: true,
+            search_all_pins: true,
+            replace_mode: true,
+            active: true,
+        };
+        let result = fixture
+            .sink
+            .search(&data, SearchOperation::ReplaceAll)
+            .unwrap();
+        assert_eq!(fixture.actions(), ["common.Interactive.replaceAll"]);
+        let configured = fixture.recorder.borrow().search_data.clone().unwrap();
+        assert_eq!(configured.find, "Ω");
+        assert!(configured.replace.is_empty());
+        assert!(
+            configured.match_case
+                && configured.whole_word
+                && configured.current_sheet_only
+                && configured.selected_only
+                && configured.replace_references
+                && configured.search_all_fields
+                && configured.search_all_pins
+                && configured.replace_mode
+                && configured.active
+        );
+        assert_eq!(result.replaced, 2);
+        assert_eq!((result.center_x, result.center_y), (12., 34.));
+        assert_eq!(fixture.sink.modified(), Some(true));
+        assert!(fixture.sink.take_dirty());
+        let inactive = SearchData {
+            active: false,
+            ..data
+        };
+        fixture
+            .sink
+            .search(&inactive, SearchOperation::Close)
+            .unwrap();
+        assert_eq!(
+            fixture.actions().len(),
+            1,
+            "closing only updates host search data"
+        );
+        assert!(
+            !fixture
+                .recorder
+                .borrow()
+                .search_data
+                .as_ref()
+                .unwrap()
+                .active
+        );
+    }
+
     fn at(x: f32, y: f32) -> ScreenPoint {
         ScreenPoint::new(x, y)
     }
 
     fn expect(event: InputEvent<'_>) -> String {
         format!("{event:?}")
+    }
+
+    #[test]
+    fn close_save_requires_a_clean_document_and_reports_busy_failures() {
+        let mut fixture = fixture();
+        fixture.recorder.borrow_mut().state.modified = true;
+        assert!(
+            fixture
+                .sink
+                .save_document()
+                .unwrap_err()
+                .contains("unsaved")
+        );
+        fixture.recorder.borrow_mut().state.modified = false;
+        fixture.sink.save_document().unwrap();
+        assert_eq!(fixture.sink.modified(), Some(false));
+        assert_eq!(fixture.recorder.borrow().commands, ["save", "save"]);
+        let _busy = fixture.recorder.borrow_mut();
+        assert!(fixture.sink.save_document().unwrap_err().contains("busy"));
     }
 
     #[test]

@@ -184,7 +184,10 @@ whenever the view moves or a tool changes the document; every pointer move, clic
 drag, scroll and key press is forwarded into `TOOL_MANAGER::ProcessEvent` as a
 `TOOL_EVENT`; and **M4's three named tools receive it**. A user can select by
 clicking or dragging a box, move what is selected, draw a wire, undo and redo, and
-save a file KiCad reopens.
+save a file KiCad reopens. Registry-backed menus and toolbars complete M4;
+W and macOS shortcut hints are verified. Stage 5 has begun with GPUI
+Find/Replace over host search data, including normal schematic undo. Window
+close and editor Quit now protect unsaved changes.
 
 The remaining gaps are dialog workflows, shared tools that still require a
 frame, and the host interfaces listed in `06-what-is-missing.md`. Most eeschema
@@ -230,12 +233,13 @@ for every remaining tool.
   as this predicted: `TOOL_MANAGER` needed nothing, `TOOL_EVENT` is a plain value
   type, and `HOST_TOOL_DISPATCHER` is a sibling of `TOOL_DISPATCHER` that drops most
   of its 827 lines because the lines are wx-quirk reconciliation.
-* ~~Giving the tools an `m_frame` they can use.~~ **Done for four of them** —
-  selection, move, wire and a small undo/redo/save control — by growing
-  `SCHEMATIC_HOLDER` into what a schematic tool asks its editor for, and hoisting the
-  undo stacks off `wxFrame`. What remains a non-goal is the *rest* of the roster and
-  every dialog; `06-what-is-missing.md` Stage 4b costs each remaining tool
-  individually.
+* ~~Giving the tools an `m_frame` they can use.~~ **The scoped eeschema frame
+  hoist is done**, through `SCHEMATIC_HOLDER` and undo stacks independent of
+  `wxFrame`. The conversion now covers the eeschema roster except the
+  dialog-only `SCH_DESIGN_BLOCK_CONTROL`; shared tools in `common/`, remaining
+  model seams and dialog workflows are still separate work. See the capability
+  table in `06-what-is-missing.md` rather than inferring availability from tool
+  registration.
 
 ## Related documents
 
