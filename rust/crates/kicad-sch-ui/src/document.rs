@@ -48,6 +48,13 @@ use crate::input::ViewportState;
 /// implementation that cannot produce a frame returns the reason as a string,
 /// which the shell shows in the status bar rather than swallowing.
 pub trait LiveDocument {
+    /// Whether the recorded geometry includes the tool's selection rectangle.
+    /// Native tools decide whether a drag selects an area or moves an item;
+    /// the canvas must not draw its own rectangle over those interactions.
+    fn renders_selection_area(&self) -> bool {
+        false
+    }
+
     /// Point the document at `viewport` and install the resulting geometry in
     /// `renderer`.
     ///

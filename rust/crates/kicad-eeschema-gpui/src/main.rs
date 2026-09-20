@@ -197,6 +197,10 @@ struct SchematicSession {
 }
 
 impl LiveDocument for SchematicSession {
+    fn renders_selection_area(&self) -> bool {
+        true
+    }
+
     fn render(
         &mut self,
         viewport: ViewportState,

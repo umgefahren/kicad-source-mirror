@@ -14,7 +14,7 @@
 //! draw stream, the tessellation cache, the spatial index and — importantly —
 //! the camera. The shell owns everything *around* the drawing: hit testing, the
 //! pointer and keyboard vocabulary, the cursor, the grid, the crosshair and the
-//! selection band.
+//! selection band for viewers. Live native tools draw their own selection area.
 //!
 //! There is deliberately **one** camera, [`kicad_sch_render::Camera`], living
 //! in the renderer. An earlier draft of this module kept a second one in
@@ -106,6 +106,7 @@ pub struct CanvasState {
     /// demonstration geometry — which is a viewer and correct as such: the
     /// camera moves over geometry that cannot change.
     document: Option<SharedDocument>,
+    document_renders_selection_area: bool,
     /// Last pointer position, in window coordinates.
     pointer: Option<Point<Pixels>>,
     press: Option<Press>,
@@ -167,6 +168,7 @@ impl CanvasState {
             tool: Tool::Select,
             sink,
             document: None,
+            document_renders_selection_area: false,
             pointer: None,
             press: None,
             crosshair: true,
@@ -669,6 +671,7 @@ impl CanvasState {
     /// The renderer keeps whatever stream it already has until the first
     /// request succeeds, so attaching a document never blanks the canvas.
     pub fn set_document(&mut self, document: SharedDocument) {
+        self.document_renders_selection_area = document.borrow().renders_selection_area();
         self.document = Some(document);
         self.invalidate_view();
     }
@@ -677,6 +680,15 @@ impl CanvasState {
     /// stream.
     pub fn has_live_document(&self) -> bool {
         self.document.is_some()
+    }
+
+    fn selection_band_press(&self) -> Option<Press> {
+        self.press.filter(|press| {
+            !self.document_renders_selection_area
+                && press.dragging
+                && press.button == PointerButton::Left
+                && self.tool == Tool::Select
+        })
     }
 
     /// Ask the live document for a fresh frame before the next paint.
@@ -1035,7 +1047,7 @@ impl Element for CanvasElement {
                     state.tool,
                     state.crosshair,
                     state.pointer,
-                    state.press,
+                    state.selection_band_press(),
                     state.renderer.clone(),
                 )
             });
@@ -1059,9 +1071,7 @@ impl Element for CanvasElement {
                 }
             }
             if let Some(press) = press {
-                if press.dragging && press.button == PointerButton::Left && tool == Tool::Select {
-                    paint_selection_band(press.origin, press.last, palette.selection, window);
-                }
+                paint_selection_band(press.origin, press.last, palette.selection, window);
             }
             (stats, elapsed)
         });
@@ -1424,6 +1434,47 @@ fn paint_selection_band(from: Point<Pixels>, to: Point<Pixels>, color: Hsla, win
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::document::{LiveDocument, ReplayDocument, shared_document};
+
+    #[test]
+    fn native_item_drags_do_not_get_a_viewer_selection_band() {
+        struct NativeDocument;
+        impl LiveDocument for NativeDocument {
+            fn renders_selection_area(&self) -> bool {
+                true
+            }
+
+            fn render(
+                &mut self,
+                _: ViewportState,
+                _: &mut SchematicRenderer,
+            ) -> Result<(), String> {
+                Ok(())
+            }
+        }
+
+        let mut canvas = CanvasState::demo(CanvasPalette::light());
+        canvas.press = Some(Press {
+            button: PointerButton::Left,
+            origin: point(px(100.), px(100.)),
+            last: point(px(200.), px(180.)),
+            modifiers: Modifiers::default(),
+            dragging: true,
+        });
+        assert!(canvas.selection_band_press().is_some());
+
+        canvas.set_document(shared_document(NativeDocument));
+        assert!(canvas.selection_band_press().is_none());
+        assert!(
+            canvas.press.unwrap().dragging,
+            "the input drag remains active"
+        );
+
+        canvas.set_document(shared_document(ReplayDocument::new(
+            crate::demo::demo_stream(),
+        )));
+        assert!(canvas.selection_band_press().is_some());
+    }
 
     #[test]
     fn one_to_one_is_ninety_six_dots_per_inch() {

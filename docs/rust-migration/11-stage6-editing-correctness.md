@@ -88,6 +88,23 @@ not used as correctness evidence.
 
 ## Automated verification
 
+### Follow-up: selection rectangle during component moves
+
+The canvas previously painted a viewer selection band for every left drag while
+the shell's Select tool was active, including native component moves. Native
+documents now declare that their recorded geometry owns the selection area, so
+the canvas does not add a second rectangle. Replay/demo viewers retain their
+selection band. Native selection and move event dispatch are unchanged.
+
+The regression checks an active left drag with native and replay documents,
+including switching between them. All 138 Rust tests and the doctest pass, and
+the app rebuild passes. Computer Use verified native Move preview and placement
+in a disposable schematic. Its quick drag gesture did not reliably initiate
+native move/area selection, so the transient held-drag overlay is covered by the
+automated regression rather than a mid-drag screenshot.
+
+### Stage 6 baseline
+
 - Native host/ABI: 89 cases, passing.
 - GPUI/input baseline: 136 tests plus one doctest, passing; the added failed-Apply
   interaction test also passes.
