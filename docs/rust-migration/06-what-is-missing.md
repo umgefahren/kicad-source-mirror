@@ -1,116 +1,52 @@
-# What is missing, and what it takes to get an editor
+# What remains, and the implementation history
 
-This document exists because the previous ones describe what was built, and a
-reader can finish them with the wrong impression of what that adds up to.
+**For the current execution order, use [10-remaining-stages.md](10-remaining-stages.md).**
+Stage 6 is [complete and verified](11-stage6-editing-correctness.md).
+Next is **Stage 7 — Real document sidebars**.
+The roadmap then covers shared tools, rendering, document lifecycle, advanced
+workflows, integration, platform behavior, performance, wx GUI separation and
+release qualification, with explicit completion criteria for each stage.
 
-**What exists today is a schematic editor with a working canvas and converted
-eeschema editing tools.** A user can open a real `.kicad_sch`, select items by clicking
-or dragging a box, move them, rotate and mirror and delete them, draw wires,
-place junctions, no-connects, labels and sheet pins, cut and paste, undo and redo
-any of it, and save a file that KiCad reopens.
+## Current scope (2026-09-20)
 
-**Most dialog workflows still need porting**: placing a symbol needs the library
-chooser, editing an item’s properties needs its properties dialog, and ERC needs
-`DIALOG_ERC`. Find/Replace
-now has GPUI controls backed by the host search-data interface. The remaining
-dialogs still use wxWidgets, so **wxWidgets has not been removed** and the wx schematic editor is still the only
-complete way to edit a schematic. The dialogs are Stage 5, and Stage 5 is a
-project rather than a stage.
+Stages 1–4b are delivered within their original scope. Stage 5 supplies the GPUI
+workflows in [09-dialog-workflows.md](09-dialog-workflows.md), including native
+macOS menus and independent workflow windows. The host loads native schematics,
+records painter geometry, drives converted tools and supports native undo/redo
+and save. The new workflows do not use a wx dialog bridge.
 
-> **Stages 1, 2, 3, 4 and 4b are done, and 4b now covers the whole eeschema
-> roster.**
-> `kicad-eeschema-gpui --schematic FILE.kicad_sch` loads the file through
-> eeschema's own reader, keeps the session open for the window's lifetime, asks it
-> for a frame whenever the view moves or the document changes, and hands it every
-> pointer move, click, drag, scroll and key press as a `TOOL_EVENT`.
->
-> Every tool class in `eeschema/tools/` now answers `runsWithoutAFrame()` except
-> `SCH_DESIGN_BLOCK_CONTROL`, which is a library pane and a properties dialog end
-> to end. What still declines is `common/`'s roster — `COMMON_TOOLS`,
-> `COMMON_CONTROL`, `ZOOM_TOOL`, `PICKER_TOOL`, `GROUP_TOOL`, `EMBED_TOOL` — which
-> every KiCad program inherits and which is not eeschema's alone to hoist.
->
-> **Registering is not the same as working, and this document is careful about the
-> difference.** A tool that runs here may still decline every action it owns,
-> because the action *is* a dialog. See
-> [what each converted tool actually does](#what-each-converted-tool-actually-does).
+A complete editor still needs the work assigned below. These are ownership
+summaries, not claims that every historical TODO is still missing.
 
-## Stage 4 completion and Stage 5 progress
+| Remaining area | Planned stage |
+| --- | --- |
+| Live hierarchy, selection properties and document sidebars | 7 |
+| Shared tools and dynamic command/menu state | 8 |
+| Bitmaps, visual tool feedback and the linked golden mismatch | 9 |
+| Document/project operations, recovery and OS-quit protection | 10 |
+| Full document tables, import/export options and native printing | 11 |
+| Symbol editor and design blocks | 12 |
+| Analysis parity and missing ERC providers | 13 |
+| Live PCB updates, cross-probing and suite messaging | 14 |
+| Complete preferences, content providers and package browsing | 15 |
+| Platform conventions, accessibility and localization | 16 |
+| Responsiveness, thread-affinity-safe scheduling and resource lifetime | 17 |
+| Separation from legacy wx GUI/OpenGL presentation dependencies | 18 |
+| Installed application, CI and release qualification | 19 |
 
-**Stage 4 is complete within its defined scope**: host input dispatch (4a), the
-eeschema frame hoist (4b, excluding the dialog-only design-block tool), and
-M4's action-registry menus/toolbars are implemented. W and native macOS hints
-are fixed and verified. This milestone does not claim every shared tool or
-model operation is complete: `DeleteJunction`, body-style selection and units
-provider seams remain listed below, alongside shared-tool frame dependencies.
+The latest verification record is the [Stage 6 report](11-stage6-editing-correctness.md).
+The linked group-87 rendering mismatch remains owned by Stage 9; do not infer a clean linked suite from older
+test counts below. Existing CMake integration and CI remain useful foundations.
 
-**Stage 5 uses GPUI-kit panels backed by native model services.** Coverage now
-includes schematic properties and placement prompts, document exports and
-maintenance, setup and preferences, library editing, simulation and ERC.
-Unsaved window close and editor Quit prompt Save/Discard/Cancel, with failed
-saves keeping the window open. External OS quit cannot be vetoed by this GPUI API.
-See [`09-dialog-workflows.md`](09-dialog-workflows.md) for the complete workflow
-inventory, verification and explicit differences from the wx editor.
-The known linked golden-render mismatch is recorded in
-[`08-action-registry.md`](08-action-registry.md).
+## Reading the historical record
 
-## Exactly where it stops
-
-The eeschema tool roster conversion is complete except for
-`SCH_DESIGN_BLOCK_CONTROL`. The converted tools still decline unported dialogs;
-shared tools in `common/` also retain frame dependencies. See the
-[per-tool table](#what-each-converted-tool-actually-does) for the distinction
-between initialization and usable behavior.
-
-Live menus, toolbars and the command palette now resolve action metadata from
-the C++ registry. This does not expose handler availability or dynamic checked
-state. The [registry milestone report](08-action-registry.md) records the live
-verification and the shortcut, unsaved-close and Find/Replace follow-ups.
-
-So the pipeline now is:
-
-```
-.kicad_sch ──► SCH_HOST ──► RECORDING_GAL ──► stream in memory
-   ▲               ▲                                  │
-   │        TOOL_MANAGER  ◄── HOST_TOOL_DISPATCHER    │
-   │               ▲              ▲             C ABI │
- save              │              │                   │
-   └───────────────┴── viewport ──┴── input ── gpui window ◄────┘
-                                            every view change, and
-                                            every edit a tool makes
-```
-
-A complete editor still needs the remaining host seams, shared-tool conversions,
-functional document panels and dialog workflows (Stage 5).
-
-## What is already done and does not need redoing
-
-Worth being clear about, because it changes the size of what remains:
-
-| | |
-|---|---|
-| `RECORDING_GAL` + `DRAW_STREAM` | Complete. 30 tests in `qa_common` |
-| The draw-stream ABI | Frozen, layout-asserted on both sides, sync-tested |
-| `SCH_HOST` | Loads, renders, enumerates sheets, zooms, and is a `TOOLS_HOLDER`; 52 host-suite tests including ABI, registry, search and undo |
-| The C ABI | 36 entry points, three of them the runtime; implemented, and bound from Rust |
-| `kicad-gal` | Validating decoder, 58 tests |
-| `kicad-sch-render` | Stream → gpui primitives, 89 tests |
-| `kicad-sch-ui` | Shell, 55 unit and 41 interaction tests, plus 2 toolbar checks and a doctest |
-| Action registry | Owned Rust metadata drives live menus, toolbars and the command palette; primary/alternate shortcut names cross the ABI as strings |
-| `kicad-sch-sys` | The ABI linked from Rust; 17 live checks pass, with one known golden-render mismatch |
-| Live re-render | The canvas asks the session for the frame it is about to paint |
-| A non-frame `TOOLS_HOLDER` | Defined rather than undefined: 16 checked casts in eeschema, 7 more entry points in `common/`, 11 tests |
-| `HOST_VIEW_CONTROLS` | A `VIEW_CONTROLS` that is told where the pointer is instead of polling the OS |
-| `HOST_TOOL_DISPATCHER` | Host input → `TOOL_EVENT`, wx-free; 32 tests in `qa_common` |
-| Input end to end | gpui → ABI → `TOOL_MANAGER`, with the key names mapped to `WXK_*` in one place |
-| `SCHEMATIC_HOLDER` | Upstream's own bridge class, grown into what a schematic tool needs from whatever is editing the schematic. Implemented by `SCH_BASE_FRAME` and by `SCH_HOST` |
-| `UNDO_REDO_HOLDER` | The undo and redo stacks, off `wxFrame`; 4 tests in `qa_common` |
-| `SCH_UNDO_REDO` | `SaveCopyInUndoList`, `PutDataInPreviousState`, `Undo`, `Redo`, `Rollback`, off `SCH_EDIT_FRAME` and shared with it; 6 tests, the first eeschema's undo has had |
-| Selection | `SCH_SELECTION_TOOL` runs on the host: click, drag box, clear, Escape; 7 tests |
-| Move and wire | `SCH_MOVE_TOOL` and `SCH_LINE_WIRE_BUS_TOOL` run; a drag moves, a wire draws, both undoable; 6 tests |
-| Save | `ksch_session_save`, and `SCH_HOST::Save()` through `SCH_IO_KICAD_SEXPR`; a saved file reopens and renders |
-
-The rendering half is genuinely finished, on all 466 schematics in the tree.
+The sections below document what each stage found and implemented **at the time**.
+Per-tool tables, test counts, “not yet” statements and estimates are historical,
+not the current backlog. For example, Stage 5 has since implemented symbol
+choosing, properties, ERC, graphics import and page-settings undo that the Stage
+4b narrative describes as unavailable. Check current code before reviving a TODO.
+The authoritative allocation of remaining work is the roadmap's
+[known-gap ownership table](10-remaining-stages.md#known-gap-ownership).
 
 ---
 
@@ -1044,13 +980,8 @@ the four were wrong. The fourth — the undo limit — had been wrong *in the GU
 however long the shadowing declaration has been there, and only surfaced because
 this stage moved the member it shadowed.
 
-Stage 5 is a separate project, and it is now the thing standing between this and an
-editor someone would choose: 124 dialog sources, and most of the 61 frame methods
-`SCH_EDITOR_CONTROL` wants are a dialog each.
-
-The branch now provides rendering, host input and the converted eeschema editing
-tools, plus registry-backed command presentation. Dialogs, shared-tool frame
-dependencies and the remaining model seams still limit it. Rotate and delete
-and Find/Replace are available, as are the symbol, properties and ERC workflows
-described in [the dialog report](09-dialog-workflows.md). See [the earlier follow-up report](08-action-registry.md#follow-up-implementation)
-for the next UI work, and the interface additions listed above for host work.
+The historical estimates above describe the original bring-up. Stage 5's delivered
+work and remaining differences are recorded in [09-dialog-workflows.md](09-dialog-workflows.md).
+Continue with [Stages 6–19](10-remaining-stages.md), starting with editing
+correctness and real document sidebars; the earlier per-tool estimates are not
+an alternative implementation order.

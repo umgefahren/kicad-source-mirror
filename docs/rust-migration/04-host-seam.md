@@ -1,5 +1,13 @@
 # 04 — The host seam: `SCH_HOST`, the C ABI, and what is not done yet
 
+> **Current planning:** [10-remaining-stages.md](10-remaining-stages.md) defines
+> Stages 6–19 and their execution order. This document records an earlier survey,
+> implementation milestone or reuse guidance; historical gaps and proposed
+> approaches must be checked against the Stage 5 coverage and
+> [completed Stage 6 verification](11-stage6-editing-correctness.md) before use.
+> Stage 7 (real document sidebars) is next.
+
+
 This document covers the C++ side of the boundary between eeschema's document
 model and the Rust UI: what was built and what it is verified to do.
 

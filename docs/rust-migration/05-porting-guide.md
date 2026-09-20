@@ -1,5 +1,13 @@
 # Porting another KiCad editor's UI to gpui + wgpu
 
+> **Current planning:** [10-remaining-stages.md](10-remaining-stages.md) defines
+> Stages 6–19 and their execution order. This document records an earlier survey,
+> implementation milestone or reuse guidance; historical gaps and proposed
+> approaches must be checked against the Stage 5 coverage and
+> [completed Stage 6 verification](11-stage6-editing-correctness.md) before use.
+> Stage 7 (real document sidebars) is next.
+
+
 Written for whoever does pcbnew next. It is not a description of what we built —
 that is `01-plan.md` — it is the set of things we wish we had known on the first
 day, including the two designs we got wrong and had to redo.

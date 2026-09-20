@@ -1,5 +1,18 @@
 # Replacing eeschema's UI layer with gpui-kit + wgpu
 
+## Current execution plan
+
+This document preserves the architecture and original M1–M6 milestones. For the
+current numbered implementation stages, use [10-remaining-stages.md](10-remaining-stages.md).
+Stages 1–5 are the delivered baseline described by the history and dialog report;
+[Stage 6 editing correctness](11-stage6-editing-correctness.md) is now complete.
+Stages 7–19 define the remaining work. **Next is Stage 7: real document sidebars.**
+Document lifecycle follows those priorities.
+
+M5/M6 below are testing/build milestones, not synonyms for Stage 5/Stage 6.
+Testing runs throughout the new stages, existing build integration is retained,
+and aggregate packaging/CI qualification is Stage 19.
+
 ## Goal
 
 Remove wxWidgets and OpenGL from the schematic editor's **presentation layer**, and
@@ -140,7 +153,7 @@ redraw of an unchanged document touches no retained geometry at all. This is
 verified — 200 consecutive frames over a static schematic leave the recorded
 group data byte-identical, with a frame body of four commands.
 
-## Milestones
+## Original architecture milestones
 
 | # | Milestone | Depends on |
 |---|-----------|------------|
@@ -148,7 +161,7 @@ group data byte-identical, with a frame body of four commands.
 | M2 | `RECORDING_GAL` + C ABI + a `sch-dump` tool that emits a draw stream from a real `.kicad_sch` | C++ build |
 | M3 | Live linkage: Rust loads the host library, renders live, forwards input into `TOOL_MANAGER` | M1, M2 |
 | M4 | Menus and toolbars generated from the action registry; select / move / wire tools driving the C++ tools | M3 |
-| — | *Done. Live menus, toolbars and the command palette resolve metadata and shortcuts from the C++ action registry. Select, move and wire run without a `wxFrame`, plus undo, redo and save. Dialog workflows remain deferred.* | |
+| — | *Done. Live menus, toolbars and the command palette resolve metadata and shortcuts from the C++ action registry. Select, move and wire run without a `wxFrame`, plus undo, redo and save. Dialog workflows were deferred at that milestone; Stage 5 now supplies the workflows in `09-dialog-workflows.md`.* | |
 | M5 | Tests: C++ unit tests for `RECORDING_GAL`; Rust decoder and golden-image tests; headless UI interaction tests | M1–M4 |
 | M6 | CMake/Corrosion integration, CI, documentation | M5 |
 
@@ -185,9 +198,9 @@ drag, scroll and key press is forwarded into `TOOL_MANAGER::ProcessEvent` as a
 `TOOL_EVENT`; and **M4's three named tools receive it**. A user can select by
 clicking or dragging a box, move what is selected, draw a wire, undo and redo, and
 save a file KiCad reopens. Registry-backed menus and toolbars complete M4;
-W and macOS shortcut hints are verified. Stage 5 has begun with GPUI
-Find/Replace over host search data, including normal schematic undo. Window
-close and editor Quit now protect unsaved changes.
+W and macOS shortcut hints are verified. GPUI Find/Replace uses host search data
+and normal schematic undo. Window close and editor Quit protect unsaved changes;
+full document lifecycle and OS-termination handling are assigned to Stage 10.
 
 Stage 5 rebuilds the schematic dialog workflows in GPUI-kit: typed properties,
 document operations, libraries, simulation, preferences and ERC. Native model
@@ -223,14 +236,16 @@ intertwined". Growing that, rather than inventing something, is what M4 did.
 and the per-tool conversions are mechanical. `06-what-is-missing.md` has the count
 for every remaining tool.
 
-## Explicit non-goals for this step
+## Original bring-up scope and continuing boundaries
 
 * Reimplementing the `.kicad_sch` / `.kicad_sym` file format in Rust. File I/O
   stays in C++.
-* Porting the 124 eeschema wx dialog sources. The initial shell covers the canvas, menus,
-  toolbars, docks and status bar; dialogs are bridged or deferred, and the
-  survey records which tool actions depend on one.
-* Touching pcbnew, gerbview, the 3D viewer or the project manager.
+* Dialogs were outside the initial M1–M4 bring-up. Stage 5 subsequently rebuilt
+  the schematic workflow families in GPUI, without a wx dialog bridge. Remaining
+  workflow parity is explicitly assigned to Stages 11–16 of the current roadmap.
+* Porting the UIs of pcbnew, gerbview, the 3D viewer or the project manager.
+  Shared-tool fixes and suite integration may touch their adapters and tests;
+  those changes do not expand this work into another editor port.
 * Removing wxBase. wxWidgets' *GUI* layer leaves the schematic editor's
   presentation path; `wxString` and friends remain as utility types throughout
   the C++ core and are a separate, later migration.
@@ -248,6 +263,8 @@ for every remaining tool.
 
 ## Related documents
 
+* `10-remaining-stages.md` — authoritative remaining stages, order and acceptance criteria
+* `09-dialog-workflows.md` — delivered Stage 5 behavior and remaining limits
 * `00-architecture-survey.md` — layer map, GAL interface, wx coupling, fixtures
 * `02-gpui-kit-cookbook.md` — how to build against gpui-kit, verified
 * `03-build-notes.md` — how to configure and build the C++ tree here

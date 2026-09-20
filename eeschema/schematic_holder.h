@@ -29,6 +29,8 @@ class KIID;
 class PICKED_ITEMS_LIST;
 class PROGRESS_REPORTER;
 class SCH_COMMIT;
+class SCH_SYMBOL;
+class TOOL_MANAGER;
 class SCH_ITEM;
 class SCH_RENDER_SETTINGS;
 class SCH_SCREEN;
@@ -150,6 +152,13 @@ public:
      * nothing at all. Both are SCHEMATIC_HOLDERs by inheritance and neither is this.
      */
     virtual bool IsSchematicEditor() const { return false; }
+
+    /// Native junction removal and wire merging, staged in the caller's transaction.
+    void DeleteJunction( SCH_COMMIT* aCommit, SCH_ITEM* aJunction );
+
+    /// Change body style, joining an active placement/move transaction when supplied.
+    void SelectBodyStyle( TOOL_MANAGER* aToolManager, SCH_SYMBOL* aSymbol,
+                          int aBodyStyle, SCH_COMMIT* aCommit = nullptr );
 
     // ------------------------------------------------------------------- editing
 

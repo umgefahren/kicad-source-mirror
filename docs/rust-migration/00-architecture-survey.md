@@ -1,5 +1,13 @@
 # Eeschema Architecture Survey — Rust (gpui-kit + wgpu) Migration
 
+> **Current planning:** [10-remaining-stages.md](10-remaining-stages.md) defines
+> Stages 6–19 and their execution order. This document records an earlier survey,
+> implementation milestone or reuse guidance; historical gaps and proposed
+> approaches must be checked against the Stage 5 coverage and
+> [completed Stage 6 verification](11-stage6-editing-correctness.md) before use.
+> Stage 7 (real document sidebars) is next.
+
+
 **Repo:** `/home/user/kicad-source-mirror`
 **Branch at survey time:** `claude/bold-lamport-ireol3`, HEAD `6dd893f7` ("Document the schematic connectivity engine")
 **Date:** 2026-09-18

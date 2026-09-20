@@ -25,6 +25,7 @@
 
 class EDA_ITEM;
 class SCHEMATIC_HOLDER;
+class SCH_COMMIT;
 class SCH_BASE_FRAME;
 class SCH_EDIT_FRAME;
 class SYMBOL_EDIT_FRAME;
@@ -70,6 +71,9 @@ public:
     int InteractiveDelete( const TOOL_EVENT& aEvent );
 
 protected:
+    /// Await placement without nesting a wx event loop in a non-wx frontend.
+    bool MoveWithCommit( SCH_COMMIT* aCommit );
+
     /**
      * Whether this tool can run when the thing editing the schematic is not a wxFrame.
      *

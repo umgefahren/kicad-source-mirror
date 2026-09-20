@@ -573,6 +573,10 @@ int SCH_MOVE_TOOL::Main( const TOOL_EVENT& aEvent )
             aEvent.SynchronousState()->store( STS_FINISHED );
         else
             aEvent.SynchronousState()->store( STS_CANCELLED );
+
+        if( !m_frame )
+            m_toolMgr->PostEvent( TOOL_EVENT( TC_MESSAGE, TA_NONE,
+                                             "eeschema.moveTransactionFinished" ) );
     }
     else
     {
@@ -1959,8 +1963,7 @@ bool SCH_MOVE_TOOL::handleMoveToolActions( const TOOL_EVENT* aEvent, SCH_COMMIT*
 
             if( symbol && symbol->GetBodyStyle() != bodyStyle )
             {
-                if( m_frame )
-                    m_frame->SelectBodyStyle( symbol, bodyStyle, aCommit );
+                m_editor->SelectBodyStyle( m_toolMgr, symbol, bodyStyle, aCommit );
                 m_toolMgr->PostAction( ACTIONS::refreshPreview );
             }
         }

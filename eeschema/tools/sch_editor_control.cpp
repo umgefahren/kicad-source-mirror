@@ -3188,7 +3188,7 @@ int SCH_EDITOR_CONTROL::Paste( const TOOL_EVENT& aEvent )
             selection.SetReferencePoint( item->GetPosition() );
         }
 
-        if( m_toolMgr->RunSynchronousAction( SCH_ACTIONS::move, &commit ) )
+        if( MoveWithCommit( &commit ) )
         {
             // Pushing the commit will update the connectivity.
             commit.Push( _( "Paste" ) );

@@ -27,6 +27,7 @@
 #include <tool/tool_menu.h>
 #include <tool/actions.h>
 #include <tools/sch_selection_tool.h>
+#include <tools/sch_actions.h>
 #include <sch_edit_frame.h>
 #include <sch_base_frame.h>
 #include <sch_view.h>
@@ -40,6 +41,29 @@
 #include <view/view_controls.h>
 
 #include <schematic.h>
+
+
+template <class T>
+bool SCH_TOOL_BASE<T>::MoveWithCommit( SCH_COMMIT* aCommit )
+{
+    if( m_frame )
+        return m_toolMgr->RunSynchronousAction( SCH_ACTIONS::move, aCommit );
+
+    // Keep the transaction on this coroutine's stack while GPUI continues delivering
+    // input. RunSynchronousAction pumps wxYield, which cannot pump a GPUI window.
+    Activate();
+    std::atomic<SYNCRONOUS_TOOL_STATE> state = STS_FINISHED;
+    TOOL_EVENT move = SCH_ACTIONS::move.MakeEvent();
+    move.SetCommit( aCommit );
+    move.SetSynchronous( &state );
+    m_toolMgr->ProcessEvent( move );
+    while( state == STS_RUNNING )
+    {
+        if( !Wait( TOOL_EVENT( TC_MESSAGE, TA_NONE, "eeschema.moveTransactionFinished" ) ) )
+            return false;
+    }
+    return state == STS_FINISHED;
+}
 
 
 template <class T>

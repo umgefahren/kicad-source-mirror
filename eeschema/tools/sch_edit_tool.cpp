@@ -2318,6 +2318,22 @@ int SCH_EDIT_TOOL::RepeatDrawItem( const TOOL_EVENT& aEvent )
     if( sourceItems.empty() || !schematic )
         return 0;
 
+    for( const auto& item : sourceItems )
+    {
+        if( !m_frame && item->Type() == SCH_SHEET_T )
+        {
+            SCH_SHEET_LIST hierarchy = schematic->Hierarchy();
+            SCH_SHEET_LIST source( static_cast<SCH_SHEET*>( item.get() ) );
+            const wxString destination = m_editor->GetScreen()->GetFileName();
+            if( !destination.empty() && hierarchy.TestForRecursion( source, destination ) )
+            {
+                m_toolMgr->GetToolHolder()->DisplayToolMsg(
+                        _( "Cannot repeat a sheet into its own hierarchy." ) );
+                return 0;
+            }
+        }
+    }
+
     m_toolMgr->RunAction( ACTIONS::selectionClear );
 
     SCH_SELECTION_TOOL* selectionTool = m_toolMgr->GetTool<SCH_SELECTION_TOOL>();
@@ -2411,26 +2427,39 @@ int SCH_EDIT_TOOL::RepeatDrawItem( const TOOL_EVENT& aEvent )
                 static_cast<SCH_SYMBOL*>( newItem )->ClearAnnotation( nullptr, false );
                 NULL_REPORTER reporter;
 
-                // Annotation is still the frame's; it walks the hierarchy and reports through
-                // the editor. Without a window the copy is left unannotated rather than
-                // carrying the reference it was cloned from.
                 if( m_frame )
                 {
                     m_frame->AnnotateSymbols( &commit, ANNOTATE_SELECTION, annotateOrder, annotateAlgo,
                                               true /* recursive */, annotateStartNum, false, false, false,
                                               reporter, SYMBOL_FILTER_NON_POWER );
                 }
+                else
+                {
+                    // Use the native reference allocator for every instance of the repeated
+                    // symbol, as placement does. The enclosing commit owns the new symbol.
+                    SCH_SHEET_LIST hierarchy = schematic->Hierarchy();
+                    SCH_REFERENCE_LIST all, repeated, existing;
+                    hierarchy.GetSymbols( all, SYMBOL_FILTER_ALL );
+                    for( size_t i = 0; i < all.GetCount(); ++i )
+                        ( all[i].GetSymbol() == newItem ? repeated : existing ).AddItem( all[i] );
+                    repeated.SetRefDesTracker( projSettings.m_refDesTracker );
+                    repeated.ReannotateByOptions( annotateOrder, annotateAlgo, annotateStartNum,
+                                                  existing, false, &hierarchy );
+                    repeated.UpdateAnnotation();
+                    schematic->CurrentSheet().UpdateAllScreenReferences();
+                }
             }
 
             // Annotation clears the selection so re-add the item
             m_toolMgr->RunAction<EDA_ITEM*>( ACTIONS::selectItem, newItem );
 
-            restore_state = !m_toolMgr->RunSynchronousAction( SCH_ACTIONS::move, &commit );
+            restore_state = !MoveWithCommit( &commit );
         }
 
         if( restore_state )
         {
             commit.Revert();
+            return 0;
         }
         else
         {
@@ -2553,12 +2582,8 @@ int SCH_EDIT_TOOL::DoDelete( const TOOL_EVENT& aEvent )
         if( !junction )
             continue;
 
-        // SCH_EDIT_FRAME::DeleteJunction is model work — it removes the junction and merges
-        // the wires it was holding apart — but it lives on the frame rather than on the
-        // interface. Without one, the deletion still happens and a now-pointless junction is
-        // left behind for the next cleanup to find.
-        if( ( junction->HasFlag( STRUCT_DELETED ) || !screen->IsExplicitJunction( point ) ) && m_frame )
-            m_frame->DeleteJunction( &commit, junction );
+        if( junction->HasFlag( STRUCT_DELETED ) || !screen->IsExplicitJunction( point ) )
+            m_editor->DeleteJunction( &commit, junction );
     }
 
     commit.Push( _( "Delete" ) );
@@ -2993,19 +3018,12 @@ int SCH_EDIT_TOOL::CycleBodyStyle( const TOOL_EVENT& aEvent )
     SCH_SYMBOL* symbol = (SCH_SYMBOL*) selection.Front();
     SCH_COMMIT  commit( m_toolMgr );
 
-    if( !symbol->IsNew() )
-        commit.Modify( symbol, m_editor->GetScreen() );
-
     int nextBodyStyle = symbol->GetBodyStyle() + 1;
 
     if( nextBodyStyle > symbol->GetBodyStyleCount() )
         nextBodyStyle = 1;
 
-    // SCH_EDIT_FRAME::SelectBodyStyle is model work — it stages the symbol and sets the body
-    // style — but it lives on the frame rather than on the interface. Without one the symbol
-    // keeps the body style it had.
-    if( m_frame )
-        m_frame->SelectBodyStyle( symbol, nextBodyStyle );
+    m_editor->SelectBodyStyle( m_toolMgr, symbol, nextBodyStyle, &commit );
 
     if( symbol->IsNew() )
         m_toolMgr->PostAction( ACTIONS::refreshPreview );

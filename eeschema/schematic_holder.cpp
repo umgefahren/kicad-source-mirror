@@ -19,6 +19,13 @@
 
 #include <schematic_holder.h>
 
+#include <core/kicad_algo.h>
+#include <sch_commit.h>
+#include <sch_line.h>
+#include <sch_symbol.h>
+#include <tool/tool_manager.h>
+#include <tool/actions.h>
+#include <tools/sch_selection_tool.h>
 #include <sch_item.h>
 #include <sch_label.h>
 #include <sch_screen.h>
@@ -68,4 +75,111 @@ void SCHEMATIC_HOLDER::AutoRotateItem( SCH_SCREEN* aScreen, SCH_ITEM* aItem )
             }
         }
     }
+}
+
+
+void SCHEMATIC_HOLDER::DeleteJunction( SCH_COMMIT* aCommit, SCH_ITEM* aJunction )
+{
+    SCH_SCREEN*         screen = GetScreen();
+    SCH_SELECTION_TOOL* selectionTool = GetSelectionTool();
+
+    aJunction->SetFlags( STRUCT_DELETED );
+    RemoveFromScreen( aJunction, screen );
+    aCommit->Removed( aJunction, screen );
+
+    /// Note that std::list or similar is required here as we may insert values in the
+    /// loop below.  This will invalidate iterators in a std::vector or std::deque
+    std::list<SCH_LINE*> lines;
+
+    for( SCH_ITEM* item : screen->Items().Overlapping( SCH_LINE_T, aJunction->GetPosition() ) )
+    {
+        SCH_LINE* line = static_cast<SCH_LINE*>( item );
+
+        if( ( line->IsWire() || line->IsBus() )
+                && line->IsEndPoint( aJunction->GetPosition() )
+                && !( line->GetEditFlags() & STRUCT_DELETED ) )
+        {
+            lines.push_back( line );
+        }
+    }
+
+    alg::for_all_pairs( lines.begin(), lines.end(),
+            [&]( SCH_LINE* firstLine, SCH_LINE* secondLine )
+            {
+                if( ( firstLine->GetEditFlags() & STRUCT_DELETED )
+                        || ( secondLine->GetEditFlags() & STRUCT_DELETED )
+                        || firstLine->GetLayer() != secondLine->GetLayer()
+                        || !secondLine->IsParallel( firstLine ) )
+                {
+                    return;
+                }
+
+                // Remove identical lines
+                if( firstLine->IsEndPoint( secondLine->GetStartPoint() )
+                        && firstLine->IsEndPoint( secondLine->GetEndPoint() ) )
+                {
+                    firstLine->SetFlags( STRUCT_DELETED );
+                    return;
+                }
+
+                // Try to merge the remaining lines
+                if( SCH_LINE* new_line = secondLine->MergeOverlap( screen, firstLine, false ) )
+                {
+                    firstLine->SetFlags( STRUCT_DELETED );
+                    secondLine->SetFlags( STRUCT_DELETED );
+                    AddToScreen( new_line, screen );
+                    aCommit->Added( new_line, screen );
+
+                    if( new_line->IsSelected() )
+                        selectionTool->AddItemToSel( new_line, true /*quiet mode*/ );
+
+                    lines.push_back( new_line );
+                }
+            } );
+
+    for( SCH_LINE* line : lines )
+    {
+        if( line->GetEditFlags() & STRUCT_DELETED )
+        {
+            if( line->IsSelected() )
+                selectionTool->RemoveItemFromSel( line, true /*quiet mode*/ );
+
+            RemoveFromScreen( line, screen );
+            aCommit->Removed( line, screen );
+        }
+    }
+}
+
+void SCHEMATIC_HOLDER::SelectBodyStyle( TOOL_MANAGER* aToolManager, SCH_SYMBOL* aSymbol, int aBodyStyle, SCH_COMMIT* aCommit )
+{
+    if( !aSymbol || !aSymbol->GetLibSymbolRef() )
+        return;
+
+    const int bodyStyleCount = aSymbol->GetLibSymbolRef()->GetBodyStyleCount();
+    const int currentBodyStyle = aSymbol->GetBodyStyle();
+
+    if( bodyStyleCount <= 1 || aBodyStyle < 1 || currentBodyStyle == aBodyStyle )
+        return;
+
+    if( aBodyStyle > bodyStyleCount )
+        aBodyStyle = bodyStyleCount;
+
+    if( currentBodyStyle == aBodyStyle )
+        return;
+
+    SCH_COMMIT  localCommit( aToolManager );
+    SCH_COMMIT* commit = aCommit ? aCommit : &localCommit;
+
+    // A symbol with edit flags was already staged by the command in progress
+    if( !aSymbol->GetEditFlags() )
+        commit->Modify( aSymbol, GetScreen() );
+
+    aSymbol->SetBodyStyle( aBodyStyle );
+
+    // If selected make sure all the now-included pins are selected
+    if( aSymbol->IsSelected() )
+        aToolManager->RunAction<EDA_ITEM*>( ACTIONS::selectItem, aSymbol );
+
+    if( !localCommit.Empty() )
+        localCommit.Push( _( "Change Body Style" ) );
 }

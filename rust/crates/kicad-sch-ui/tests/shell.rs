@@ -2216,6 +2216,56 @@ fn item_properties_edits_apply_and_close_restores_canvas(cx: &mut TestAppContext
     assert_eq!(active_tool(cx, &harness), Tool::DrawWire);
 }
 
+struct RejectedPropertiesSink(ItemPropertiesSink);
+impl kicad_sch_ui::input::InputSink for RejectedPropertiesSink {
+    fn handle(&mut self, event: ShellEvent) {
+        self.0.handle(event);
+    }
+    fn item_properties(&mut self) -> Result<kicad_sch_ui::properties::ItemProperties, String> {
+        self.0.item_properties()
+    }
+    fn apply_properties(
+        &mut self,
+        data: &kicad_sch_ui::properties::ItemProperties,
+    ) -> Result<(), String> {
+        self.0.0.borrow_mut().push(data.clone());
+        Err("Item changed; reopen Properties before applying edits".into())
+    }
+}
+
+#[gpui_kit::test]
+fn failed_property_apply_preserves_draft_and_keeps_shortcuts_in_dialog(cx: &mut TestAppContext) {
+    let harness = open(cx);
+    let requests = Rc::new(RefCell::new(Vec::new()));
+    let events = Rc::new(RefCell::new(Vec::new()));
+    cx.update(|cx| {
+        harness
+            .shell
+            .read(cx)
+            .canvas()
+            .clone()
+            .update(cx, |canvas, _| {
+                canvas.set_sink(shared_sink(RejectedPropertiesSink(ItemPropertiesSink(
+                    requests.clone(),
+                    events.clone(),
+                ))));
+            });
+    });
+    press(cx, &harness, "e");
+    frame(cx, &harness);
+    press(cx, &harness, "w");
+    click(cx, &harness, "properties-apply");
+    assert_eq!(requests.borrow().len(), 1);
+    assert!(requests.borrow()[0].entries[0].value.contains('w'));
+    click(cx, &harness, "properties-apply");
+    assert_eq!(requests.borrow().len(), 2);
+    assert_eq!(requests.borrow()[0], requests.borrow()[1]);
+    assert_eq!(active_tool(cx, &harness), Tool::Select);
+    click(cx, &harness, "properties-close");
+    press(cx, &harness, "w");
+    assert_eq!(active_tool(cx, &harness), Tool::DrawWire);
+}
+
 #[gpui_kit::test]
 fn properties_text_editing_shortcuts_do_not_reach_schematic(cx: &mut TestAppContext) {
     let harness = open(cx);

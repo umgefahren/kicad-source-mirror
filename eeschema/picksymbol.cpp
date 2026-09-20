@@ -199,33 +199,7 @@ void SCH_EDIT_FRAME::SelectUnit( SCH_SYMBOL* aSymbol, int aUnit, SCH_COMMIT* aCo
 
 void SCH_EDIT_FRAME::SelectBodyStyle( SCH_SYMBOL* aSymbol, int aBodyStyle, SCH_COMMIT* aCommit )
 {
-    if( !aSymbol || !aSymbol->GetLibSymbolRef() )
-        return;
-
-    const int bodyStyleCount = aSymbol->GetLibSymbolRef()->GetBodyStyleCount();
-    const int currentBodyStyle = aSymbol->GetBodyStyle();
-
-    if( bodyStyleCount <= 1 || currentBodyStyle == aBodyStyle )
-        return;
-
-    if( aBodyStyle > bodyStyleCount )
-        aBodyStyle = bodyStyleCount;
-
-    SCH_COMMIT  localCommit( m_toolManager );
-    SCH_COMMIT* commit = aCommit ? aCommit : &localCommit;
-
-    // A symbol with edit flags was already staged by the command in progress
-    if( !aSymbol->GetEditFlags() )
-        commit->Modify( aSymbol, GetScreen() );
-
-    aSymbol->SetBodyStyle( aBodyStyle );
-
-    // If selected make sure all the now-included pins are selected
-    if( aSymbol->IsSelected() )
-        m_toolManager->RunAction<EDA_ITEM*>( ACTIONS::selectItem, aSymbol );
-
-    if( !localCommit.Empty() )
-        localCommit.Push( _( "Change Body Style" ) );
+    SCHEMATIC_HOLDER::SelectBodyStyle( m_toolManager, aSymbol, aBodyStyle, aCommit );
 }
 
 

@@ -1273,8 +1273,8 @@ int SCH_SELECTION_TOOL::Main( const TOOL_EVENT& aEvent )
                 SCH_SYMBOL* symbol = dynamic_cast<SCH_SYMBOL*>( m_selection.Front() );
                 int bodyStyle = ( *evt->GetCommandId() - ID_POPUP_SCH_SELECT_BODY_STYLE ) + 1;
 
-                if( symbol && menuFrame && symbol->GetBodyStyle() != bodyStyle )
-                    menuFrame->SelectBodyStyle( symbol, bodyStyle );
+                if( symbol && symbol->GetBodyStyle() != bodyStyle )
+                    m_editor->SelectBodyStyle( m_toolMgr, symbol, bodyStyle );
             }
             else if( *evt->GetCommandId() >= ID_POPUP_SCH_ALT_PIN_FUNCTION
                      && *evt->GetCommandId() <= ID_POPUP_SCH_ALT_PIN_FUNCTION_END )

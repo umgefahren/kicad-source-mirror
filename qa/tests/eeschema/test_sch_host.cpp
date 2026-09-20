@@ -43,6 +43,8 @@
 #include <sch_host/sch_host_abi.h>
 #include <sch_commit.h>
 #include <sch_label.h>
+#include <sch_junction.h>
+#include <lib_symbol.h>
 #include <sch_line.h>
 #include <sch_screen.h>
 #include <schematic.h>
@@ -76,6 +78,7 @@
 #include <tool/zoom_tool.h>
 #include <tools/ee_graphic_tool.h>
 #include <tools/sch_align_tool.h>
+#include <tools/sch_actions.h>
 #include <tools/sch_design_block_control.h>
 #include <tools/sch_drawing_tools.h>
 #include <tools/sch_edit_table_tool.h>
@@ -1494,6 +1497,252 @@ std::unique_ptr<SCH_HOST> hostForMoving()
 /**
  * The move tool initialises here, which no editing tool did before.
  */
+BOOST_AUTO_TEST_CASE( JunctionDeletionMergesWiresAndBusesAndRoundTrips )
+{
+    for( auto layer : { LAYER_WIRE, LAYER_BUS } )
+    {
+        const auto directory = std::filesystem::temp_directory_path()
+                / ( "kicad_stage6_junction_" + std::to_string( ::getpid() ) );
+        std::filesystem::create_directories( directory );
+        const auto file = directory / "junction.kicad_sch";
+        std::filesystem::copy_file( eeschemaFixture( "erc_label_test.kicad_sch" ).ToStdString(),
+                                   file, std::filesystem::copy_options::overwrite_existing );
+        SCH_HOST host;
+        BOOST_REQUIRE( host.LoadFile( wxString::FromUTF8( file.string() ) ) );
+        const VECTOR2I center( 100000, 100000 );
+        auto* junction = new SCH_JUNCTION( center );
+        host.AddToScreen( junction );
+        for( VECTOR2I delta : { VECTOR2I( -10000, 0 ), VECTOR2I( 10000, 0 ),
+                                VECTOR2I( 0, -10000 ), VECTOR2I( 0, 10000 ) } )
+        {
+            auto* line = new SCH_LINE( center, layer );
+            line->SetEndPoint( center + delta );
+            host.AddToScreen( line );
+        }
+        const wxString horizontal = layer == LAYER_BUS ? "H[0..1]" : "H";
+        const wxString vertical = layer == LAYER_BUS ? "V[0..1]" : "V";
+        auto* hLabel = new SCH_LABEL( center - VECTOR2I( 10000, 0 ), horizontal );
+        auto* vLabel = new SCH_LABEL( center - VECTOR2I( 0, 10000 ), vertical );
+        host.AddToScreen( hLabel );
+        host.AddToScreen( vLabel );
+        BOOST_REQUIRE( host.RecalculateConnections( nullptr, NO_CLEANUP ) );
+        BOOST_REQUIRE( hLabel->GetConnectionName() );
+        BOOST_REQUIRE( vLabel->GetConnectionName() );
+        BOOST_CHECK_EQUAL( *hLabel->GetConnectionName(), *vLabel->GetConnectionName() );
+        auto count = [&]( SCH_HOST& target )
+        {
+            int lines = 0;
+            for( SCH_ITEM* item : target.GetScreen()->Items().Overlapping( SCH_LINE_T, center ) )
+                if( item->GetLayer() == layer ) ++lines;
+            return lines;
+        };
+        BOOST_REQUIRE_EQUAL( count( host ), 4 );
+        host.GetToolManager()->RunAction<EDA_ITEM*>( ACTIONS::selectItem, junction );
+        host.GetToolManager()->RunAction( ACTIONS::doDelete );
+        BOOST_CHECK( !host.GetScreen()->GetItem( center, 0, SCH_JUNCTION_T ) );
+        BOOST_CHECK_EQUAL( count( host ), 2 );
+        BOOST_REQUIRE( hLabel->GetConnectionName() );
+        BOOST_REQUIRE( vLabel->GetConnectionName() );
+        BOOST_CHECK( *hLabel->GetConnectionName() != *vLabel->GetConnectionName() );
+        if( layer == LAYER_BUS )
+        {
+            BOOST_CHECK_EQUAL( hLabel->GetBusMemberNames().size(), 2 );
+            BOOST_CHECK_EQUAL( vLabel->GetBusMemberNames().size(), 2 );
+        }
+        BOOST_REQUIRE_EQUAL( host.GetUndoCommandCount(), 1 );
+        BOOST_REQUIRE( host.Undo() );
+        BOOST_CHECK( host.GetScreen()->GetItem( center, 0, SCH_JUNCTION_T ) );
+        BOOST_CHECK_EQUAL( count( host ), 4 );
+        BOOST_CHECK_EQUAL( *hLabel->GetConnectionName(), *vLabel->GetConnectionName() );
+        BOOST_REQUIRE( host.Redo() );
+        BOOST_CHECK_EQUAL( count( host ), 2 );
+        BOOST_REQUIRE( host.Save() );
+        SCH_HOST reopened;
+        BOOST_REQUIRE( reopened.LoadFile( wxString::FromUTF8( file.string() ) ) );
+        BOOST_CHECK_EQUAL( count( reopened ), 2 );
+        BOOST_CHECK( !reopened.GetScreen()->GetItem( center, 0, SCH_JUNCTION_T ) );
+        for( SCH_ITEM* item : reopened.GetScreen()->Items().Overlapping( SCH_LINE_T, center ) )
+        {
+            auto* line = static_cast<SCH_LINE*>( item );
+            if( line->GetLayer() != layer ) continue;
+            const auto axis = line->IsEndPoint( center + VECTOR2I( 10000, 0 ) )
+                    ? VECTOR2I( 10000, 0 ) : VECTOR2I( 0, 10000 );
+            BOOST_CHECK( line->IsEndPoint( center - axis ) );
+            BOOST_CHECK( line->IsEndPoint( center + axis ) );
+        }
+        std::filesystem::remove_all( directory );
+    }
+}
+
+BOOST_AUTO_TEST_CASE( JunctionCleanupNeverDeduplicatesAWireAgainstABus )
+{
+    auto host = hostForMoving();
+    const VECTOR2I center( 100000, 100000 );
+    auto* junction = new SCH_JUNCTION( center );
+    host->AddToScreen( junction );
+    for( auto layer : { LAYER_WIRE, LAYER_BUS } )
+    {
+        auto* line = new SCH_LINE( center, layer );
+        line->SetEndPoint( center + VECTOR2I( 10000, 0 ) );
+        host->AddToScreen( line );
+    }
+    SCH_COMMIT commit( host->GetToolManager() );
+    host->DeleteJunction( &commit, junction );
+    commit.Push( "Delete Junction" );
+    std::set<int> layers;
+    for( SCH_ITEM* item : host->GetScreen()->Items().Overlapping( SCH_LINE_T, center ) )
+        layers.insert( item->GetLayer() );
+    BOOST_CHECK( layers.count( LAYER_WIRE ) );
+    BOOST_CHECK( layers.count( LAYER_BUS ) );
+    BOOST_REQUIRE( host->Undo() );
+    BOOST_CHECK_EQUAL( host->GetUndoCommandCount(), 0 );
+}
+
+BOOST_AUTO_TEST_CASE( BodyStyleUsesOneTransactionAndRejectsNoOps )
+{
+    auto host = hostForMoving();
+    SCH_SYMBOL* symbol = nullptr;
+    for( SCH_ITEM* item : host->GetScreen()->Items().OfType( SCH_SYMBOL_T ) )
+    {
+        symbol = static_cast<SCH_SYMBOL*>( item );
+        break;
+    }
+    BOOST_REQUIRE( symbol );
+    auto* library = new LIB_SYMBOL( *symbol->GetLibSymbolRef() );
+    library->SetBodyStyleCount( 2, true, true );
+    symbol->SetLibSymbol( library );
+    symbol->SetBodyStyle( 1 );
+    host->SelectBodyStyle( host->GetToolManager(), symbol, 0 );
+    host->SelectBodyStyle( host->GetToolManager(), symbol, 1 );
+    BOOST_CHECK_EQUAL( host->GetUndoCommandCount(), 0 );
+    SCH_COMMIT commit( host->GetToolManager() );
+    host->SelectBodyStyle( host->GetToolManager(), symbol, 2, &commit );
+    commit.Push( "Change Body Style" );
+    BOOST_CHECK_EQUAL( symbol->GetBodyStyle(), 2 );
+    BOOST_REQUIRE_EQUAL( host->GetUndoCommandCount(), 1 );
+    BOOST_REQUIRE( host->Undo() );
+    BOOST_CHECK_EQUAL( symbol->GetBodyStyle(), 1 );
+    BOOST_REQUIRE( host->Redo() );
+    BOOST_CHECK_EQUAL( symbol->GetBodyStyle(), 2 );
+    host->SelectBodyStyle( host->GetToolManager(), symbol, 99 );
+    BOOST_CHECK_EQUAL( host->GetUndoCommandCount(), 1 );
+}
+
+BOOST_AUTO_TEST_CASE( RotatingAndMirroringSymbolsMatchNativeGeometry )
+{
+    auto host = hostForMoving();
+    SCH_SYMBOL* symbol = nullptr;
+    for( SCH_ITEM* item : host->GetScreen()->Items().OfType( SCH_SYMBOL_T ) )
+    {
+        symbol = static_cast<SCH_SYMBOL*>( item );
+        break;
+    }
+    BOOST_REQUIRE( symbol );
+    const KIID id = symbol->m_Uuid;
+    const auto originalPins = symbol->GetConnectionPoints();
+    auto native = std::unique_ptr<SCH_SYMBOL>( static_cast<SCH_SYMBOL*>( symbol->Clone() ) );
+    native->Rotate( native->GetPosition(), true );
+    host->GetToolManager()->RunAction<EDA_ITEM*>( ACTIONS::selectItem, symbol );
+    host->GetToolManager()->RunAction( SCH_ACTIONS::rotateCCW );
+    BOOST_CHECK( symbol->GetConnectionPoints() == native->GetConnectionPoints() );
+    BOOST_CHECK( symbol->m_Uuid == id );
+    BOOST_REQUIRE_EQUAL( host->GetUndoCommandCount(), 1 );
+    BOOST_REQUIRE( host->Undo() );
+    BOOST_CHECK( symbol->GetConnectionPoints() == originalPins );
+    BOOST_REQUIRE( host->Redo() );
+    BOOST_CHECK( symbol->GetConnectionPoints() == native->GetConnectionPoints() );
+    native->SetOrientation( SYM_MIRROR_Y );
+    host->GetToolManager()->RunAction<EDA_ITEM*>( ACTIONS::selectItem, symbol );
+    host->GetToolManager()->RunAction( SCH_ACTIONS::mirrorH );
+    BOOST_CHECK( symbol->GetConnectionPoints() == native->GetConnectionPoints() );
+    BOOST_REQUIRE_EQUAL( host->GetUndoCommandCount(), 2 );
+    BOOST_REQUIRE( host->Undo() );
+    BOOST_REQUIRE( host->Undo() );
+    BOOST_CHECK( symbol->GetConnectionPoints() == originalPins );
+}
+
+BOOST_AUTO_TEST_CASE( CancelMoveAndDuplicatePreservesIdentityAndUndo )
+{
+    auto host = hostForMoving();
+    SCH_ITEM* item = nullptr;
+    for( SCH_ITEM* candidate : host->GetScreen()->Items().OfType( SCH_SYMBOL_T ) )
+    {
+        item = candidate;
+        break;
+    }
+    BOOST_REQUIRE( item );
+    const auto id = item->m_Uuid;
+    const auto position = item->GetPosition();
+    const auto count = host->GetScreen()->Items().size();
+    host->SaveCopyForRepeatItem( item );
+    for( const char* action : { "eeschema.InteractiveMove.move", "common.Interactive.duplicate",
+                               "eeschema.InteractiveEdit.repeatDrawItem" } )
+    {
+        if( std::string( action ).find( "repeatDrawItem" ) != std::string::npos )
+        {
+            // A completed first item must also roll back if the subsequent symbol is canceled.
+            for( SCH_ITEM* label : host->GetScreen()->Items().OfType( SCH_LABEL_T ) )
+            {
+                host->SaveCopyForRepeatItem( label );
+                host->AddCopyForRepeatItem( item );
+                break;
+            }
+        }
+        host->GetToolManager()->RunAction<EDA_ITEM*>( ACTIONS::selectItem, item );
+        BOOST_REQUIRE( host->RunActionByName( action ) );
+        host->GetToolManager()->RunAction( ACTIONS::cancelInteractive );
+        host->GetToolManager()->RunAction( ACTIONS::cancelInteractive );
+        BOOST_CHECK_EQUAL( host->GetScreen()->Items().size(), count );
+        BOOST_CHECK_EQUAL( host->GetUndoCommandCount(), 0 );
+        BOOST_CHECK( item->m_Uuid == id );
+        BOOST_CHECK( item->GetPosition() == position );
+        BOOST_CHECK( !host->IsModified() );
+    }
+}
+
+BOOST_AUTO_TEST_CASE( DuplicateAndRepeatCommitOnceWithFreshIdentity )
+{
+    for( const char* action : { "common.Interactive.duplicate",
+                               "eeschema.InteractiveEdit.repeatDrawItem" } )
+    {
+        auto host = hostForMoving();
+        SCH_SYMBOL* symbol = nullptr;
+        std::set<KIID> original;
+        for( SCH_ITEM* item : host->GetScreen()->Items().OfType( SCH_SYMBOL_T ) )
+        {
+            original.insert( item->m_Uuid );
+            if( !symbol ) symbol = static_cast<SCH_SYMBOL*>( item );
+        }
+        BOOST_REQUIRE( symbol );
+        host->eeconfig()->m_AnnotatePanel.automatic = true;
+        host->SaveCopyForRepeatItem( symbol );
+        host->GetToolManager()->RunAction<EDA_ITEM*>( ACTIONS::selectItem, symbol );
+        BOOST_REQUIRE( host->RunActionByName( action ) );
+        // Returning here is essential: GPUI must regain control to deliver this click.
+        BOOST_CHECK_EQUAL( host->GetUndoCommandCount(), 0 );
+        TOOL_EVENT click( TC_MOUSE, TA_MOUSE_CLICK, BUT_LEFT );
+        click.SetMousePosition( VECTOR2D( symbol->GetPosition() + VECTOR2I( 100000, 100000 ) ) );
+        host->GetToolManager()->ProcessEvent( click );
+        BOOST_REQUIRE_EQUAL( host->GetUndoCommandCount(), 1 );
+        SCH_SYMBOL* placed = nullptr;
+        size_t count = 0;
+        for( SCH_ITEM* item : host->GetScreen()->Items().OfType( SCH_SYMBOL_T ) )
+        {
+            ++count;
+            if( !original.count( item->m_Uuid ) ) placed = static_cast<SCH_SYMBOL*>( item );
+        }
+        BOOST_CHECK_EQUAL( count, original.size() + 1 );
+        BOOST_REQUIRE( placed );
+        BOOST_CHECK( placed->GetRef( &host->GetCurrentSheet() ) != symbol->GetRef( &host->GetCurrentSheet() ) );
+        BOOST_CHECK( !placed->GetRef( &host->GetCurrentSheet() ).Contains( "?" ) );
+        const KIID placedId = placed->m_Uuid;
+        BOOST_REQUIRE( host->Undo() );
+        BOOST_CHECK( !host->ResolveItem( placedId, true ) );
+        BOOST_REQUIRE( host->Redo() );
+        BOOST_CHECK( host->ResolveItem( placedId, true ) );
+    }
+}
+
 BOOST_AUTO_TEST_CASE( TheMoveToolRunsWithoutAFrame )
 {
     SCH_HOST host;
@@ -2708,6 +2957,7 @@ BOOST_AUTO_TEST_CASE( PropertiesValidateReferencesAndNoOpDoesNotCreateUndo )
     int undone = 0;
     BOOST_REQUIRE_EQUAL( ksch_session_undo( session, &undone ), KSCH_OK );
     BOOST_CHECK_EQUAL( undone, 1 );
+    BOOST_CHECK_EQUAL( apply(), KSCH_ERR_INVALID_ARG );
     BOOST_CHECK_EQUAL( ksch_session_edit_custom_field( session, properties.id.c_str(), "Reference", nullptr ), KSCH_ERR_INVALID_ARG );
     BOOST_CHECK_EQUAL( ksch_session_edit_custom_field( session, properties.id.c_str(), "", "bad" ), KSCH_ERR_INVALID_ARG );
     BOOST_REQUIRE_EQUAL( ksch_session_edit_custom_field( session, properties.id.c_str(), "Assembly note", "Hand solder" ), KSCH_OK );

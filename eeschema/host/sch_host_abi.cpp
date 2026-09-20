@@ -100,6 +100,7 @@ namespace { ksch_session* activeSimulationSession = nullptr; }
 struct ksch_session
 {
     SCH_HOST m_Host;
+    std::map<std::string, std::vector<wxString>> m_PropertyBaselines;
     std::unique_ptr<KIGFX::RECORDING_GAL> m_SymbolPreview;
     // Ngspice is process-global. The host retains its adapter for the process lifetime;
     // it never constructs a simulator frame or the factory's wx error dialogs.
@@ -570,6 +571,7 @@ extern "C" ksch_status ksch_session_load_file( ksch_session* aSession, const cha
         return KSCH_ERR_INVALID_ARG;
 
     aSession->m_Error.clear();
+    aSession->m_PropertyBaselines.clear();
 
     return guard( aSession,
                   [&]() -> ksch_status
@@ -1402,6 +1404,36 @@ std::vector<EDA_TEXT*> propertyTexts( SCH_ITEM* item )
         result.push_back( text );
     return result;
 }
+
+std::vector<wxString> propertyBaseline( ksch_session* session, SCH_ITEM* item )
+{
+    auto& host = session->m_Host;
+    auto& path = host.GetCurrentSheet();
+    const wxString variant = host.GetSchematic()->GetCurrentVariant();
+    std::vector<wxString> result{ path.Path().AsString(), variant };
+    for( auto* text : propertyTexts( item ) )
+    {
+        auto* field = dynamic_cast<SCH_FIELD*>( text );
+        result.push_back( field ? field->GetName() : wxS( "Text" ) );
+        if( field && field->GetId() == FIELD_T::REFERENCE )
+            result.push_back( static_cast<SCH_SYMBOL*>( item )->GetRef( &path ) );
+        else
+            result.push_back( field ? field->GetText( &path, variant ) : text->GetText() );
+    }
+    for( const auto& property : modelProperties( item ) )
+    {
+        result.push_back( property.name );
+        result.push_back( property.value );
+    }
+    if( auto* sheet = dynamic_cast<SCH_SHEET*>( item ) )
+    {
+        auto child = path;
+        child.push_back( sheet );
+        result.push_back( child.GetPageNumber() );
+    }
+    return result;
+}
+
 }
 
 extern "C" ksch_status ksch_session_item_properties( ksch_session* session,
@@ -1417,6 +1449,7 @@ extern "C" ksch_status ksch_session_item_properties( ksch_session* session,
         const auto properties = modelProperties( item );
         if( texts.empty() && properties.empty() ) return KSCH_ERR_INVALID_ARG;
         const auto id = item->m_Uuid.AsString().utf8_string();
+        session->m_PropertyBaselines[id] = propertyBaseline( session, item );
         for( auto* text : texts )
         {
             auto* field = dynamic_cast<SCH_FIELD*>( text );
@@ -1459,6 +1492,13 @@ extern "C" ksch_status ksch_session_apply_properties( ksch_session* session,
         auto* item = propertyItem( session );
         if( !item || item->m_Uuid.AsString() != wxString::FromUTF8( item_id ) )
         { setError( session, wxS( "Selection changed; reopen Properties" ) ); return KSCH_ERR_INVALID_ARG; }
+        const auto baseline = session->m_PropertyBaselines.find( item_id );
+        if( baseline == session->m_PropertyBaselines.end()
+                || baseline->second != propertyBaseline( session, item ) )
+        {
+            setError( session, wxS( "Item changed; reopen Properties before applying edits" ) );
+            return KSCH_ERR_INVALID_ARG;
+        }
         const auto texts = propertyTexts( item );
         const auto properties = modelProperties( item );
         const bool isSheet = dynamic_cast<SCH_SHEET*>( item ) != nullptr;
@@ -1580,6 +1620,7 @@ extern "C" ksch_status ksch_session_apply_properties( ksch_session* session,
             commit.Revert();
             throw;
         }
+        session->m_PropertyBaselines[item_id] = propertyBaseline( session, item );
         return KSCH_OK;
     } );
 }

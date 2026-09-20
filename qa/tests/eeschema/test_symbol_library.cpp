@@ -87,19 +87,17 @@ BOOST_AUTO_TEST_CASE( ProjectLibraryTable )
         return;
     }
 
-    LIBRARY_MANAGER manager;
+    LoadSchematic( GetTestProjectSchPath().GetFullPath() );
+    // The fixture owns a settings manager distinct from Pgm()'s. Bind URI expansion
+    // to that project so ${KIPRJMOD} resolves to the fixture, not the process project.
+    LIBRARY_MANAGER manager( &SettingsManager().Prj() );
     manager.LoadGlobalTables();
-
-    wxFileName fn( KI_TEST::GetTestDataRootDir(), "test_project.kicad_sch" );
-    fn.AppendDir( "libraries" );
-    fn.AppendDir( "test_project" );
 
     std::vector<LIBRARY_TABLE_ROW*> rows = manager.Rows( LIBRARY_TABLE_TYPE::SYMBOL );
 
     BOOST_REQUIRE( rows.size() == 3 );
     BOOST_REQUIRE( rows[0]->Nickname() == "Device" );
 
-    LoadSchematic( fn.GetFullPath() );
     PROJECT& project = SettingsManager().Prj();
     manager.LoadProjectTables( project.GetProjectDirectory() );
 
@@ -266,10 +264,12 @@ BOOST_AUTO_TEST_CASE( LoadProjectTablesClearsAdapterCache )
         return;
     }
 
-    LIBRARY_MANAGER manager;
+    LoadSchematic( GetTestProjectSchPath().GetFullPath() );
+    // The fixture owns a settings manager distinct from Pgm()'s. Bind URI expansion
+    // to that project so ${KIPRJMOD} resolves to the fixture, not the process project.
+    LIBRARY_MANAGER manager( &SettingsManager().Prj() );
     manager.LoadGlobalTables();
 
-    LoadSchematic( GetTestProjectSchPath().GetFullPath() );
     PROJECT& project = SettingsManager().Prj();
     manager.LoadProjectTables( project.GetProjectDirectory() );
 
@@ -321,7 +321,10 @@ BOOST_AUTO_TEST_CASE( ProjectReloadPreservesShadowing )
 
     EnsureGlobalSymbolDir();
 
-    LIBRARY_MANAGER manager;
+    LoadSchematic( GetTestProjectSchPath().GetFullPath() );
+    // The fixture owns a settings manager distinct from Pgm()'s. Bind URI expansion
+    // to that project so ${KIPRJMOD} resolves to the fixture, not the process project.
+    LIBRARY_MANAGER manager( &SettingsManager().Prj() );
 
     // Register the adapter BEFORE loading tables. LoadGlobalTables() routes
     // GlobalTablesChanged() through registered adapters to clear the static
@@ -340,9 +343,8 @@ BOOST_AUTO_TEST_CASE( ProjectReloadPreservesShadowing )
     adapter->LoadOne( kDeviceLibNickname );
     BOOST_REQUIRE( adapter->IsLibraryLoaded( kDeviceLibNickname ) );
 
-    // Now load the project. Its symbol library table contains a "Device" row
+    // Now load the project tables. The symbol library table contains a "Device" row
     // that shadows the global Device (verified by ProjectLibraryTable above).
-    LoadSchematic( GetTestProjectSchPath().GetFullPath() );
     PROJECT& project = SettingsManager().Prj();
     manager.LoadProjectTables( project.GetProjectDirectory() );
 
@@ -388,7 +390,10 @@ BOOST_AUTO_TEST_CASE( ProjectReloadReleasesRemovedShadow )
 
     EnsureGlobalSymbolDir();
 
-    LIBRARY_MANAGER manager;
+    LoadSchematic( GetTestProjectSchPath().GetFullPath() );
+    // The fixture owns a settings manager distinct from Pgm()'s. Bind URI expansion
+    // to that project so ${KIPRJMOD} resolves to the fixture, not the process project.
+    LIBRARY_MANAGER manager( &SettingsManager().Prj() );
 
     // Register adapter first so LoadGlobalTables() clears any stale static
     // GlobalLibraries entries left over from earlier test cases.
@@ -400,9 +405,8 @@ BOOST_AUTO_TEST_CASE( ProjectReloadReleasesRemovedShadow )
     adapter->LoadOne( kDeviceLibNickname );
     BOOST_REQUIRE( adapter->IsLibraryLoaded( kDeviceLibNickname ) );
 
-    // Load the project and materialise the project-scope Device entry in
+    // Load the project tables and materialise the project-scope Device entry in
     // m_libraries (shadows the global Device).
-    LoadSchematic( GetTestProjectSchPath().GetFullPath() );
     PROJECT& project = SettingsManager().Prj();
     manager.LoadProjectTables( project.GetProjectDirectory() );
 

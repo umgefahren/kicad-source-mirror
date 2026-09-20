@@ -92,6 +92,12 @@ only by the host control so it cannot be swallowed by a frame-only handler.
 
 ## Scope and remaining differences
 
+These limits have follow-up owners in
+[Stages 6–19](10-remaining-stages.md#known-gap-ownership). The next implementation
+work is Stage 7 (real document sidebars);
+[Stage 6 editing correctness is complete](11-stage6-editing-correctness.md).
+The entries below describe the current baseline, not permanent exclusions.
+
 This is coverage of the reachable schematic workflows, not a claim of exact
 widget-for-widget parity with every source in the wx dialog directory.
 

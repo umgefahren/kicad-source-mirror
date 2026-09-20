@@ -907,7 +907,9 @@ enum ksch_property_kind { KSCH_PROPERTY_TEXT, KSCH_PROPERTY_BOOL, KSCH_PROPERTY_
     KSCH_PROPERTY_NUMBER, KSCH_PROPERTY_DISTANCE, KSCH_PROPERTY_ANGLE,
     KSCH_PROPERTY_COLOR, KSCH_PROPERTY_CHOICE, KSCH_PROPERTY_MULTILINE };
 /** Selected item model properties. Strings passed to the visitor live for that call only.
- * Applying requires the same selected item UUID and property count, and is one undo step. */
+ * Applying requires the same selected item UUID, property count and unchanged model values
+ * since the most recent snapshot (or successful Apply). Stale forms return INVALID_ARG.
+ * A successful change is one undo step; previews join the placement transaction. */
 typedef void (*ksch_property_visitor)( void*, const char* item_id, const char* name,
                                       const char* value, uint32_t kind, const char* const* choices,
                                       uint32_t choice_count );

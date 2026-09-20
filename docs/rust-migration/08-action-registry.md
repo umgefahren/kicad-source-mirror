@@ -1,5 +1,13 @@
 # Action-registry menus and toolbars — 2026-09-19
 
+> **Current planning:** [10-remaining-stages.md](10-remaining-stages.md) defines
+> Stages 6–19 and their execution order. This document records an earlier survey,
+> implementation milestone or reuse guidance; historical gaps and proposed
+> approaches must be checked against the Stage 5 coverage and
+> [completed Stage 6 verification](11-stage6-editing-correctness.md) before use.
+> Stage 7 (real document sidebars) is next.
+
+
 M4's command-presentation step is implemented. With `--schematic`, the binary
 reads KiCad's registry after opening the host session and supplies an owned
 snapshot to the GPUI shell. Menu and toolbar layout and icons stay in Rust;
@@ -80,7 +88,7 @@ the panel, finding ECC83 centers its value, replacement marks the host modified,
 and undo restores the value. Command-W opens Save/Discard/Cancel; Cancel keeps
 the window open, and Save closes it after writing the temporary file.
 
-The host-side interface priorities remain in `06-what-is-missing.md`, notably
-`DeleteJunction` for correct wire/junction cleanup. Symbol placement and
-properties are larger subsequent dialog milestones; registry-backed menus do
-not make those workflows complete.
+This milestone originally identified `DeleteJunction`, symbol placement and
+properties as follow-up work. Stages 5 and 6 subsequently implemented those
+paths; see the [Stage 6 verification report](11-stage6-editing-correctness.md).
+Registry-backed menus alone still do not establish workflow completeness.

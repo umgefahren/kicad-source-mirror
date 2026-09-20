@@ -48,75 +48,9 @@ void SCH_EDIT_FRAME::TestDanglingEnds()
 
 void SCH_EDIT_FRAME::DeleteJunction( SCH_COMMIT* aCommit, SCH_ITEM* aJunction )
 {
-    SCH_SCREEN*         screen = GetScreen();
-    PICKED_ITEMS_LIST   undoList;
-    SCH_SELECTION_TOOL* selectionTool = m_toolManager->GetTool<SCH_SELECTION_TOOL>();
-
-    aJunction->SetFlags( STRUCT_DELETED );
-    RemoveFromScreen( aJunction, screen );
-    aCommit->Removed( aJunction, screen );
-
-    /// Note that std::list or similar is required here as we may insert values in the
-    /// loop below.  This will invalidate iterators in a std::vector or std::deque
-    std::list<SCH_LINE*> lines;
-
-    for( SCH_ITEM* item : screen->Items().Overlapping( SCH_LINE_T, aJunction->GetPosition() ) )
-    {
-        SCH_LINE* line = static_cast<SCH_LINE*>( item );
-
-        if( ( line->IsWire() || line->IsBus() )
-                && line->IsEndPoint( aJunction->GetPosition() )
-                && !( line->GetEditFlags() & STRUCT_DELETED ) )
-        {
-            lines.push_back( line );
-        }
-    }
-
-    alg::for_all_pairs( lines.begin(), lines.end(),
-            [&]( SCH_LINE* firstLine, SCH_LINE* secondLine )
-            {
-                if( ( firstLine->GetEditFlags() & STRUCT_DELETED )
-                        || ( secondLine->GetEditFlags() & STRUCT_DELETED )
-                        || !secondLine->IsParallel( firstLine ) )
-                {
-                    return;
-                }
-
-                // Remove identical lines
-                if( firstLine->IsEndPoint( secondLine->GetStartPoint() )
-                        && firstLine->IsEndPoint( secondLine->GetEndPoint() ) )
-                {
-                    firstLine->SetFlags( STRUCT_DELETED );
-                    return;
-                }
-
-                // Try to merge the remaining lines
-                if( SCH_LINE* new_line = secondLine->MergeOverlap( screen, firstLine, false ) )
-                {
-                    firstLine->SetFlags( STRUCT_DELETED );
-                    secondLine->SetFlags( STRUCT_DELETED );
-                    AddToScreen( new_line, screen );
-                    aCommit->Added( new_line, screen );
-
-                    if( new_line->IsSelected() )
-                        selectionTool->AddItemToSel( new_line, true /*quiet mode*/ );
-
-                    lines.push_back( new_line );
-                }
-            } );
-
-    for( SCH_LINE* line : lines )
-    {
-        if( line->GetEditFlags() & STRUCT_DELETED )
-        {
-            if( line->IsSelected() )
-                selectionTool->RemoveItemFromSel( line, true /*quiet mode*/ );
-
-            RemoveFromScreen( line, screen );
-            aCommit->Removed( line, screen );
-        }
-    }
+    SCHEMATIC_HOLDER::DeleteJunction( aCommit, aJunction );
 }
+
 
 void SCH_EDIT_FRAME::UpdateHopOveredWires( SCH_ITEM* aItem )
 {

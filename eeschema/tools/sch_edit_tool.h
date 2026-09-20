@@ -49,10 +49,9 @@ public:
      * decline when there is no window to parent them, and say so at the site.
      *
      * What the geometric half itself loses without a frame is the right-click menus, the
-     * info-bar messages, the hierarchy navigator refresh, and three pieces of model work
-     * that happen to live on SCH_EDIT_FRAME rather than on the interface: junction cleanup
-     * after a delete (`DeleteJunction`), body-style cycling (`SelectBodyStyle`) and the
-     * automatic annotation of a repeated symbol (`AnnotateSymbols`).
+     * info-bar messages and the hierarchy navigator refresh. Junction cleanup and
+     * body-style changes use shared SCHEMATIC_HOLDER services in both frontends;
+     * repeated-symbol annotation uses the native reference allocator.
      */
     bool runsWithoutAFrame() const override { return true; }
 

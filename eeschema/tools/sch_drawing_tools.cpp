@@ -617,9 +617,9 @@ int SCH_DRAWING_TOOLS::PlaceSymbol( const TOOL_EVENT& aEvent )
             {
                 int bodyStyle = ( *evt->GetCommandId() - ID_POPUP_SCH_SELECT_BODY_STYLE ) + 1;
 
-                if( m_frame && symbol && symbol->GetBodyStyle() != bodyStyle )
+                if( symbol && symbol->GetBodyStyle() != bodyStyle )
                 {
-                    m_frame->SelectBodyStyle( symbol, bodyStyle );
+                    m_editor->SelectBodyStyle( m_toolMgr, symbol, bodyStyle );
                     m_toolMgr->PostAction( ACTIONS::refreshPreview );
                 }
             }
